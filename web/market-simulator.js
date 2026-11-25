@@ -468,7 +468,7 @@ if (panel && chartHost && symbolSelect && timeframeSelect) {
       await loadInitialMarket();
     } catch (error) {
       text("marketFeedStatus", "● Binance data unavailable");
-      text("marketEngineStatus", error.message || "Market data unavailable.");
+      text("paperEngineStatus", error.message || "Market data unavailable.");
     }
     connectSocket();
     await refreshPaper();
@@ -487,7 +487,7 @@ if (panel && chartHost && symbolSelect && timeframeSelect) {
       connectSocket();
     } catch (error) {
       text("marketFeedStatus", "● Binance data unavailable");
-      text("marketEngineStatus", error.message || "Could not load selected market.");
+      text("paperEngineStatus", error.message || "Could not load selected market.");
     }
   }
 
