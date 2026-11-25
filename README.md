@@ -26,6 +26,19 @@
 - Balance refreshes store timestamped USDT evidence for the server-side risk assessment. OKX USDT is recorded with a nominal 1.00 USD valuation assumption.
 - The account-connection layer is not an order executor. Both providers remain unable to submit live orders in this release.
 
+### Jupiter live swaps and Trigger automation
+
+- The private wallet panel includes a Solana BUY/SELL terminal backed by Jupiter Swap API V2. Quotes use the connected, verified Solana-mainnet wallet as the taker.
+- The manual terminal uses Jupiter order/execute, checks the exact unsigned transaction and wallet fee payer, and requires the wallet to sign the transaction. The server verifies the signed transaction message hash and Ed25519 owner signature before provider submission.
+- Transactions are limited to version 0 in this release. Unsupported version 1 transactions are rejected rather than sent to a wallet.
+- Conservative terminal limits are 0.05 SOL-equivalent per swap, 0.10 SOL-equivalent per rolling 24 hours, and 2% maximum price impact. Only one unresolved quote or execution can exist per wallet at a time.
+- A provider timeout after a transaction is claimed is recorded as `unknown`; 9N8 checks Solana signature status and never blindly resubmits it.
+- **Manual live execution remains locked** until the Jupiter connector certification record is passed with message-integrity, owner-signature, idempotency and unknown-outcome reconciliation checks.
+- Jupiter Trigger V2 DCA automation is implemented separately from manual swaps. Trigger requires a `JUPITER_API_KEY` Edge Function secret. Tokens are held in module memory only and refreshed through the Trigger access/refresh flow; they are not stored in Postgres or browser local storage.
+- DCA funds are deposited into a Jupiter/Privy-managed vault and are no longer in the original wallet while scheduled orders are active. The owner must sign the deposit and any cancellation/withdrawal transaction.
+- 9N8 caps DCA deposits at 0.50 SOL per rolling 24 hours per wallet and requires at least $10 estimated value per scheduled DCA round. The create and cancel flows verify the exact wallet-signed transaction.
+- **Delegated automation remains locked** until vault registration/deposit integrity, DCA creation, cancellation, withdrawal and unknown-outcome tests have been certified.
+
 ### Telegram and wallets
 
 - Telegram commands include `/start`, `/paper`, `/simulator`, `/connect`, `/connections`, `/wallets`, `/migrate`, `/approvals`, `/status`, `/risk`, `/pause` and `/stop`.
@@ -37,7 +50,7 @@
 
 - **No real Binance or OKX order is currently submitted by the deployed bot.** Both connections validate account access and read balances; neither is a released live order executor.
 - The standalone Binance order helper module validates Spot market-order parameters and signs requests, but it is not the same as a fully released, approval-to-order execution and reconciliation service.
-- No withdrawals, transfers, wallet signing, futures, margin or unattended autonomous trading are available.
+- Exchange withdrawals and transfers, unattended wallet signing, futures and margin are not available. Jupiter transactions require owner wallet signing; Trigger automation uses its separate managed-vault model and remains disabled until certification.
 - The 9N8 paper run must not be treated as a live account or a guarantee of profitability.
 
 Do not deposit funds on the assumption that real trading is ready. Do not share an API secret, private key or seed phrase in Telegram, GitHub issues, source code or this chat.
@@ -91,6 +104,7 @@ Install Deno 2 and run the focused tests:
 deno test supabase/functions/n8-paper-worker/paper-engine_test.ts
 deno test supabase/functions/telegram-bot-next/binance-live_test.ts
 deno test supabase/functions/telegram-bot-next/okx-live_test.ts
+deno test supabase/functions/telegram-bot-next/jupiter-live_test.ts
 ```
 
 Type-check the Edge Functions:
