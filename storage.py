@@ -48,6 +48,19 @@ CREATE TABLE IF NOT EXISTS daily_equity (
 CREATE TABLE IF NOT EXISTS controls (
   key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pending_approvals (
+  approval_id TEXT PRIMARY KEY,
+  signal_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  decided_at TEXT,
+  decided_by TEXT,
+  result TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pending_approvals_status
+  ON pending_approvals(status, created_at);
 CREATE TABLE IF NOT EXISTS idempotency (
   key TEXT PRIMARY KEY, state TEXT NOT NULL, payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -214,6 +227,73 @@ class TradeStore:
         )
         await self._db().commit()
         return cur.rowcount == 1
+
+
+    async def create_pending_approval(
+        self, approval_id: str, signal_key: str, expires_at: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        cur = await self._db().execute(
+            """INSERT OR IGNORE INTO pending_approvals
+               (approval_id,signal_key,status,created_at,expires_at,payload_json)
+               VALUES(?,?,'PENDING',?,?,?)""",
+            (approval_id, signal_key, now, expires_at,
+             json.dumps(payload, separators=(",", ":"), allow_nan=False)),
+        )
+        await self._db().commit()
+        return cur.rowcount == 1
+
+    async def get_pending_approval(self, approval_id: str) -> dict[str, Any] | None:
+        cur = await self._db().execute(
+            "SELECT * FROM pending_approvals WHERE approval_id=?",
+            (approval_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["payload"] = json.loads(result.pop("payload_json"))
+        return result
+
+    async def pending_approvals(self, limit: int = 20) -> list[dict[str, Any]]:
+        bounded = min(max(int(limit), 1), 100)
+        cur = await self._db().execute(
+            """SELECT * FROM pending_approvals WHERE status='PENDING'
+               ORDER BY created_at LIMIT ?""",
+            (bounded,),
+        )
+        rows = await cur.fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["payload"] = json.loads(item.pop("payload_json"))
+            result.append(item)
+        return result
+
+    async def claim_pending_approval(self, approval_id: str) -> bool:
+        cur = await self._db().execute(
+            """UPDATE pending_approvals SET status='PROCESSING'
+               WHERE approval_id=? AND status='PENDING'""",
+            (approval_id,),
+        )
+        await self._db().commit()
+        return cur.rowcount == 1
+
+    async def decide_pending_approval(
+        self, approval_id: str, status: str, decided_by: str, result: str,
+    ) -> None:
+        allowed = {"APPROVED", "DENIED", "EXPIRED", "FAILED"}
+        if status not in allowed:
+            raise ValueError("Invalid approval state.")
+        await self._db().execute(
+            """UPDATE pending_approvals
+               SET status=?,decided_at=?,decided_by=?,result=?
+               WHERE approval_id=?""",
+            (status, datetime.now(timezone.utc).isoformat(),
+             str(decided_by)[:100], str(result)[:1000], approval_id),
+        )
+        await self._db().commit()
 
     async def update_idempotency(self, key: str, state: str) -> None:
         await self._db().execute(
