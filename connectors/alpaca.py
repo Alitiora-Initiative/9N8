@@ -215,7 +215,15 @@ class AlpacaConnector(ExecutionConnector):
             )
         candles.sort(key=lambda candle: candle.timestamp)
         deduplicated = {candle.timestamp: candle for candle in candles}
-        return list(sorted(deduplicated.values(), key=lambda candle: candle.timestamp))[-limit:]
+        # Alpaca may return the currently forming bar. Never feed a partial
+        # candle into the closed-bar strategy; exclude bars whose interval has
+        # not ended yet (conservative for daily bars as well).
+        now_ms = int(now.timestamp() * 1000)
+        closed = [
+            candle for candle in deduplicated.values()
+            if candle.timestamp + seconds * 1000 <= now_ms
+        ]
+        return sorted(closed, key=lambda candle: candle.timestamp)[-limit:]
 
     async def get_balance(self) -> AccountState:
         raise ConnectorUnavailable(
