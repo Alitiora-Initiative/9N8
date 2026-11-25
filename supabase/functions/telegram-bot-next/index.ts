@@ -839,7 +839,7 @@ async function handleMiniApp(body: any): Promise<Response> {
       );
       const walletRows = await db(
         "n8_wallet_connections?select=id,provider,network,public_address,status,connection_type&user_id=eq." +
-          encodeURIComponent(row.id) + "&status=eq.verified&order=created_at.desc"
+          encodeURIComponent(row.id) + "&status=in.(verified,watch_only)&order=created_at.desc"
       );
       return response({
         ok: true,
@@ -1403,6 +1403,7 @@ async function setBotProfileAndCommands(): Promise<void> {
         { command: "simulator", description: "Open live Binance charts and paper simulator" },
         { command: "connect", description: "Connect Binance, OKX or wallet" },
         { command: "connections", description: "View exchange connections" },
+        { command: "disconnect", description: "Revoke an exchange API connection" },
         { command: "wallets", description: "View linked wallets" },
         { command: "live", description: "Show live-trading lock" },
         { command: "risk", description: "View risk limits" },
@@ -1449,8 +1450,9 @@ function serviceOverview(): string {
     "/paper — view virtual equity, positions and simulated fills",
     "/simulator — open live Binance charts and paper trading",
     "/connect — connect Binance Spot Live or wallet",
-    "/connections — review exchange connections",
-    "/wallets — review verified wallets and watch addresses",
+    "/connections — review exchange connections and IDs",
+    "/disconnect CONNECTION_ID — delete your stored API secret from 9N8 Vault",
+    "/wallets — review linked wallets and watch addresses",
     "/risk — view your configured risk limits",
     "/live — view live-trading readiness and lock status",
     "/pause — pause strategies and block new entries",
@@ -1614,16 +1616,13 @@ async function handleMessage(update: any) {
       await send(chatId, "Usage: /disconnect CONNECTION_ID. Send /connections to list your own connection IDs.");
       return;
     }
-    const revoked = await db("rpc/n8_revoke_exchange_connection", "POST", {
-      p_telegram_user_id: Number(actor.id),
-      p_connection_id: connectionId,
-    });
-    if (revoked !== true) {
-      await send(chatId, "No active exchange connection with that ID belongs to your Telegram account.");
-      return;
-    }
-    await audit(row.id, chatId, "exchange_connection_revoked", "ok", { connection_id: connectionId });
-    await send(chatId, "Exchange connection revoked. Its stored API secret was deleted from Supabase Vault.");
+    await send(chatId,
+      "DISCONNECT EXCHANGE ACCOUNT?\\n\\nThis deletes the 9N8-stored API secret from Supabase Vault and revokes this connection inside 9N8. It does not revoke the API key at Binance or OKX. For full revocation, also delete the key in the exchange's own security settings.",
+      { inline_keyboard: [[
+        { text: "Confirm disconnect", callback_data: "n8:exchange_revoke:" + connectionId },
+        { text: "Cancel", callback_data: "n8:exchange_revoke_cancel" },
+      ]] }
+    );
     return;
   }
   if (command === "/wallets") {
@@ -1640,6 +1639,32 @@ async function handleCallback(update: any) {
   const chat = q.message?.chat;
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
+  if (q.data === "n8:exchange_revoke_cancel") {
+    await send(Number(chat.id), "Exchange disconnection cancelled. No stored credential was changed.");
+    return;
+  }
+  if (String(q.data ?? "").startsWith("n8:exchange_revoke:")) {
+    const connectionId = String(q.data).slice("n8:exchange_revoke:".length);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(connectionId)) {
+      await send(Number(chat.id), "Invalid exchange connection ID.");
+      return;
+    }
+    const revoked = await db("rpc/n8_revoke_exchange_connection", "POST", {
+      p_telegram_user_id: Number(q.from.id),
+      p_connection_id: connectionId,
+    });
+    if (revoked !== true) {
+      await send(Number(chat.id), "No active exchange connection with that ID belongs to your Telegram account.");
+      return;
+    }
+    await audit(row.id, Number(chat.id), "exchange_connection_revoked", "ok", {
+      connection_id: connectionId,
+    });
+    await send(Number(chat.id),
+      "Exchange connection revoked inside 9N8. Its stored API secret was deleted from Supabase Vault.\\n\\nFor full security, also delete the API key in Binance/OKX settings; 9N8 cannot revoke a key at the exchange itself."
+    );
+    return;
+  }
   if (q.data === "n8:services") await send(Number(chat.id), serviceOverview(), mainKeyboard());
   if (q.data === "n8:paper_start_crypto") {
     const started = await startCryptoPaper(row.id, Number(chat.id));
