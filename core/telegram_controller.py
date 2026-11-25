@@ -124,19 +124,17 @@ class TelegramController:
 
     async def panic(self, message: Message) -> None:
         if not self._authorized(message):
-            await message.answer("Unauthorized.")
+            await message.answer("Unauthorized. Use the private owner chat.")
             return
+        confirm = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="🚨 CONFIRM FLATTEN", callback_data="panic:confirm"),
+            InlineKeyboardButton(text="Cancel", callback_data="panic:cancel"),
+        ]])
         await message.answer(
-            "PANIC received. 9N8 is cancelling outstanding orders and attempting to close known positions."
+            "PANIC SELL ALL confirmation. 9N8 will pause entries, cancel known open orders "
+            "and attempt to close tracked positions. Provider-side verification is still required.",
+            reply_markup=confirm,
         )
-        try:
-            await self.engine.panic()
-        except Exception:
-            log.exception("Emergency flatten did not complete.")
-            await message.answer(
-                "WARNING: flattening was incomplete. Trading remains paused. "
-                "Check each exchange/broker/wallet manually now; do not assume positions are closed."
-            )
 
     async def resume(self, message: Message) -> None:
         if not self._authorized(message):
@@ -173,7 +171,7 @@ class TelegramController:
         if (
             not user
             or user.id not in self.allowed_user_ids
-            or message is None
+            or not isinstance(message, Message)
             or not getattr(message, "chat", None)
             or message.chat.type != "private"
         ):
