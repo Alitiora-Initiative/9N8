@@ -60,12 +60,19 @@ Important exchange-key distinction: `/disconnect` removes the API credential fro
 
 ## Actual feature limits
 
+Available but deliberately constrained in the deployed Supabase candidate:
+- Jupiter Swap V2 can create a live route/quote and an unsigned wallet-bound transaction preview in the private Mini App. The preview is not an order or a fill; it does not request a signature or broadcast a transaction.
+- Manual Jupiter signed-transaction execution remains blocked by the database certification gate. At the time of audit the connector status is testing, live_manual_wallet_execution_enabled=false, and delegated_automation_enabled=false.
+- Jupiter Trigger DCA/delegated automation remains unavailable. Its deposit flow transfers assets from the original wallet into a Jupiter/Privy-managed vault, so it remains disabled until separate custody, deposit, order, cancellation and withdrawal certification is complete.
+
 Not enabled in the deployed Supabase candidate:
-- live order placement, order cancellation, autonomous trading or withdrawals/transfers;
-- wallet signing, swaps, token approvals, bridge transactions, or background wallet execution;
-- stocks, Forex, commodities, perpetual futures, margin or derivatives inside the scheduled paper worker;
-- Solana/EVM DEX entry execution;
+- Binance/OKX order placement, order cancellation, autonomous exchange trading, withdrawals or transfers;
+- wallet signing for swaps, token approvals, bridge transactions, background wallet execution or automated wallet transactions;
+- stocks, Forex, commodities, perpetual futures, margin or derivatives inside the scheduled crypto paper worker;
+- Solana/EVM DEX execution without the explicit Jupiter certification gate;
 - automated group-news feeds and automatic anti-spam moderation.
+
+The Jupiter quote helper uses the keyless /swap/v2/order route when no Jupiter API key is configured; this is rate-limited by Jupiter. Trigger automation still requires JUPITER_API_KEY.
 
 The separate `multi-asset-python` feature branch contains a Python paper engine, OANDA practice connector and Alpaca U.S. stock/ETF market-data adapter. That code is not the deployed Supabase paper worker and must not be described as active in the hosted Telegram bot. The Alpaca adapter is data-only; it does not read brokerage balances or send stock orders.
 
