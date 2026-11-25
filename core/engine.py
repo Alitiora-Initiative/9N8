@@ -118,7 +118,9 @@ class TradingEngine:
             await c.connect()
             self.connectors["oanda"] = c
             for symbol in o.get("instruments", []):
-                mt = MarketType.COMMODITY if symbol.startswith(("XAU", "XAG")) else MarketType.FOREX
+                mt = MarketType.COMMODITY if symbol.startswith(
+                    ("XAU", "XAG", "US30", "NAS", "SPX", "UK100", "DE", "JP225")
+                ) else MarketType.FOREX
                 self.specs.append({
                     "connector": "oanda", "venue": "oanda", "symbol": symbol,
                     "market_type": mt,
@@ -296,9 +298,7 @@ class TradingEngine:
             connector.contract_multiplier(intent.symbol)
             if hasattr(connector, "contract_multiplier") else 1.0
         )
-        spread_pips = self._forex_spread_pips(snapshot) if intent.market_type in {
-            MarketType.FOREX, MarketType.COMMODITY
-        } else None
+        spread_pips = self._forex_spread_pips(snapshot) if intent.market_type is MarketType.FOREX else None
         old_entry = float(intent.entry_price)
         planned_stop_distance = abs(old_entry - float(intent.stop_loss))
         planned_reward_distance = abs(float(intent.take_profit) - old_entry)
