@@ -142,6 +142,29 @@ class TradeStore:
         cur = await self._db().execute("SELECT * FROM trades WHERE entry_timestamp>=? ORDER BY id", (iso_timestamp,))
         return [dict(r) for r in await cur.fetchall()]
 
+    async def query_trades(self, limit: int = 100, symbol: str | None = None) -> list[dict[str, Any]]:
+        limit = min(max(int(limit), 1), 500)
+        if symbol:
+            cur = await self._db().execute(
+                """SELECT * FROM trades WHERE symbol=?
+                   ORDER BY COALESCE(exit_timestamp, entry_timestamp) DESC LIMIT ?""",
+                (symbol, limit),
+            )
+        else:
+            cur = await self._db().execute(
+                """SELECT * FROM trades
+                   ORDER BY COALESCE(exit_timestamp, entry_timestamp) DESC LIMIT ?""",
+                (limit,),
+            )
+        return [dict(row) for row in await cur.fetchall()]
+
+    async def query_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        limit = min(max(int(limit), 1), 500)
+        cur = await self._db().execute(
+            "SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
     async def closed_trades_between(self, start_iso: str, end_iso: str) -> list[dict[str, Any]]:
         cur = await self._db().execute(
             """SELECT * FROM trades
