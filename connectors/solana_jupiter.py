@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
@@ -15,6 +16,7 @@ from solders.pubkey import Pubkey
 from solders.transaction import VersionedTransaction
 
 from connectors.base import ExecutionConnector
+from connectors.retry import RetryableReadError, retry_read
 from models import AccountState, Candle, ConnectorUnavailable, MarketSnapshot, MarketType, OpenPosition, RiskRejected, Side, TradeIntent, TradeReceipt
 from security.dex_gate import DexSecurityGate
 
@@ -78,16 +80,20 @@ class SolanaJupiterConnector(ExecutionConnector):
             self.http = None
         await self.security.close()
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def _get(self, url: str, params: dict | None = None) -> dict:
         if not self.http:
             raise ConnectorUnavailable("Solana connector not connected.")
         headers = {"x-api-key": self.api_key} if self.api_key else {}
         async with self.http.get(url, params=params, headers=headers) as r:
             body = await r.json(content_type=None)
+            if r.status in {408, 425, 429, 500, 502, 503, 504}:
+                raise RetryableReadError(f"Jupiter/public data transient HTTP {r.status}.")
             if r.status >= 400:
                 raise ConnectorUnavailable(f"Jupiter/public token data returned HTTP {r.status}.")
             return body
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def _rpc(self, method: str, params: list) -> dict:
         if not self.http:
             raise ConnectorUnavailable("Solana connector not connected.")
@@ -95,10 +101,13 @@ class SolanaJupiterConnector(ExecutionConnector):
             "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
         }) as r:
             body = await r.json(content_type=None)
+            if r.status in {408, 425, 429, 500, 502, 503, 504}:
+                raise RetryableReadError(f"Solana RPC transient HTTP {r.status}.")
             if r.status >= 400 or "error" in body:
                 raise ConnectorUnavailable(f"Solana RPC {method} failed.")
             return body["result"]
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_snapshot(self, symbol: str) -> MarketSnapshot:
         data = await self._get("https://api.jup.ag/price/v3", {"ids": symbol})
         record = data.get("data", {}).get(symbol) or data.get(symbol)
@@ -109,6 +118,7 @@ class SolanaJupiterConnector(ExecutionConnector):
         # with a firm Jupiter order quote before signing.
         return MarketSnapshot(self.venue, symbol, MarketType.SOLANA_DEX, price, price, price)
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         if not self.http:
             raise ConnectorUnavailable("Solana connector not connected.")
@@ -137,6 +147,7 @@ class SolanaJupiterConnector(ExecutionConnector):
             raise ConnectorUnavailable("Birdeye returned no candles.")
         return candles
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def get_balance(self) -> AccountState:
         if not self.rpc or not self.keypair:
             raise ConnectorUnavailable("Solana burner wallet is not configured.")
@@ -150,6 +161,7 @@ class SolanaJupiterConnector(ExecutionConnector):
             usdc += float(info["tokenAmount"]["uiAmount"] or 0)
         return AccountState(self.venue, usdc, usdc, usdc, datetime.now(timezone.utc))
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def get_open_positions(self) -> list[OpenPosition]:
         # On-chain token balances do not include a dependable cost basis. The engine
         # reconciles positions from confirmed transaction deltas and its SQLite ledger.
@@ -216,7 +228,10 @@ class SolanaJupiterConnector(ExecutionConnector):
             "requestId": request_id,
         }
         headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
-        async with self.http.post(self.base_url + "/execute", json=payload, headers=headers) as r:
+        async with self.http.post(
+            self.base_url + "/execute", json=payload, headers=headers,
+            timeout=aiohttp.ClientTimeout(total=5, connect=3),
+        ) as r:
             result = await r.json(content_type=None)
             if r.status >= 400 or str(result.get("status", "")).lower() not in {"success", "completed"}:
                 raise ConnectorUnavailable("Jupiter execution was not confirmed successful.")
