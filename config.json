@@ -16,7 +16,8 @@
     "reconcile_seconds": 10,
     "allow_perpetuals": false,
     "allow_dex_live": false,
-    "allow_oanda_live": false
+    "allow_oanda_live": false,
+    "live_execution_certified": false
   },
   "markets": {
     "crypto_spot": {
