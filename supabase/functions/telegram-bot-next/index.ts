@@ -748,6 +748,350 @@ async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
     liveOrdersEnabled: false,
   };
 }
+
+async function verifiedSolanaWallet(userId: string, walletConnectionId: string, address: string) {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address) || !walletConnectionId) {
+    throw new Error("verified_solana_wallet_required");
+  }
+  const rows = await db(
+    "n8_wallet_connections?select=id,user_id,provider,chain_namespace,chain_id,network,public_address,status,verified_at,connection_type&id=eq." +
+      encodeURIComponent(walletConnectionId) + "&user_id=eq." + encodeURIComponent(userId) +
+      "&chain_namespace=eq.solana&chain_id=eq.mainnet-beta&network=eq.Solana%20Mainnet&status=eq.verified&limit=1"
+  );
+  const wallet = Array.isArray(rows) ? rows[0] : null;
+  if (!wallet || wallet.public_address !== address || !wallet.verified_at ||
+      !["phantom", "trust_wallet", "walletconnect"].includes(String(wallet.provider)) ||
+      !["walletconnect_session", "injected_session"].includes(String(wallet.connection_type))) {
+    throw new Error("verified_solana_wallet_required");
+  }
+  return wallet;
+}
+
+async function solanaMintDecimals(mint: string): Promise<number> {
+  let publicKey: PublicKey;
+  try { publicKey = new PublicKey(mint); } catch { throw new Error("solana_mint_invalid"); }
+  const canonical = publicKey.toBase58();
+  if (canonical !== mint) throw new Error("solana_mint_invalid");
+  if (canonical === SOL_MINT) return 9;
+  const rpc = await fetch(SOLANA_RPC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "getTokenSupply",
+      params: [canonical, { commitment: "confirmed" }],
+    }),
+    cache: "no-store",
+    credentials: "omit",
+  });
+  const payload = await rpc.json().catch(() => ({}));
+  const decimals = Number(payload?.result?.value?.decimals);
+  const supply = BigInt(String(payload?.result?.value?.amount ?? "0"));
+  if (!rpc.ok || payload?.error || !Number.isInteger(decimals) ||
+      decimals < 0 || decimals > 18 || supply <= 0n) {
+    throw new Error("solana_mint_not_found_or_not_a_token");
+  }
+  return decimals;
+}
+
+async function rpcSignatureStatus(signature: string): Promise<any> {
+  const rpc = await fetch(SOLANA_RPC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "getSignatureStatuses",
+      params: [[signature], { searchTransactionHistory: true }],
+    }),
+    cache: "no-store",
+    credentials: "omit",
+  });
+  const payload = await rpc.json().catch(() => ({}));
+  if (!rpc.ok || payload?.error) throw new Error("solana_status_unavailable");
+  return payload?.result?.value?.[0] ?? null;
+}
+
+async function createJupiterSwapOrder(user: any, row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const side = String(body?.side ?? "").toLowerCase();
+  if (!["buy", "sell"].includes(side)) throw new Error("swap_side_invalid");
+  const tokenMint = clean(body?.tokenMint, 64);
+  if (!tokenMint || tokenMint === SOL_MINT) throw new Error("swap_token_mint_invalid");
+
+  const tokenDecimals = await solanaMintDecimals(tokenMint);
+  const inputMint = side === "buy" ? SOL_MINT : tokenMint;
+  const outputMint = side === "buy" ? tokenMint : SOL_MINT;
+  const inputDecimals = side === "buy" ? 9 : tokenDecimals;
+  const outputDecimals = side === "buy" ? tokenDecimals : 9;
+  const amountRaw = decimalToRaw(String(body?.amount ?? ""), inputDecimals);
+  const query = new URLSearchParams({
+    inputMint,
+    outputMint,
+    amount: amountRaw.toString(),
+    taker: wallet.public_address,
+  });
+  const order = await jupiterApi<any>("/swap/v2/order?" + query.toString(), {
+    apiKey: JUPITER_API_KEY || undefined,
+  });
+  assertSolanaOrder(order, wallet.public_address);
+  const impact = priceImpactFraction(order.priceImpactPct ?? 0);
+  let tx: VersionedTransaction;
+  try {
+    tx = VersionedTransaction.deserialize(base64ToBytes(String(order.transaction)));
+  } catch {
+    throw new Error("jupiter_transaction_decode_failed");
+  }
+  if (tx.message.version !== 0) throw new Error("jupiter_transaction_version_unsupported");
+  const payer = tx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "";
+  if (payer !== wallet.public_address) throw new Error("jupiter_transaction_fee_payer_mismatch");
+
+  // Keep a conservative per-order and rolling 24-hour SOL-equivalent cap until
+  // the connector's certification process has completed.
+  const solEquivalent = side === "buy" ? amountRaw : BigInt(String(order.outAmount));
+  if (solEquivalent > MAX_SWAP_SOL_LAMPORTS) throw new Error("swap_per_order_cap_exceeded");
+  const history = await db(
+    "n8_jupiter_swaps?select=sol_lamports_equivalent,status,expires_at,created_at&user_id=eq." +
+      encodeURIComponent(row.id) + "&created_at=gte." +
+      encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) +
+      "&order=created_at.desc&limit=25"
+  );
+  const prior = Array.isArray(history) ? history : [];
+  if (prior.some((item: any) =>
+    ["executing", "unknown"].includes(String(item.status)) ||
+    (item.status === "quote_ready" && new Date(item.expires_at).getTime() > Date.now())
+  )) throw new Error("swap_previous_request_unresolved");
+  const dailyTotal = prior
+    .filter((item: any) => ["success", "executing", "unknown"].includes(String(item.status)))
+    .reduce((sum: bigint, item: any) => sum + BigInt(String(item.sol_lamports_equivalent ?? "0")), 0n);
+  if (dailyTotal + solEquivalent > DAILY_SWAP_SOL_LAMPORTS) throw new Error("swap_daily_cap_exceeded");
+
+  const messageHash = await sha256HexBytes(tx.message.serialize());
+  const expiresAt = new Date(Date.now() + SWAP_QUOTE_TTL_SECONDS * 1000).toISOString();
+  const stored = await db("n8_jupiter_swaps", "POST", {
+    user_id: row.id,
+    wallet_connection_id: wallet.id,
+    request_id: String(order.requestId),
+    input_mint: inputMint,
+    output_mint: outputMint,
+    input_amount_raw: String(order.inAmount),
+    output_amount_raw: String(order.outAmount),
+    minimum_output_raw: String(order.otherAmountThreshold),
+    input_decimals: inputDecimals,
+    output_decimals: outputDecimals,
+    router: String(order.router ?? "unknown"),
+    price_impact_pct: impact,
+    sol_lamports_equivalent: solEquivalent.toString(),
+    transaction_message_sha256: messageHash,
+    status: "quote_ready",
+    expires_at: expiresAt,
+    quote_metadata: {
+      mode: order.mode ?? "ultra",
+      feeBps: order.feeBps ?? null,
+      feeMint: order.feeMint ?? null,
+      lastValidBlockHeight: order.lastValidBlockHeight ?? null,
+      expireAt: order.expireAt ?? null,
+    },
+  }, "return=representation");
+  const saved = Array.isArray(stored) ? stored[0] : null;
+  if (!saved?.id) throw new Error("jupiter_quote_storage_failed");
+  await audit(row.id, null, "jupiter_swap_quote_created", "ok", {
+    side, order_id: saved.id, request_id: order.requestId, router: order.router, price_impact_pct: impact,
+  });
+  return response({
+    ok: true,
+    orderId: saved.id,
+    requestId: order.requestId,
+    side,
+    tokenMint,
+    inputMint,
+    outputMint,
+    inputAmount: rawToDecimal(String(order.inAmount), inputDecimals),
+    outputAmount: rawToDecimal(String(order.outAmount), outputDecimals),
+    minimumOutput: rawToDecimal(String(order.otherAmountThreshold), outputDecimals),
+    inputAmountRaw: String(order.inAmount),
+    outputAmountRaw: String(order.outAmount),
+    outputDecimals,
+    router: order.router,
+    priceImpactPct: impact,
+    feeBps: order.feeBps ?? null,
+    expiresAt,
+    transaction: order.transaction,
+    transactionVersion: 0,
+    lastValidBlockHeight: order.lastValidBlockHeight ?? null,
+    liveExecutionCertification: "locked_until_passed",
+  });
+}
+
+async function executeJupiterSwap(user: any, row: any, body: any): Promise<Response> {
+  const orderId = clean(body?.orderId, 64);
+  const requestId = clean(body?.requestId, 128);
+  const signedTransaction = clean(body?.signedTransaction, 120000);
+  if (!orderId || !requestId || !signedTransaction) throw new Error("swap_signed_payload_missing");
+
+  const rows = await db(
+    "n8_jupiter_swaps?select=*&id=eq." + encodeURIComponent(orderId) +
+      "&request_id=eq." + encodeURIComponent(requestId) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&limit=1"
+  );
+  const saved = Array.isArray(rows) ? rows[0] : null;
+  if (!saved) throw new Error("swap_quote_not_found");
+  if (saved.status !== "quote_ready") throw new Error("swap_request_already_claimed_or_final");
+  if (new Date(saved.expires_at).getTime() <= Date.now()) {
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.quote_ready",
+      "PATCH", { status: "expired", updated_at: new Date().toISOString() }, "return=minimal"
+    );
+    throw new Error("swap_quote_expired");
+  }
+
+  const walletRows = await db(
+    "n8_wallet_connections?select=id,public_address,status,chain_namespace,chain_id,network,verified_at&id=eq." +
+      encodeURIComponent(String(saved.wallet_connection_id)) + "&user_id=eq." +
+      encodeURIComponent(row.id) + "&status=eq.verified&limit=1"
+  );
+  const wallet = Array.isArray(walletRows) ? walletRows[0] : null;
+  if (!wallet || !wallet.verified_at || wallet.chain_namespace !== "solana" ||
+      wallet.chain_id !== "mainnet-beta") throw new Error("verified_solana_wallet_required");
+
+  let tx: VersionedTransaction;
+  try { tx = VersionedTransaction.deserialize(base64ToBytes(signedTransaction)); }
+  catch { throw new Error("swap_signed_transaction_invalid"); }
+  if (tx.message.version !== 0) throw new Error("jupiter_transaction_version_unsupported");
+  const payer = tx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "";
+  if (payer !== wallet.public_address) throw new Error("swap_signed_transaction_owner_mismatch");
+  const messageBytes = tx.message.serialize();
+  const messageHash = await sha256HexBytes(messageBytes);
+  if (messageHash !== saved.transaction_message_sha256) throw new Error("swap_signed_transaction_changed");
+  const signature = tx.signatures?.[0];
+  if (!signature || signature.length !== 64 || signature.every((v: number) => v === 0)) {
+    throw new Error("wallet_transaction_signature_missing");
+  }
+  const publicKeyData = new Uint8Array(new PublicKey(wallet.public_address).toBytes()).buffer;
+  const signatureData = new Uint8Array(signature).buffer;
+  const messageData = new Uint8Array(messageBytes).buffer;
+  const publicKey = await crypto.subtle.importKey("raw", publicKeyData, { name: "Ed25519" }, false, ["verify"]);
+  if (!await crypto.subtle.verify("Ed25519", publicKey, signatureData, messageData)) {
+    throw new Error("wallet_transaction_signature_invalid");
+  }
+
+  const encodedSignature = base58Encode(signature);
+  const now = new Date().toISOString();
+  const claimed = await db(
+    "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) +
+      "&user_id=eq." + encodeURIComponent(row.id) +
+      "&request_id=eq." + encodeURIComponent(requestId) +
+      "&status=eq.quote_ready&expires_at=gt." + encodeURIComponent(now),
+    "PATCH",
+    { status: "executing", owner_signed_at: now, signature: encodedSignature, updated_at: now },
+    "return=representation"
+  );
+  if (!Array.isArray(claimed) || claimed.length !== 1) {
+    throw new Error("swap_request_already_claimed_or_final");
+  }
+
+  // Certification is deliberately checked after the owner signature is verified,
+  // and before any transaction is handed to Jupiter for submission.
+  const certificationRows = await db(
+    "n8_jupiter_connector_certification?select=status,live_manual_wallet_execution_enabled&provider=eq.jupiter_swap_v2&limit=1"
+  );
+  const certification = Array.isArray(certificationRows) ? certificationRows[0] : null;
+  if (!certification || certification.status !== "passed" ||
+      certification.live_manual_wallet_execution_enabled !== true) {
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) + "&user_id=eq." + encodeURIComponent(row.id),
+      "PATCH", { status: "failed", result_payload: { error: "jupiter_execution_certification_locked" }, updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    throw new Error("jupiter_execution_certification_locked");
+  }
+
+  try {
+    const execution = await jupiterApi<any>("/swap/v2/execute", {
+      method: "POST",
+      apiKey: JUPITER_API_KEY || undefined,
+      body: {
+        signedTransaction,
+        requestId,
+        ...(saved.quote_metadata?.lastValidBlockHeight
+          ? { lastValidBlockHeight: Number(saved.quote_metadata.lastValidBlockHeight) }
+          : {}),
+      },
+    });
+    const state = execution.status === "Success" && Number(execution.code ?? 0) === 0
+      ? "success"
+      : execution.status === "Failed" ? "failed" : "unknown";
+    const actualSignature = String(execution.signature || encodedSignature);
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) + "&user_id=eq." + encodeURIComponent(row.id),
+      "PATCH",
+      { status: state, signature: actualSignature, result_payload: execution, updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_swap_execute_" + state,
+      state === "success" ? "ok" : "warning",
+      { order_id: orderId, signature: actualSignature, router: saved.router }
+    );
+    return response({
+      ok: true, status: state, signature: actualSignature, result: execution,
+      explorerUrl: "https://solscan.io/tx/" + actualSignature,
+    });
+  } catch {
+    // The transaction has been signed and atomically claimed: never blindly resubmit it.
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) + "&user_id=eq." + encodeURIComponent(row.id),
+      "PATCH",
+      { status: "unknown", signature: encodedSignature, result_payload: { error: "execute_outcome_unknown" }, updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_swap_execute_unknown", "warning", { order_id: orderId, signature: encodedSignature });
+    return response({
+      ok: true, status: "unknown", signature: encodedSignature,
+      explorerUrl: "https://solscan.io/tx/" + encodedSignature,
+      message: "The result is unknown. 9N8 will check Solana for this signature; do not retry this swap.",
+    }, 202);
+  }
+}
+
+async function getJupiterSwapStatus(user: any, row: any, body: any): Promise<Response> {
+  const orderId = clean(body?.orderId, 64);
+  const rows = await db(
+    "n8_jupiter_swaps?select=id,status,signature,input_mint,output_mint,input_amount_raw,output_amount_raw,input_decimals,output_decimals,router,price_impact_pct,expires_at,created_at,result_payload&user_id=eq." +
+      encodeURIComponent(row.id) + "&id=eq." + encodeURIComponent(orderId) + "&limit=1"
+  );
+  const order = Array.isArray(rows) ? rows[0] : null;
+  if (!order) throw new Error("swap_quote_not_found");
+  let status = String(order.status);
+  if (["executing", "unknown"].includes(status) && order.signature) {
+    try {
+      const observed = await rpcSignatureStatus(String(order.signature));
+      if (observed?.err) status = "failed";
+      else if (observed?.confirmationStatus === "confirmed" ||
+          observed?.confirmationStatus === "finalized") status = "success";
+      if (status !== order.status) {
+        await db(
+          "n8_jupiter_swaps?id=eq." + encodeURIComponent(order.id) +
+            "&user_id=eq." + encodeURIComponent(row.id),
+          "PATCH", { status, updated_at: new Date().toISOString() }, "return=minimal"
+        );
+      }
+    } catch {
+      // Preserve the unknown state: a failed status lookup is not proof that the tx failed.
+    }
+  }
+  if (status === "quote_ready" && new Date(order.expires_at).getTime() <= Date.now()) {
+    status = "expired";
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(order.id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.quote_ready",
+      "PATCH", { status, updated_at: new Date().toISOString() }, "return=minimal"
+    );
+  }
+  return response({
+    ok: true, order: { ...order, status },
+    explorerUrl: order.signature ? "https://solscan.io/tx/" + order.signature : null,
+  });
+}
+
 async function handleMiniApp(body: any): Promise<Response> {
   try {
     // Read-only account views, assessments and emergency pause remain usable while
