@@ -44,3 +44,42 @@ async def test_paper_broker_refuses_oversized_close():
     await broker.execute(intent(Side.BUY),1,snapshot(),"b1")
     with pytest.raises(ValueError):
         await broker.execute(intent(Side.SELL),2,snapshot(),"s2")
+
+
+@pytest.mark.asyncio
+async def test_partial_close_allocates_entry_fee_proportionally():
+    broker = PaperBroker(1000, fee_rate=0.001, slippage_bps=0)
+    entry = await broker.execute(intent(Side.BUY), 1, snapshot(), "entry-fee")
+    assert entry.raw["entry_fee"] == pytest.approx(0.1)
+
+    up = MarketSnapshot("paper", "BTC/USDT", MarketType.CRYPTO_SPOT, 110, 110.1, 110.05)
+    partial = await broker.execute(intent(Side.SELL), 0.5, up, "partial-fee")
+    assert partial.raw["entry_fee_allocated"] == pytest.approx(0.05)
+    assert partial.raw["remaining_entry_fee"] == pytest.approx(0.05)
+    assert partial.raw["exit_fee"] == pytest.approx(0.055)
+    assert partial.raw["net_pnl"] == pytest.approx(4.895)
+    assert broker.positions["paper:BTC/USDT"].fees_paid == pytest.approx(0.05)
+
+    down = MarketSnapshot("paper", "BTC/USDT", MarketType.CRYPTO_SPOT, 105, 105.1, 105.05)
+    final = await broker.execute(intent(Side.SELL), 0.5, down, "final-fee")
+    assert final.raw["entry_fee_allocated"] == pytest.approx(0.05)
+    assert final.raw["remaining_entry_fee"] == 0
+    assert final.raw["net_pnl"] == pytest.approx(2.3975)
+    assert broker.positions == {}
+
+
+@pytest.mark.asyncio
+async def test_paper_broker_rejects_non_finite_and_invalid_quotes():
+    broker = PaperBroker(1000)
+    bad = MarketSnapshot("paper", "BTC/USDT", MarketType.CRYPTO_SPOT, 100, 99, 100)
+    with pytest.raises(ValueError, match="uncrossed"):
+        await broker.execute(intent(Side.BUY), 1, bad, "bad-quote")
+    with pytest.raises(ValueError, match="finite"):
+        await broker.execute(intent(Side.BUY), float("nan"), snapshot(), "nan-quantity")
+
+
+def test_paper_configuration_rejects_unbounded_fees_and_slippage():
+    with pytest.raises(ValueError):
+        PaperBroker(1000, fee_rate=0.1)
+    with pytest.raises(ValueError):
+        PaperBroker(1000, slippage_bps=1000)
