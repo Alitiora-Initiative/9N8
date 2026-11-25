@@ -1215,6 +1215,20 @@ async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response
   if (inputMint === outputMint) throw new Error("jupiter_trigger_mint_pair_invalid");
   const inputAmount = String(body?.amount ?? "");
   if (!/^[1-9]\d*$/.test(inputAmount)) throw new Error("jupiter_trigger_amount_invalid");
+  if (orderType === "dca") {
+    const requestedLamports = BigInt(inputAmount);
+    if (requestedLamports > 500000000n) throw new Error("jupiter_dca_total_cap_exceeded");
+    const recent = await db(
+      "n8_jupiter_automation_orders?select=input_amount_raw,status,created_at&user_id=eq." +
+        encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
+        "&created_at=gte." + encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) +
+        "&order=created_at.desc&limit=50"
+    );
+    const pendingSpend = (Array.isArray(recent) ? recent : [])
+      .filter((entry: any) => ["deposit_pending", "creating", "unknown", "active", "cancel_pending", "cancel_confirming", "cancel_unknown"].includes(String(entry.status)))
+      .reduce((sum: bigint, entry: any) => sum + BigInt(String(entry.input_amount_raw ?? "0")), 0n);
+    if (pendingSpend + requestedLamports > 500000000n) throw new Error("jupiter_dca_daily_cap_exceeded");
+  }
   const orderCount = Number(body?.orderCount ?? 0);
   const intervalSeconds = Number(body?.intervalSeconds ?? 0);
   let usdPerDcaRound: number | null = null;
@@ -1688,6 +1702,17 @@ async function handleMiniApp(body: any): Promise<Response> {
       wallet_address_or_network_invalid: "The public address format does not match the selected network.",
       credential_storage_failed: "Credentials were checked but could not be saved. No connection was created.",
       user_registration_failed: "Could not register your Telegram account. Try again.",
+      jupiter_execution_certification_locked: "Live Jupiter swaps are still locked while execution certification tests are pending. You can request quotes, but no transaction will be submitted.",
+      jupiter_delegated_execution_certification_locked: "Jupiter DCA automation is locked until vault deposit, delegated execution, cancellation and withdrawal checks have passed.",
+      jupiter_api_key_not_configured: "Jupiter Trigger automation needs JUPITER_API_KEY in Supabase Edge Function Secrets. Manual Swap V2 quotes can work without it.",
+      jupiter_trigger_auth_required: "Reconnect your verified Solana wallet to Jupiter automation.",
+      jupiter_dca_round_below_minimum_usd: "Each Jupiter DCA round must be at least $10. Increase total SOL or reduce the number of rounds.",
+      jupiter_dca_total_cap_exceeded: "9N8 limits each DCA deposit to 0.50 SOL.",
+      jupiter_dca_daily_cap_exceeded: "This wallet would exceed the 0.50 SOL rolling 24-hour DCA deposit cap.",
+      swap_per_order_cap_exceeded: "This swap exceeds the 0.05 SOL per-order limit.",
+      swap_daily_cap_exceeded: "This swap would exceed the 0.10 SOL rolling 24-hour limit.",
+      swap_previous_request_unresolved: "A previous Jupiter quote or transaction is unresolved. Refresh its status before creating another swap.",
+      verified_solana_wallet_required: "Connect and verify your Solana-mainnet wallet before using the Jupiter terminal."
     };
     return response({ ok: false, message: messages[code] ?? "Could not complete the request. Check the provider and try again." }, 400);
   }
