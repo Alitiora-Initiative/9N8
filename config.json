@@ -26,7 +26,8 @@
     "approval_max_price_drift_pct": 0.5,
     "minimum_24h_quote_volume_usd": 100000,
     "paper_max_hold_minutes": 240,
-    "paper_min_stagnation_profit_pct": 1
+    "paper_min_stagnation_profit_pct": 1,
+    "max_stock_quote_age_seconds": 60
   },
   "markets": {
     "crypto_spot": {
@@ -92,6 +93,21 @@
         "entry": "M5",
         "trend": "H1"
       }
+    },
+    "stocks": {
+      "enabled": false,
+      "provider": "alpaca",
+      "data_feed": "iex",
+      "symbols": [
+        "AAPL",
+        "MSFT",
+        "SPY"
+      ],
+      "timeframes": {
+        "entry": "5m",
+        "trend": "1h"
+      },
+      "short_selling_enabled": false
     }
   },
   "strategy": {
