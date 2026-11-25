@@ -1209,7 +1209,7 @@ async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response
   }
   const accessToken = clean(body?.accessToken, 4096);
   const orderType = String(body?.orderType ?? "");
-  if (!["dca", "price"].includes(orderType)) throw new Error("jupiter_trigger_order_type_invalid");
+  if (orderType !== "dca") throw new Error("jupiter_trigger_order_type_unsupported");
   const inputMint = new PublicKey(clean(body?.inputMint, 64)).toBase58();
   const outputMint = new PublicKey(clean(body?.outputMint, 64)).toBase58();
   if (inputMint === outputMint) throw new Error("jupiter_trigger_mint_pair_invalid");
@@ -1221,7 +1221,7 @@ async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response
     const recent = await db(
       "n8_jupiter_automation_orders?select=input_amount_raw,status,created_at&user_id=eq." +
         encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
-        "&created_at=gte." + encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) +
+        "&order_family=eq.dca&created_at=gte." + encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) +
         "&order=created_at.desc&limit=50"
     );
     const pendingSpend = (Array.isArray(recent) ? recent : [])
