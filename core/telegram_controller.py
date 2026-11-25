@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +20,18 @@ class TelegramController:
             int(value.strip()) for value in raw_ids.split(",")
             if value.strip().isdigit()
         }
-        self.bot = Bot(self.token) if self.token else None
+        self._closed = False
+        self.configuration_error = ""
+        self.bot = None
+        if self.token:
+            try:
+                self.bot = Bot(self.token)
+            except Exception as exc:
+                self.configuration_error = type(exc).__name__
+                log.error(
+                    "Telegram disabled because TELEGRAM_BOT_TOKEN failed validation (%s).",
+                    self.configuration_error,
+                )
         self.dispatcher = Dispatcher()
         self.dispatcher.message.register(self.menu, Command("start", "menu", "help"))
         self.dispatcher.message.register(self.status, Command("status"))
@@ -29,7 +41,9 @@ class TelegramController:
         self.dispatcher.message.register(self.panic, Command("panic"))
         self.dispatcher.message.register(self.resume, Command("resume"))
         self.dispatcher.message.register(self.pending, Command("pending"))
+        self.dispatcher.message.register(self.paper, Command("paper"))
         self.dispatcher.callback_query.register(self.approval_callback)
+        self.dispatcher.errors.register(self.on_error)
 
     @property
     def enabled(self) -> bool:
@@ -47,11 +61,11 @@ class TelegramController:
         return InlineKeyboardMarkup(inline_keyboard=[
             [
                 InlineKeyboardButton(text="📊 Status", callback_data="dash:status"),
-                InlineKeyboardButton(text="📍 Positions", callback_data="dash:positions"),
+                InlineKeyboardButton(text="💵 Paper account", callback_data="dash:paper"),
             ],
             [
+                InlineKeyboardButton(text="📍 Positions", callback_data="dash:positions"),
                 InlineKeyboardButton(text="🧾 Pending approvals", callback_data="dash:pending"),
-                InlineKeyboardButton(text="📜 Trade history", callback_data="dash:history"),
             ],
             [
                 InlineKeyboardButton(text="⏸ Pause entries", callback_data="dash:pause"),
@@ -66,10 +80,12 @@ class TelegramController:
             return
         await message.answer(
             "9N8 · PRIVATE TRADING CONTROL\n"
-            "Every new trade needs a separate approval. Risk-managed exits remain active.\n"
+            "Every new entry requires an individual approval. Paper mode uses live market data and simulated fills.\n"
             "Select a control below.",
             reply_markup=self._dashboard_keyboard(),
         )
+        await self.engine.store.set_control("telegram_chat_ready:" + str(message.from_user.id), "true")
+        await self._send_pending_to_user(message.from_user.id)
 
     async def positions(self, message: Message) -> None:
         if not self._authorized(message):
@@ -148,6 +164,90 @@ class TelegramController:
         except Exception as exc:
             await message.answer("Resume rejected: " + str(exc)[:500])
 
+    async def _approval_text(self, row: dict) -> str:
+        payload = row.get("payload") or {}
+        intent = payload.get("intent") or {}
+        size = payload.get("size") or {}
+        return (
+            "9N8 TRADE APPROVAL REQUIRED\n"
+            f"{str(intent.get('side', 'unknown')).upper()} {intent.get('symbol', 'unknown')}\n"
+            f"Venue: {intent.get('venue', 'unknown')} · mode: {self.engine.mode.upper()}\n"
+            f"Reference entry: {intent.get('entry_price', 'n/a')}\n"
+            f"Estimated quantity: {size.get('quantity', 'n/a')}\n"
+            f"Notional: {size.get('notional_usd', 'n/a')} USD · stop risk: {size.get('risk_usd', 'n/a')} USD\n"
+            f"Stop: {intent.get('stop_loss', 'n/a')} · Target: {intent.get('take_profit', 'n/a')}\n"
+            f"Reason: {str(intent.get('reason', ''))[:500]}\n"
+            f"Approval ID: {row.get('approval_id')}\n"
+            f"Expires: {row.get('expires_at')}\n"
+            "Approval rechecks the latest quote and all risk limits. No order exists until approved."
+        )
+
+    def _approval_keyboard(self, approval_id: str) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ APPROVE TRADE", callback_data="approve:" + approval_id),
+            InlineKeyboardButton(text="❌ DENY", callback_data="deny:" + approval_id),
+        ]])
+
+    async def _send_message(
+        self, chat_id: int, text: str,
+        reply_markup: InlineKeyboardMarkup | None = None,
+    ) -> bool:
+        if not self.bot:
+            return False
+        for attempt in range(3):
+            try:
+                await self.bot.send_message(
+                    chat_id=chat_id,
+                    text=text[:4000],
+                    reply_markup=reply_markup,
+                )
+                return True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error_name = type(exc).__name__
+                retryable = error_name in {
+                    "TelegramRetryAfter", "TelegramNetworkError",
+                    "TelegramServerError", "TimeoutError",
+                }
+                if error_name == "TelegramForbiddenError":
+                    log.warning(
+                        "Telegram private chat is not available for an authorized user; "
+                        "the proposal remains stored for /pending recovery."
+                    )
+                    return False
+                if error_name == "TelegramUnauthorizedError":
+                    log.critical(
+                        "Telegram rejected the configured bot token. Polling and notifications need token repair."
+                    )
+                    return False
+                if not retryable or attempt >= 2:
+                    log.warning("Telegram send failed (%s).", error_name)
+                    return False
+                retry_after = getattr(exc, "retry_after", 0.0)
+                try:
+                    delay = float(retry_after) if retry_after else 2 ** attempt
+                except (TypeError, ValueError):
+                    delay = 2 ** attempt
+                await asyncio.sleep(min(10.0, max(0.5, delay)))
+        return False
+
+    async def _send_pending_to_user(self, user_id: int) -> int:
+        try:
+            rows = await self.engine.store.pending_approvals(20)
+        except Exception as exc:
+            log.error("Could not read pending approvals for Telegram recovery (%s).", type(exc).__name__)
+            return 0
+        delivered = 0
+        for row in rows:
+            ok = await self._send_message(
+                user_id,
+                await self._approval_text(row),
+                self._approval_keyboard(str(row["approval_id"])),
+            )
+            delivered += int(ok)
+        return delivered
+
     async def pending(self, message: Message) -> None:
         if not self._authorized(message):
             await message.answer("Unauthorized. Use the private owner chat.")
@@ -156,14 +256,39 @@ class TelegramController:
         if not rows:
             await message.answer("There are no pending trade proposals.")
             return
-        lines = []
-        for row in rows:
-            raw = row["payload"]["intent"]
-            lines.append(
-                f"{row['approval_id']} · {raw['side'].upper()} {raw['symbol']} "
-                f"· {raw['venue']} · expires {row['expires_at']}"
+        delivered = await self._send_pending_to_user(message.from_user.id)
+        await message.answer(
+            f"{len(rows)} unexpired trade proposal(s) found. "
+            f"Sent {delivered} approval card(s) to this private chat."
+        )
+
+    async def paper(self, message: Message) -> None:
+        if not self._authorized(message):
+            await message.answer("Unauthorized. Use the private owner chat.")
+            return
+        try:
+            await message.answer(await self.engine.paper_status_text())
+        except Exception as exc:
+            log.error("Paper account summary failed (%s).", type(exc).__name__)
+            await message.answer("Paper account status is temporarily unavailable. Try /status.")
+
+    async def on_error(self, event: ErrorEvent) -> bool:
+        exc = event.exception
+        log.error("Telegram update handler failed (%s).", type(exc).__name__)
+        update = event.update
+        message = getattr(update, "message", None)
+        if isinstance(message, Message) and self._authorized(message):
+            await self._send_message(
+                message.chat.id,
+                "9N8 could not complete that Telegram request. No unconfirmed trade will be replayed. Try /status, /paper or /pending.",
             )
-        await message.answer("PENDING TRADE PROPOSALS\n" + "\n".join(lines))
+        callback = getattr(update, "callback_query", None)
+        if callback and callback.from_user.id in self.allowed_user_ids:
+            try:
+                await callback.answer("The request failed; inspect /status and /pending.", show_alert=True)
+            except Exception:
+                pass
+        return True
 
     async def approval_callback(self, callback: CallbackQuery) -> None:
         user = callback.from_user
@@ -175,14 +300,23 @@ class TelegramController:
             or not getattr(message, "chat", None)
             or message.chat.type != "private"
         ):
-            await callback.answer("Unauthorized. Use the private owner chat.", show_alert=True)
+            try:
+                await callback.answer("Unauthorized. Use the private owner chat.", show_alert=True)
+            except Exception:
+                pass
             return
         data = str(callback.data or "")
         try:
+            try:
+                await callback.answer()
+            except Exception:
+                pass
             if data.startswith("dash:"):
                 action = data.split(":", 1)[1]
                 if action == "status":
                     result = await self.engine.status_text()
+                elif action == "paper":
+                    result = await self.engine.paper_status_text()
                 elif action == "positions":
                     rows = await self.engine.store.positions()
                     result = "OPEN POSITIONS\n" + (
@@ -277,49 +411,84 @@ class TelegramController:
 
     async def send_approval(self, approval_id: str, text: str) -> None:
         if not self.enabled:
-            log.warning("Approval %s queued but Telegram controller is disabled.", approval_id)
+            log.warning(
+                "Approval %s is stored but Telegram delivery is disabled; "
+                "configure the bot token and owner ID, then use /pending.",
+                approval_id,
+            )
             return
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
-                text="✅ APPROVE TRADE",
-                callback_data="approve:" + approval_id,
-            ),
-            InlineKeyboardButton(
-                text="❌ DENY",
-                callback_data="deny:" + approval_id,
-            ),
-        ]])
+        keyboard = self._approval_keyboard(approval_id)
+        delivered = 0
         for user_id in self.allowed_user_ids:
-            try:
-                await self.bot.send_message(
-                    chat_id=user_id, text=text[:4000], reply_markup=keyboard
-                )
-            except Exception as exc:
-                log.warning(
-                    "Could not send approval %s to authorized chat (%s).",
-                    approval_id, type(exc).__name__,
-                )
+            delivered += int(await self._send_message(user_id, text, keyboard))
+        try:
+            await self.engine.store.set_control(
+                "telegram_last_approval_delivery",
+                "delivered" if delivered else "not_delivered",
+            )
+        except Exception:
+            log.warning("Could not store Telegram approval delivery status.")
 
     async def send(self, text: str) -> None:
         if not self.enabled:
             return
         for user_id in self.allowed_user_ids:
-            try:
-                await self.bot.send_message(user_id, text[:4000])
-            except Exception:
-                log.exception("Telegram notification failed for authorized chat.")
+            await self._send_message(user_id, text)
+
 
     async def run(self) -> None:
         if not self.enabled:
             log.warning(
-                "Telegram controller disabled: set TELEGRAM_BOT_TOKEN and "
+                "Telegram controller disabled: set a valid TELEGRAM_BOT_TOKEN and "
                 "TELEGRAM_ALLOWED_USER_IDS to numeric owner IDs."
             )
             return
-        await self.dispatcher.start_polling(self.bot, handle_signals=False)
+        delay = 1.0
+        while not self._closed:
+            try:
+                await self.dispatcher.start_polling(
+                    self.bot,
+                    handle_signals=False,
+                    allowed_updates=["message", "callback_query"],
+                )
+                if self._closed:
+                    return
+                log.warning("Telegram polling returned unexpectedly; restarting.")
+                delay = 1.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error_name = type(exc).__name__
+                if error_name == "TelegramUnauthorizedError":
+                    log.critical("Telegram polling stopped: bot token was rejected.")
+                    try:
+                        await self.engine.store.set_control("telegram_polling_status", "unauthorized")
+                    except Exception:
+                        pass
+                    return
+                log.error(
+                    "Telegram polling disconnected (%s); retrying in %.1fs.",
+                    error_name,
+                    delay,
+                )
+                try:
+                    await self.engine.store.set_control("telegram_polling_status", "reconnecting")
+                except Exception:
+                    pass
+                await asyncio.sleep(delay)
+                delay = min(60.0, delay * 2)
+            else:
+                delay = 1.0
 
     async def close(self) -> None:
+        self._closed = True
         if self.dispatcher and self.dispatcher.is_running:
-            await self.dispatcher.stop_polling()
+            try:
+                await self.dispatcher.stop_polling()
+            except Exception as exc:
+                log.warning("Telegram polling shutdown reported %s.", type(exc).__name__)
         if self.bot:
-            await self.bot.session.close()
+            try:
+                await self.bot.session.close()
+            except Exception as exc:
+                log.warning("Telegram bot session shutdown reported %s.", type(exc).__name__)
