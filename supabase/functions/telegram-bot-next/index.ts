@@ -167,7 +167,7 @@ function mainKeyboard(): Obj {
     [{ text: "▶ Start crypto paper run ($1,000 virtual)", callback_data: "n8:paper_start_crypto" }],
     [{ text: "Paper trading status", callback_data: "n8:paper_status" }],
     [{ text: "Connect exchange / wallet", web_app: { url: MINI_APP_URL } }],
-    [{ text: "Live migration assessment", web_app: { url: MIGRATION_PAGE_URL } }],
+    [{ text: "📚 Services & features", callback_data: "n8:services" }],
     [{ text: "My exchange connections", callback_data: "n8:connections" }],
     [{ text: "Live status / risk", callback_data: "n8:live_status" }],
   ] };
@@ -1104,6 +1104,37 @@ async function startCryptoPaper(userId: string, chatId: number): Promise<{ ok: b
   };
 }
 
+async function setBotProfileAndCommands(): Promise<void> {
+  // Keep Telegram's pre-Start description, profile bio and command menu aligned
+  // with the actual deployed feature set. Metadata failure must never block /start.
+  try {
+    await telegram("setMyDescription", {
+      description: "9N8 is a trading-intelligence workspace for market monitoring, crypto paper trading, EMA/RSI strategy scans, demo exchange connections, WalletConnect wallet linking, approvals and risk controls. Real-money execution and background wallet signing are currently disabled."
+    });
+    await telegram("setMyShortDescription", {
+      short_description: "Market intelligence, crypto paper trading, wallet links and risk controls. Live trading is disabled."
+    });
+    await telegram("setMyCommands", {
+      commands: [
+        { command: "start", description: "Start 9N8 and show services" },
+        { command: "services", description: "List features and limits" },
+        { command: "paper", description: "Show paper account" },
+        { command: "connect", description: "Connect demo exchange or wallet" },
+        { command: "connections", description: "View exchange connections" },
+        { command: "wallets", description: "View linked wallets" },
+        { command: "live", description: "Show live-trading lock" },
+        { command: "risk", description: "View risk limits" },
+        { command: "approvals", description: "View pending approvals" },
+        { command: "pause", description: "Pause strategies" },
+        { command: "stop", description: "Emergency stop" },
+        { command: "help", description: "Show all commands" }
+      ]
+    });
+  } catch {
+    // Telegram metadata is secondary; never block trading controls or /start.
+  }
+}
+
 function serviceOverview(): string {
   return [
     "WHAT 9N8 PROVIDES",
@@ -1138,7 +1169,7 @@ function serviceOverview(): string {
     "/connections — review exchange connections",
     "/wallets — review verified wallets and watch addresses",
     "/risk — view your configured risk limits",
-    "/migrate — open live-readiness assessment",
+    "/live — view live-trading readiness and lock status",
     "/pause — pause strategies and block new entries",
     "/stop — activate the emergency stop",
     "/help — view all commands"
@@ -1166,6 +1197,7 @@ async function handleMessage(update: any) {
   if (chatType !== "private") return;
 
   if (command === "/start" || command === "/menu") {
+    await setBotProfileAndCommands();
     await audit(row.id, chatId, "private_start");
     const started = await startCryptoPaper(row.id, chatId);
     const sessionLine = started.ok
@@ -1214,8 +1246,9 @@ async function handleMessage(update: any) {
   }
   if (command === "/migrate") {
     await send(chatId,
-      "LIVE MIGRATION\n\nOpen the private eligibility check. The 7-day option is a progress review only; the live gate uses a 30-day forward-paper evaluation. A fresh balance check and a certified connector are required. This screen cannot turn on live orders.",
-      { inline_keyboard: [[{ text: "Open live migration assessment", web_app: { url: MIGRATION_PAGE_URL } }]] }
+      "LIVE-TRADING READINESS\\n\\n" +
+      await liveStatusText(row.id) +
+      "\\n\\nThis is a status report only. Live execution remains locked; connecting a wallet or exchange does not enable real-money orders."
     );
     return;
   }
@@ -1297,6 +1330,7 @@ async function handleCallback(update: any) {
   const chat = q.message?.chat;
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
+  if (q.data === "n8:services") await send(Number(chat.id), serviceOverview(), mainKeyboard());
   if (q.data === "n8:paper_start_crypto") {
     const started = await startCryptoPaper(row.id, Number(chat.id));
     await send(Number(chat.id), started.message);
