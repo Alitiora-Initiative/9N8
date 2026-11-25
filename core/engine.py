@@ -613,6 +613,9 @@ class TradingEngine:
                     **intent.metadata, **receipt.raw, "order_id": receipt.order_id,
                     "tx_hash": receipt.tx_hash, "opened_at": receipt.timestamp.isoformat(),
                     "approval_id": approval_id,
+                    "entry_fee_paid": float(receipt.fee_usd or 0),
+                    "entry_fee_remaining": float(receipt.fee_usd or 0),
+                    "paper_fees_paid": float(receipt.fee_usd or 0) if self.mode == "paper" else 0.0,
                 },
                 "opened_at": receipt.timestamp.isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -905,7 +908,25 @@ class TradingEngine:
             )
             receipt = await connector.close_position(p, amount)
         direction = 1 if row["side"] == "buy" else -1
-        realized = (receipt.average_price - float(row["entry_price"])) * amount * direction - receipt.fee_usd
+        gross_pnl = (
+            receipt.average_price - float(row["entry_price"])
+        ) * amount * direction
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        if self.mode == "paper":
+            entry_fee_allocated = float(receipt.raw.get("entry_fee_allocated", 0.0) or 0.0)
+            entry_fee_remaining = float(receipt.raw.get("remaining_entry_fee", 0.0) or 0.0)
+        else:
+            current_qty = max(float(row["quantity"]), 1e-12)
+            remaining_entry_fee = float(
+                metadata.get("entry_fee_remaining", metadata.get("entry_fee_paid", 0.0)) or 0.0
+            )
+            entry_fee_allocated = remaining_entry_fee * min(1.0, amount / current_qty)
+            entry_fee_remaining = max(0.0, remaining_entry_fee - entry_fee_allocated)
+        realized = gross_pnl - receipt.fee_usd - entry_fee_allocated
+        metadata["entry_fee_remaining"] = entry_fee_remaining
+        if self.mode == "paper":
+            metadata["paper_fees_paid"] = entry_fee_remaining
+        row["metadata"] = metadata
         await self.store.record_trade({
             "client_order_id": "partial:" + receipt.order_id, "venue": receipt.venue,
             "symbol": receipt.symbol, "market_type": row["market_type"],
@@ -913,9 +934,16 @@ class TradingEngine:
             "quantity": receipt.quantity, "average_price": receipt.average_price,
             "entry_timestamp": row["opened_at"], "exit_timestamp": receipt.timestamp.isoformat(),
             "stop_loss": row["stop_loss"], "take_profit": row["take_profit"],
-            "slippage_pct": receipt.slippage_pct, "commission_usd": receipt.fee_usd,
+            "slippage_pct": receipt.slippage_pct,
+            "commission_usd": receipt.fee_usd + entry_fee_allocated,
             "realized_pnl_usd": realized,
-            "metadata": {"exit_reason": "partial_take_profit_1_5R", "order_id": receipt.order_id},
+            "metadata": {
+                "exit_reason": "partial_take_profit_1_5R",
+                "order_id": receipt.order_id,
+                "gross_pnl_usd": gross_pnl,
+                "entry_fee_allocated_usd": entry_fee_allocated,
+                "exit_fee_usd": receipt.fee_usd,
+            },
         })
         row["realized_pnl_usd"] = float(row.get("realized_pnl_usd", 0)) + realized
         row["quantity"] = float(row["quantity"]) - amount
@@ -947,7 +975,17 @@ class TradingEngine:
         else:
             receipt = await connector.close_position(p)
         direction = 1 if p.side is Side.BUY else -1
-        pnl = (receipt.average_price - p.entry_price) * receipt.quantity * direction - receipt.fee_usd
+        gross_pnl = (
+            receipt.average_price - p.entry_price
+        ) * receipt.quantity * direction
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        if self.mode == "paper":
+            entry_fee_allocated = float(receipt.raw.get("entry_fee_allocated", 0.0) or 0.0)
+        else:
+            entry_fee_allocated = float(
+                metadata.get("entry_fee_remaining", metadata.get("entry_fee_paid", 0.0)) or 0.0
+            )
+        pnl = gross_pnl - receipt.fee_usd - entry_fee_allocated
         await self.store.record_trade({
             "client_order_id": "exit:" + receipt.order_id, "venue": receipt.venue,
             "symbol": receipt.symbol, "market_type": row["market_type"],
@@ -955,8 +993,16 @@ class TradingEngine:
             "quantity": receipt.quantity, "average_price": receipt.average_price,
             "entry_timestamp": row["opened_at"], "exit_timestamp": receipt.timestamp.isoformat(),
             "stop_loss": row["stop_loss"], "take_profit": row["take_profit"],
-            "slippage_pct": receipt.slippage_pct, "commission_usd": receipt.fee_usd,
-            "realized_pnl_usd": pnl, "metadata": {"exit_reason": reason, "order_id": receipt.order_id},
+            "slippage_pct": receipt.slippage_pct,
+            "commission_usd": receipt.fee_usd + entry_fee_allocated,
+            "realized_pnl_usd": pnl,
+            "metadata": {
+                "exit_reason": reason,
+                "order_id": receipt.order_id,
+                "gross_pnl_usd": gross_pnl,
+                "entry_fee_allocated_usd": entry_fee_allocated,
+                "exit_fee_usd": receipt.fee_usd,
+            },
         })
         await self.store.remove_position(row["position_key"])
         message = f"9N8 EXIT {receipt.symbol} · {reason}\nRealized PnL: {pnl:+.4f} USD"
