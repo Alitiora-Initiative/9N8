@@ -53,6 +53,7 @@ class MarketSnapshot:
     volume_5m: float | None = None
     buy_volume_5m: float | None = None
     sell_volume_5m: float | None = None
+    quote_volume_24h_usd: float | None = None
 
     @property
     def spread_pct(self) -> float:
