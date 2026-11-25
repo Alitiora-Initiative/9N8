@@ -450,11 +450,14 @@ class TradeStore:
                     await db.execute(
                         """UPDATE pending_approvals
                            SET status='RECONCILIATION_REQUIRED',decided_at=?,
-                               decided_by='startup-recovery',
-                               result='9N8 restarted while this non-paper proposal was processing. '
-                                      'Inspect provider orders, fills and balances before resuming.'
+                               decided_by='startup-recovery',result=?
                            WHERE approval_id=? AND status='PROCESSING'""",
-                        (now, approval_id),
+                        (
+                            now,
+                            "9N8 restarted while this non-paper proposal was processing. "
+                            "Inspect provider orders, fills and balances before resuming.",
+                            approval_id,
+                        ),
                     )
                     locked_count += 1
 
