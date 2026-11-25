@@ -422,12 +422,14 @@ if (panel && chartHost && symbolSelect && timeframeSelect) {
           });
           updateIndicators();
           if (k.x) refreshPaper().catch(() => {});
-        } else if (data.e === "bookTicker") {
+        } else if (data.s === state.symbol && data.b != null && data.a != null) {
+          // Binance Spot @bookTicker carries symbol/bid/ask fields but no "e" event-type field.
           const bid = Number(data.b), ask = Number(data.a);
           if (bid > 0 && ask > 0) {
             const current = state.book || { bids: [], asks: [] };
-            current.bids = [[String(bid), String(data.B)]];
-            current.asks = [[String(ask), String(data.A)]];
+            current.bids = [[String(bid), String(data.B)], ...(current.bids || []).slice(1)];
+            current.asks = [[String(ask), String(data.A)], ...(current.asks || []).slice(1)];
+            current.lastUpdateId = Number(data.u || current.lastUpdateId || 0);
             state.book = current;
             renderBook({
               bids: current.bids.map(level => ({ price: Number(level[0]), quantity: Number(level[1]) })),
