@@ -28,6 +28,11 @@ jobs:
           with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tf:
               for member in tf.getmembers():
                   rel = pathlib.PurePosixPath(member.name)
+                  normalized = tuple(part for part in rel.parts if part not in ("", "."))
+                  # The GitHub Actions token cannot create workflow files.
+                  # CI workflow files are managed separately through the GitHub connection.
+                  if normalized == (".github", "workflows", "tests.yml"):
+                      continue
                   target = (root / pathlib.Path(*rel.parts)).resolve()
                   if rel.is_absolute() or ".." in rel.parts or (target != root and root not in target.parents):
                       raise SystemExit("Unsafe archive path: " + member.name)
