@@ -641,9 +641,7 @@ class TradingEngine:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             if self.mode == "paper":
-                await self.store.persist_paper_fill(
-                    trade_record, self.paper.cash, position=position
-                )
+                await self._persist_paper_fill(trade_record, position=position)
             else:
                 await self.store.record_trade(trade_record)
                 await self.store.upsert_position(position)
@@ -683,6 +681,47 @@ class TradingEngine:
                     f"9N8 trade {approval_id} was approved and recorded. "
                     "Check the positions dashboard for the confirmed fill."
                 )
+            if self.mode == "paper" and execution_returned:
+                try:
+                    durable_positions = await self.store.positions()
+                    durable_trades = await self.store.query_trades(100)
+                    has_durable_fill = any(
+                        (row.get("metadata") or {}).get("approval_id") == approval_id
+                        for row in durable_positions
+                    ) or any(row.get("client_order_id") == signal_key for row in durable_trades)
+                    if has_durable_fill:
+                        await self.store.decide_pending_approval(
+                            approval_id, "APPROVED", approved_by,
+                            "Paper fill was durably committed and recovered from SQLite.",
+                        )
+                        await self.store.update_idempotency(signal_key, "filled")
+                        return (
+                            f"9N8 PAPER ENTRY RECOVERED\n{intent.symbol}\n"
+                            "The simulated fill and virtual balance were committed. "
+                            "Telegram received a late acknowledgement, but no live order was submitted."
+                        )
+                    await self.store.decide_pending_approval(
+                        approval_id, "FAILED", approved_by,
+                        "Paper fill was not durably committed; in-memory state was restored. No exchange order was submitted.",
+                    )
+                    await self.store.update_idempotency(signal_key, "failed")
+                    raise TradingError(
+                        "Paper entry was not durably committed. The simulator was restored from SQLite; no exchange order was submitted."
+                    ) from exc
+                except TradingError:
+                    raise
+                except Exception as paper_state_exc:
+                    try:
+                        await self.risk.pause()
+                    except Exception:
+                        pass
+                    log.critical(
+                        "Could not reconcile a paper approval after a storage error (%s).",
+                        type(paper_state_exc).__name__,
+                    )
+                    raise TradingError(
+                        "Paper storage state could not be verified. New entries are paused; inspect /paper before resuming."
+                    ) from exc
             if execution_returned or (submission_started and self.mode != "paper"):
                 # Once a live/testnet broadcast starts, a network error can leave the
                 # actual provider result ambiguous. Never relabel it as a clean failure
@@ -911,6 +950,62 @@ class TradingEngine:
                 await self.store.event("ERROR", "position_watcher_error", "Position watcher iteration failed.")
             await asyncio.sleep(1)
 
+    async def _persist_paper_fill(
+        self,
+        trade_record: dict[str, Any],
+        *,
+        position: dict[str, Any] | None = None,
+        remove_position_key: str | None = None,
+    ) -> None:
+        """Persist paper balance, fill and position atomically; restore memory on failure."""
+        try:
+            await self.store.persist_paper_fill(
+                trade_record,
+                self.paper.cash,
+                position=position,
+                remove_position_key=remove_position_key,
+            )
+        except Exception as exc:
+            try:
+                persisted_cash = float(
+                    await self.store.get_control(
+                        "paper_cash", str(self.paper.starting_equity)
+                    )
+                )
+                persisted_positions = await self.store.positions()
+                await self.paper.restore_state(persisted_cash, persisted_positions)
+            except Exception as restore_exc:
+                log.critical(
+                    "Paper persistence failed and in-memory restore also failed (%s).",
+                    type(restore_exc).__name__,
+                )
+            try:
+                await self.risk.pause()
+                await self.store.event(
+                    "CRITICAL",
+                    "paper_persistence_failure",
+                    "A simulated fill could not be persisted atomically. "
+                    "Paper state was reloaded from the last durable snapshot; new entries are paused.",
+                    trade_record.get("venue"),
+                    trade_record.get("symbol"),
+                    {"client_order_id": trade_record.get("client_order_id")},
+                )
+            except Exception as state_exc:
+                log.error("Could not record paper persistence pause (%s).", type(state_exc).__name__)
+            if self.notifier:
+                try:
+                    await self.notifier.send(
+                        "9N8 PAPER STORAGE WARNING\n"
+                        "A simulated fill could not be durably saved. The in-memory paper ledger "
+                        "was restored from the last saved snapshot and new entries were paused. "
+                        "Check /paper and /status before resuming."
+                    )
+                except Exception:
+                    log.warning("Could not send paper persistence warning to Telegram.")
+            raise TradingError(
+                "Paper fill persistence failed. The in-memory ledger was restored from its last saved state; new entries are paused."
+            ) from exc
+
     async def _partial_close(self, row: dict[str, Any], connector, snapshot: MarketSnapshot) -> None:
         amount = float(row["quantity"]) * float(self.cfg["strategy"]["partial_take_profit_fraction"])
         if amount <= 0:
@@ -973,9 +1068,7 @@ class TradingEngine:
         row["realized_pnl_usd"] = float(row.get("realized_pnl_usd", 0)) + realized
         row["quantity"] = float(row["quantity"]) - amount
         if self.mode == "paper":
-            await self.store.persist_paper_fill(
-                trade_record, self.paper.cash, position=row
-            )
+            await self._persist_paper_fill(trade_record, position=row)
         else:
             await self.store.record_trade(trade_record)
         await self.store.event(
@@ -1035,8 +1128,8 @@ class TradingEngine:
             },
         }
         if self.mode == "paper":
-            await self.store.persist_paper_fill(
-                trade_record, self.paper.cash,
+            await self._persist_paper_fill(
+                trade_record,
                 remove_position_key=row["position_key"],
             )
         else:
