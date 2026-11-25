@@ -23,7 +23,8 @@
     "allow_oanda_live": false,
     "live_execution_certified": false,
     "approval_timeout_seconds": 120,
-    "approval_max_price_drift_pct": 0.5
+    "approval_max_price_drift_pct": 0.5,
+    "minimum_24h_quote_volume_usd": 100000
   },
   "markets": {
     "crypto_spot": {
