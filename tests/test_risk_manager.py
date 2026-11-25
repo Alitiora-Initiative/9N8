@@ -109,7 +109,7 @@ async def test_uncertain_execution_reconciliation_lock_cannot_be_resumed(risk_co
     store.values["execution_reconciliation_required"] = "true"
     risk = RiskManager(store, risk_config)
 
-    with pytest.raises(RiskRejected, match="manual reconciliation"):
+    with pytest.raises(RiskRejected, match="manual provider reconciliation"):
         await risk.assert_entry_allowed()
     with pytest.raises(RiskRejected, match="Cannot resume"):
         await risk.resume()
