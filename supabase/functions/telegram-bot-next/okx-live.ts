@@ -94,10 +94,14 @@ export async function okxSignedRead<T = any>(
   return payload as T;
 }
 
-export async function validateOkxSpotRead(credentials: OkxCredentials) {
+export async function validateOkxSpotRead(
+  credentials: OkxCredentials,
+  fetcher: FetchLike = fetch,
+  timestamp?: string,
+) {
   const region = credentials.region ?? "global";
-  const config = await okxSignedRead<any>(credentials, "/api/v5/account/config");
-  const balance = await okxSignedRead<any>(credentials, "/api/v5/account/balance");
+  const config = await okxSignedRead<any>(credentials, "/api/v5/account/config", fetcher, timestamp);
+  const balance = await okxSignedRead<any>(credentials, "/api/v5/account/balance", fetcher, timestamp);
 
   if (!Array.isArray(config?.data) || !config.data[0] ||
       !Array.isArray(balance?.data) || !balance.data[0]) {
