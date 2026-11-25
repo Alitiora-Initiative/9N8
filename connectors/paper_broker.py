@@ -75,7 +75,10 @@ class PaperBroker:
                     equity += pos.quantity * mark
                 else:
                     equity -= pos.quantity * mark
-            return AccountState("paper", equity, max(self.cash, 0.0), self.cash)
+            # Reserve the estimated next-entry fee so risk sizing cannot consume
+            # every last cent and then fail when the simulated fee is charged.
+            free_cash = max(self.cash, 0.0) / (1.0 + self.fee_rate)
+            return AccountState("paper", equity, free_cash, self.cash)
 
     async def positions_for(self, snapshots: dict[str, MarketSnapshot]) -> list[OpenPosition]:
         async with self._lock:
