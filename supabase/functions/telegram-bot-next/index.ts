@@ -1415,20 +1415,51 @@ async function jupiterTriggerCancelDca(row: any, body: any): Promise<Response> {
   const orderId = clean(body?.orderId, 128);
   if (!orderId) throw new Error("jupiter_trigger_order_id_required");
   const local = await db(
-    "n8_jupiter_automation_orders?select=id,jupiter_order_id,status&user_id=eq." +
+    "n8_jupiter_automation_orders?select=id,jupiter_order_id,status,order_metadata&user_id=eq." +
       encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
       "&jupiter_order_id=eq." + encodeURIComponent(orderId) + "&limit=1"
   );
-  if (!Array.isArray(local) || !local[0]) throw new Error("jupiter_trigger_order_not_found");
+  if (!Array.isArray(local) || !local[0] || local[0].status !== "active") {
+    throw new Error("jupiter_trigger_order_not_active");
+  }
   const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
     "/trigger/v2/orders/dca/cancel/" + encodeURIComponent(orderId), "POST", {});
   if (!result?.transaction || !result?.requestId) throw new Error("jupiter_trigger_cancel_response_invalid");
+  let cancelTx: VersionedTransaction;
+  try { cancelTx = VersionedTransaction.deserialize(base64ToBytes(String(result.transaction))); }
+  catch { throw new Error("jupiter_trigger_cancel_transaction_invalid"); }
+  if (cancelTx.message.version !== 0 ||
+      (cancelTx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address) {
+    throw new Error("jupiter_trigger_cancel_transaction_invalid");
+  }
+  const cancelMessageHash = await sha256HexBytes(cancelTx.message.serialize());
+  const previousMeta = local[0].order_metadata ?? {};
+  const claimed = await db(
+    "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.active",
+    "PATCH",
+    {
+      status: "cancel_pending",
+      order_metadata: {
+        ...previousMeta,
+        pendingCancelRequestId: String(result.requestId),
+        pendingCancelMessageHash: cancelMessageHash,
+        pendingCancelRefundAmount: result.refundAmount ?? null,
+        pendingCancelRoundsRemaining: result.roundsRemaining ?? null,
+      },
+      updated_at: new Date().toISOString(),
+    },
+    "return=representation"
+  );
+  if (!Array.isArray(claimed) || claimed.length !== 1) throw new Error("jupiter_trigger_order_cancel_already_started");
   return response({
-    ok: true, orderId, cancelRequestId: result.requestId,
+    ok: true,
+    orderId,
+    cancelRequestId: result.requestId,
     transaction: result.transaction,
     refundAmount: result.refundAmount ?? null,
     roundsRemaining: result.roundsRemaining ?? null,
-    disclosure: "This is a one-way cancel. Review the returned refund, then sign the withdrawal transaction in your wallet. DCA cannot be paused and resumed.",
+    disclosure: "This is a one-way cancel. Review the refund amount, then sign the withdrawal transaction in your wallet. DCA cannot be paused and resumed.",
   });
 }
 async function jupiterTriggerConfirmCancelDca(row: any, body: any): Promise<Response> {
@@ -1437,26 +1468,78 @@ async function jupiterTriggerConfirmCancelDca(row: any, body: any): Promise<Resp
   const orderId = clean(body?.orderId, 128);
   const cancelRequestId = clean(body?.cancelRequestId, 128);
   const signedTransaction = clean(body?.signedTransaction, 120000);
+  if (!orderId || !cancelRequestId || !signedTransaction) throw new Error("jupiter_trigger_cancel_confirmation_invalid");
   const local = await db(
-    "n8_jupiter_automation_orders?select=id,jupiter_order_id&user_id=eq." +
+    "n8_jupiter_automation_orders?select=id,jupiter_order_id,status,order_metadata&user_id=eq." +
       encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
-      "&jupiter_order_id=eq." + encodeURIComponent(orderId) + "&limit=1"
+      "&jupiter_order_id=eq." + encodeURIComponent(orderId) + "&status=eq.cancel_pending&limit=1"
   );
-  if (!Array.isArray(local) || !local[0] || !cancelRequestId || !signedTransaction) {
-    throw new Error("jupiter_trigger_cancel_confirmation_invalid");
+  if (!Array.isArray(local) || !local[0]) throw new Error("jupiter_trigger_cancel_not_pending");
+  const metadata = local[0].order_metadata ?? {};
+  if (String(metadata.pendingCancelRequestId ?? "") !== cancelRequestId) {
+    throw new Error("jupiter_trigger_cancel_request_mismatch");
   }
-  const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
-    "/trigger/v2/orders/dca/confirm-cancel/" + encodeURIComponent(orderId), "POST",
-    { signedTransaction, cancelRequestId });
-  await db(
+  let tx: VersionedTransaction;
+  try { tx = VersionedTransaction.deserialize(base64ToBytes(signedTransaction)); }
+  catch { throw new Error("jupiter_trigger_cancel_transaction_invalid"); }
+  const messageBytes = tx.message.serialize();
+  if (tx.message.version !== 0 ||
+      (tx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address ||
+      await sha256HexBytes(messageBytes) !== String(metadata.pendingCancelMessageHash ?? "")) {
+    throw new Error("jupiter_trigger_cancel_transaction_changed");
+  }
+  const signature = tx.signatures?.[0];
+  if (!signature || signature.length !== 64 || signature.every((v: number) => v === 0)) {
+    throw new Error("jupiter_trigger_cancel_signature_missing");
+  }
+  const pub = new Uint8Array(new PublicKey(wallet.public_address).toBytes()).buffer;
+  const sig = new Uint8Array(signature).buffer;
+  const message = new Uint8Array(messageBytes).buffer;
+  const key = await crypto.subtle.importKey("raw", pub, { name: "Ed25519" }, false, ["verify"]);
+  if (!await crypto.subtle.verify("Ed25519", key, sig, message)) {
+    throw new Error("jupiter_trigger_cancel_signature_invalid");
+  }
+  const claim = await db(
     "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
-      "&user_id=eq." + encodeURIComponent(row.id),
+      "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.cancel_pending",
     "PATCH",
-    { status: "cancelled", order_metadata: { cancelResult: result }, updated_at: new Date().toISOString() },
-    "return=minimal"
+    { status: "cancel_confirming", updated_at: new Date().toISOString() },
+    "return=representation"
   );
-  await audit(row.id, null, "jupiter_dca_cancelled", "ok", { jupiter_order_id: orderId });
-  return response({ ok: true, orderId, result });
+  if (!Array.isArray(claim) || claim.length !== 1) throw new Error("jupiter_trigger_cancel_already_claimed");
+  try {
+    const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
+      "/trigger/v2/orders/dca/confirm-cancel/" + encodeURIComponent(orderId), "POST",
+      { signedTransaction, cancelRequestId });
+    await db(
+      "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.cancel_confirming",
+      "PATCH",
+      {
+        status: "cancelled",
+        order_metadata: { cancelResult: result, cancelRequestId },
+        updated_at: new Date().toISOString(),
+      },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_dca_cancelled", "ok", { jupiter_order_id: orderId });
+    return response({ ok: true, orderId, result });
+  } catch {
+    await db(
+      "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.cancel_confirming",
+      "PATCH",
+      { status: "cancel_unknown", updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_dca_cancel_unknown", "warning", { jupiter_order_id: orderId });
+    return response({
+      ok: true,
+      status: "cancel_unknown",
+      orderId,
+      message: "Cancellation outcome is unknown. Check Jupiter DCA history and vault balance before attempting another cancellation.",
+    }, 202);
+  }
 }
 
 async function handleMiniApp(body: any): Promise<Response> {
