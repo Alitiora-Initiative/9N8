@@ -29,7 +29,7 @@ Official references:
 ## Required Cloudflare resources
 
 1. A Cloudflare account on the Free plan.
-2. One Worker named **`9n8-cloudflare`**.
+2. One Worker named **`9n8`**.
 3. One D1 database named **`9n8-db`**, bound to the Worker as **`DB`**.
 4. The SQL migration in `migrations/0001_initial.sql` applied to the remote D1 database.
 5. A `workers.dev` URL enabled. A custom domain is not required.
@@ -41,7 +41,7 @@ Official references:
 3. Connect the GitHub account that owns `Alitiora-Initiative/9N8`.
 4. Select repository `9N8`, branch **`cloudflare-worker`**.
 5. Set the project root / root directory to **`cloudflare`**.
-6. The Worker name must be **`9n8-cloudflare`** to match `wrangler.toml`.
+6. The Worker name must be **`9n8`** to match `wrangler.toml`.
 7. Use build command `npm install` and deploy command `npx wrangler deploy`.
 8. Do not deploy until the D1 database ID in `wrangler.toml` has been replaced with your real D1 database ID (see below).
 
@@ -71,7 +71,7 @@ Do not execute the SQL migration twice unless you first remove the existing tabl
 
 ## Configure encrypted Worker secrets
 
-Open **Workers & Pages** → **9n8-cloudflare** → **Settings** → **Variables and Secrets**. Add these values as encrypted secrets (not plain committed text):
+Open **Workers & Pages** → **9n8** → **Settings** → **Variables and Secrets**. Add these values as encrypted secrets (not plain committed text):
 
 | Secret | Required | Purpose |
 |---|---|---|
