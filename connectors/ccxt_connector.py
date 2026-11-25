@@ -178,6 +178,10 @@ class CCXTConnector(ExecutionConnector):
 
     async def _order(self, intent: TradeIntent, quantity: float, client_order_id: str) -> TradeReceipt:
         ex = self._ex()
+        if self.settings.mode.value == "live":
+            certified = bool(self.settings.config["execution"].get("live_execution_certified", False))
+            if not self.settings.live_enabled or not certified:
+                raise ConnectorUnavailable("Live CEX submission is locked by the Settings/certification gate.")
         if not self._bracket_capability(intent.symbol):
             raise ConnectorUnavailable(
                 f"{self.venue} does not advertise attached SL+TP for {intent.symbol}; live entry refused."
