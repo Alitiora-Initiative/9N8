@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -21,12 +20,13 @@ class _PaperPosition:
 
 
 class PaperBroker:
-    """Deterministic paper fills using live bid/ask snapshots, not synthetic prices."""
+    """Paper executions use live provider bid/ask prices plus explicit fee/slippage."""
 
     def __init__(self, starting_equity_usd: float, fee_rate: float = 0.001, slippage_bps: float = 5):
         if starting_equity_usd <= 0 or fee_rate < 0 or slippage_bps < 0:
             raise ValueError("Invalid paper broker parameters.")
         self.cash = float(starting_equity_usd)
+        self.starting_equity = float(starting_equity_usd)
         self.fee_rate = float(fee_rate)
         self.slippage_bps = float(slippage_bps)
         self.positions: dict[str, _PaperPosition] = {}
@@ -42,12 +42,12 @@ class PaperBroker:
             equity = self.cash
             for key, pos in self.positions.items():
                 snap = snapshots.get(key)
-                if snap:
-                    mark = snap.bid if pos.side is Side.BUY else snap.ask
-                    # Cash was debited by the full buy notional at entry. Add only
-                    # current liquidation value; mark-to-market PnL is then implicit.
-                    equity += pos.quantity * mark if pos.side is Side.BUY else 0
-            return AccountState("paper", equity, max(self.cash, 0), self.cash)
+                mark = (snap.bid if pos.side is Side.BUY else snap.ask) if snap else pos.entry_price
+                if pos.side is Side.BUY:
+                    equity += pos.quantity * mark
+                else:
+                    equity -= pos.quantity * mark
+            return AccountState("paper", equity, max(self.cash, 0.0), self.cash)
 
     async def positions_for(self, snapshots: dict[str, MarketSnapshot]) -> list[OpenPosition]:
         async with self._lock:
@@ -55,7 +55,8 @@ class PaperBroker:
             for key, p in self.positions.items():
                 snap = snapshots.get(key)
                 mark = snap.last if snap else p.entry_price
-                pnl = (mark-p.entry_price)*p.quantity*(1 if p.side is Side.BUY else -1)
+                direction = 1 if p.side is Side.BUY else -1
+                pnl = (mark-p.entry_price)*p.quantity*direction
                 result.append(OpenPosition(
                     p.venue,p.symbol,snapshot_market_type(snap),p.side,p.quantity,p.entry_price,
                     mark,p.stop_loss,p.take_profit,pnl,0,
@@ -72,30 +73,40 @@ class PaperBroker:
             notional = price * quantity
             fee = notional * self.fee_rate
             key = intent.venue + ":" + intent.symbol
-            if intent.side is Side.BUY:
-                cost = notional + fee
-                if cost > self.cash:
-                    raise ValueError("Insufficient virtual cash for paper buy.")
-                if key in self.positions:
-                    raise ValueError("Paper position already exists for this venue/symbol.")
-                self.cash -= cost
+            current = self.positions.get(key)
+
+            if current is None:
+                # Opening long: pay for inventory. Opening short: receive sale proceeds,
+                # while the marked liability is deducted from account equity.
+                if intent.side is Side.BUY:
+                    if notional + fee > self.cash:
+                        raise ValueError("Insufficient virtual cash for paper buy.")
+                    self.cash -= notional + fee
+                else:
+                    self.cash += notional - fee
                 self.positions[key] = _PaperPosition(
                     intent.venue,intent.symbol,intent.side,quantity,price,
                     intent.stop_loss,intent.take_profit,fee,
                 )
+            elif current.side is intent.side:
+                raise ValueError("A paper position already exists in the same direction.")
             else:
-                current = self.positions.get(key)
-                if current is None or quantity > current.quantity + 1e-12:
-                    raise ValueError("Paper sell quantity exceeds the open paper position.")
-                proceeds = notional - fee
-                self.cash += proceeds
+                if quantity > current.quantity + 1e-12:
+                    raise ValueError("Paper close quantity exceeds the open position.")
+                # Close an existing long with a sell, or a short with a buy.
+                if current.side is Side.BUY:
+                    self.cash += notional - fee
+                else:
+                    self.cash -= notional + fee
                 current.quantity -= quantity
                 if current.quantity <= 1e-12:
                     del self.positions[key]
+
+            reference = snapshot.ask if intent.side is Side.BUY else snapshot.bid
             return TradeReceipt(
                 intent.venue,intent.symbol,intent.side,"paper-"+client_order_id,
-                quantity,price,fee,abs(price-(snapshot.ask if intent.side is Side.BUY else snapshot.bid)) /
-                max(snapshot.last,1e-12),datetime.now(timezone.utc),
+                quantity,price,fee,abs(price-reference)/max(snapshot.last,1e-12),
+                datetime.now(timezone.utc),
                 raw={"mode":"paper","market_bid":snapshot.bid,"market_ask":snapshot.ask,
                      "virtual_cash_after":self.cash,"client_order_id":client_order_id},
             )
@@ -106,7 +117,8 @@ class PaperBroker:
                 snapshot = snapshots.get(key)
                 if not snapshot:
                     continue
-                price = self._price(snapshot, Side.SELL if position.side is Side.BUY else Side.BUY)
+                exit_side = Side.SELL if position.side is Side.BUY else Side.BUY
+                price = self._price(snapshot, exit_side)
                 notional = price * position.quantity
                 fee = notional * self.fee_rate
                 if position.side is Side.BUY:
