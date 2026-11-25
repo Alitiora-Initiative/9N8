@@ -244,7 +244,7 @@ This section describes the current deployed Supabase candidate and the separate 
 
 Verified against the connected 9N8 Supabase project:
 
-- `telegram-bot-next` is ACTIVE at deployed version 36 when inspected; it is the multi-user Telegram/Mini App candidate, separate from the preserved legacy function.
+- `telegram-bot-next` is ACTIVE at deployed version 37 when inspected; it is the multi-user Telegram/Mini App candidate, separate from the preserved legacy function.
 - `n8-paper-worker` is ACTIVE at version 2, and a one-minute `pg_cron` job invokes it.
 - The database contained a running crypto paper session with recurring successful ticks. Recent worker rows reported 10 symbols scanned and 0 symbol failures; a tick with no signal intentionally creates no trade.
 - The deployed paper worker uses Binance public Spot market data and a virtual balance. It does not submit an exchange order.
@@ -261,7 +261,9 @@ Verified against the connected 9N8 Supabase project:
 - Paper crypto session lifecycle, Binance public one-minute candle/ticker/order-book reads, simulated visible-depth fills, virtual fees/slippage, persisted trades/positions/equity, pause/stop/resume controls and a one-minute scheduled worker.
 - Telegram webhook update claims with leases, duplicate suppression and retry handling.
 - Group setup and permission-checked manual moderator commands.
-- Exchange disconnect path is implemented in the candidate source: `/connections` displays a connection ID and `/disconnect CONNECTION_ID` asks for confirmation, then removes the corresponding 9N8 Vault secret through the owner-scoped database procedure. This removes the stored credential from 9N8; the user must separately revoke the API key at Binance or OKX.
+- Exchange disconnect path is deployed: `/connections` displays a connection ID and `/disconnect CONNECTION_ID` asks for confirmation, then removes the corresponding 9N8 Vault secret through the owner-scoped database procedure. This removes the stored credential from 9N8; the user must separately revoke the API key at Binance or OKX.
+- The Mini App displays owner-scoped Binance/OKX connections, refreshes balances for a selected connection and supports owner-confirmed exchange-secret revocation. It lists verified/watch-only wallets and allows an owner to revoke a link by connection ID.
+- The private Mini App creates live Jupiter Swap V2 quote previews for a verified Solana Mainnet wallet, including expected/minimum output, route, price impact and expiry. No swap signature or broadcast is requested by the quote screen.
 
 ### Implemented separately in the Python development branch
 
@@ -283,8 +285,9 @@ Verified against the connected 9N8 Supabase project:
 
 ### Deployment and source-of-truth boundary
 
-- The deployed Supabase v36 Telegram function and worker were retrieved and their active secret-free source was synchronized into `multi-asset-python`. The branch adds fresh-initData protection for destructive Mini App actions, per-connection account reads, owner-scoped wallet/exchange revoke, and a keyless Jupiter quote path. These branch changes are pending CI/deployment at the time of this status snapshot.
+- The deployed Supabase v36 source was synchronized, then the branch updates were deployed as `telegram-bot-next` v37. The deployment adds fresh-initData protection for destructive Mini App actions, per-connection account reads, owner-scoped wallet/exchange revocation and keyless Jupiter Swap V2 quote preview. The deployed function reports ACTIVE; the legacy Telegram function and scheduled paper worker were left unchanged.
 - The preserved legacy Telegram function and GitHub `main` branch have not been replaced.
-- Pull Request #5 is a draft; its contents are not merged or deployed automatically.
+- Pull Request #5 is open and remains a draft, not merged. The active Supabase v37 function was deployed explicitly from its source; this did not merge the branch into GitHub main.
+- The Vercel preview for the same branch has not been published because Vercel's Hobby team limit of 100 API deployment requests per day has been reached. The frontend build is verified by GitHub Actions.
 - The Telegram webhook's current registration state has not been confirmed in this audit. A successful `/setup` registration/confirmation is required before claiming Telegram delivery is operational for the candidate.
 - The production paper worker's successful ticks prove its scheduled market-data scan is running, not that the strategy is profitable or every user's Telegram connection is configured.
