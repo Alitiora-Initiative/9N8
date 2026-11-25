@@ -615,6 +615,19 @@ async function handleUserCommand(env, message, user, command) {
   if (name === "start") return handleStart(env, message, user);
   if (name === "help") {
     await sendMessage(env, message.chat.id,
+      "9N8 COMMANDS\n/settings — your settings\n/setlots 0.05 — per-trade lot cap\n" +
+      "/setmaxpositions 3 — simultaneous position cap\n/setsl 500 and /settp 1000 — default SL/TP\n" +
+      "/setbe 150 0 or /setbe off — break-even\n/paper_enable or /paper_pause\n" +
+      "/paper_open XAUUSD BUY 0.01 [SL_POINTS TP_POINTS]\n" +
+      "/paper_positions, /paper_close TICKET, /paper_check, /paper_history, /paper_balance, /stats\n" +
+      "/mt5_status, /mt5_symbols, /mt5_price SYMBOL, /mt5_scan SYMBOL\n" +
+      "/price SYMBOL, /scan [SYMBOL], /signals\n" +
+      "/notifications on|off and /share_stats on|off\n/id\n\n" +
+      "All positions are simulated. No live MT5 orders are sent.");
+    return;
+  }
+  if (name === "help") {
+    await sendMessage(env, message.chat.id,
       "9N8 COMMANDS\n" +
       "/settings — your settings\n/setlots 0.05 — per-trade lot cap\n/setmaxpositions 3 — simultaneous position cap\n" +
       "/setsl 500 — default stop distance\n/settp 1000 — default target distance\n/setbe 150 0 or /setbe off — break-even trigger and offset\n" +
