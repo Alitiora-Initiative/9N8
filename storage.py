@@ -228,6 +228,15 @@ class TradeStore:
         await self._db().commit()
         return float(row["starting_equity_usd"])
 
+
+    async def get_daily_equity(self, date_key: str) -> float:
+        cur = await self._db().execute(
+            "SELECT starting_equity_usd FROM daily_equity WHERE utc_date=?",
+            (date_key,),
+        )
+        row = await cur.fetchone()
+        return float(row["starting_equity_usd"]) if row else 0.0
+
     async def claim_idempotency(self, key: str, payload: dict[str, Any]) -> bool:
         now = datetime.now(timezone.utc).isoformat()
         cur = await self._db().execute(
