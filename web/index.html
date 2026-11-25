@@ -19,6 +19,13 @@ h2{font-size:19px;margin:0 0 8px}
 p{line-height:1.55;color:#acbbce;margin:8px 0}
 .card{background:rgba(19,30,48,.94);border:1px solid #283950;border-radius:18px;padding:20px;margin:16px 0;box-shadow:0 16px 50px rgba(0,0,0,.16)}
 .notice{border-left:3px solid #d7a955;padding:10px 13px;background:#2b2419;border-radius:7px;color:#f5d99b;font-size:13px;margin:14px 0}
+.secondary{background:#1b2b40;color:#d8e5f4;border:1px solid #3a506b}
+.scanner-panel{margin:14px 0;padding:12px;border:1px solid #344b63;border-radius:14px;background:#0b1524}
+#qrReader{width:100%;max-width:440px;margin:0 auto;overflow:hidden;border-radius:10px}
+#qrReader video{border-radius:10px;object-fit:cover}
+.scan-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.scan-actions button{margin-top:12px}
+@media(max-width:420px){.scan-actions{grid-template-columns:1fr}}
 label{display:block;font-size:13px;color:#b5c4d7;margin:15px 0 7px}
 input,select{font:inherit;width:100%;border:1px solid #3a4e68;border-radius:11px;padding:13px 14px;background:#0b1524;color:#f5f7fa;outline:none}
 input:focus,select:focus{border-color:#58c89b;box-shadow:0 0 0 3px rgba(88,200,155,.12)}
@@ -90,6 +97,17 @@ button:disabled{opacity:.55;cursor:wait}
         </select>
         <label for="address">Public wallet address</label>
         <input id="address" type="text" maxlength="128" spellcheck="false" autocomplete="off" required>
+        <div class="scan-actions">
+          <button class="secondary" id="startWalletScanner" type="button">Scan QR with camera</button>
+          <button class="secondary" id="chooseQrImage" type="button">Scan QR from photo</button>
+        </div>
+        <input id="qrImageInput" class="hidden" type="file" accept="image/*" capture="environment">
+        <section id="qrScannerPanel" class="scanner-panel hidden" aria-label="Wallet address QR scanner">
+          <p class="muted">Point your camera at your wallet's public receive-address QR code. The QR is decoded on this device.</p>
+          <div id="qrReader"></div>
+          <button class="secondary" id="stopWalletScanner" type="button">Stop camera</button>
+        </section>
+        <p class="muted">Scan a public receive address, review the address and network, then save it. WalletConnect pairing QR codes are not supported by this watch-only scanner.</p>
         <button id="saveWallet" type="submit">Save watch-only address</button>
         <div class="status" id="walletStatus" role="status"></div>
       </form>
@@ -187,6 +205,169 @@ button:disabled{opacity:.55;cursor:wait}
       button.disabled=false;
     }
   });
+  // Wallet QR scanning: scan locally, extract only a public address, and require
+  // the user to review and submit it. No QR contents are uploaded or logged.
+  const qrPanel=document.getElementById("qrScannerPanel");
+  const qrReader=document.getElementById("qrReader");
+  const qrImageInput=document.getElementById("qrImageInput");
+  const walletStatus=document.getElementById("walletStatus");
+  let qrScanner=null;
+  let qrRunning=false;
+  let qrHandled=false;
+  let qrLibraryPromise=null;
+
+  function loadQrLibrary(){
+    if(window.Html5Qrcode)return Promise.resolve();
+    if(qrLibraryPromise)return qrLibraryPromise;
+    qrLibraryPromise=new Promise((resolve,reject)=>{
+      const script=document.createElement("script");
+      script.src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js";
+      script.async=true;
+      script.onload=()=>window.Html5Qrcode?resolve():reject(new Error("QR scanner library did not initialize."));
+      script.onerror=()=>reject(new Error("Could not load the QR scanner. Check your internet connection or enter the public address manually."));
+      document.head.appendChild(script);
+    });
+    return qrLibraryPromise;
+  }
+
+  function parseWalletQr(decoded){
+    const value=String(decoded||"").trim();
+    if(/^wc:/i.test(value)){
+      throw new Error("That is a WalletConnect pairing QR. This version scans public wallet-address QR codes only.");
+    }
+    let address="";
+    let chainId="";
+    let namespace="";
+    let solanaUri=false;
+    let match=value.match(/^ethereum:(0x[a-f0-9]{40})(?:@(\d+))?(?:\/[^?]*)?(?:\?.*)?$/i);
+    if(match){
+      address=match[1];
+      chainId=match[2]||"";
+      namespace="eip155";
+    }else{
+      match=value.match(/^solana:([1-9A-HJ-NP-Za-km-z]{32,44})(?:\?(.*))?$/i);
+      if(match){
+        address=match[1];
+        namespace="solana";
+        solanaUri=true;
+        const params=new URLSearchParams(match[2]||"");
+        const cluster=params.get("cluster");
+        if(cluster && cluster!=="mainnet-beta"){
+          throw new Error("That Solana QR is not for mainnet. Select a supported mainnet receive address instead.");
+        }
+      }else if(/^0x[a-f0-9]{40}$/i.test(value)){
+        address=value;
+        namespace="eip155";
+      }else if(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)){
+        address=value;
+        namespace="solana";
+      }else{
+        throw new Error("QR not recognized. Scan a plain public wallet address or a simple Ethereum/Solana receive QR.");
+      }
+    }
+
+    const network=document.getElementById("network");
+    if(namespace==="solana"){
+      network.value="solana:mainnet-beta";
+    }else if(chainId){
+      const networks={"1":"eip155:1","8453":"eip155:8453","56":"eip155:56"};
+      if(!networks[chainId])throw new Error("This QR uses an unsupported EVM chain. Choose Ethereum, Base or BNB Chain.");
+      network.value=networks[chainId];
+    }else if(network.value.startsWith("solana:")){
+      network.value="eip155:1";
+    }
+    document.getElementById("address").value=address;
+    walletStatus.textContent="QR scanned. Check the address and selected network, then tap Save watch-only address.";
+    return {address,namespace,solanaUri};
+  }
+
+  async function stopWalletQrScanner(){
+    if(qrScanner && qrRunning){
+      try{await qrScanner.stop();}catch(_error){}
+    }
+    qrRunning=false;
+    if(qrScanner){
+      try{qrScanner.clear();}catch(_error){}
+      qrScanner=null;
+    }
+    qrHandled=false;
+    qrPanel.classList.add("hidden");
+    qrReader.innerHTML="";
+  }
+
+  async function handleWalletQr(decoded){
+    if(qrHandled)return;
+    qrHandled=true;
+    try{
+      parseWalletQr(decoded);
+      await stopWalletQrScanner();
+    }catch(error){
+      qrHandled=false;
+      walletStatus.textContent=error.message||"This QR code is not a supported public wallet address.";
+    }
+  }
+
+  document.getElementById("startWalletScanner").addEventListener("click",async()=>{
+    const button=document.getElementById("startWalletScanner");
+    button.disabled=true;
+    walletStatus.textContent="Requesting camera access…";
+    try{
+      await loadQrLibrary();
+      qrPanel.classList.remove("hidden");
+      qrScanner=new Html5Qrcode("qrReader",{
+        formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],
+        verbose:false
+      });
+      await qrScanner.start(
+        {facingMode:"environment"},
+        {fps:8,qrbox:(width,height)=>{
+          const size=Math.floor(Math.min(width,height)*0.72);
+          return {width:size,height:size};
+        },aspectRatio:1},
+        handleWalletQr,
+        ()=>{}
+      );
+      qrRunning=true;
+      walletStatus.textContent="Camera ready. Hold the wallet address QR inside the frame.";
+    }catch(error){
+      await stopWalletQrScanner();
+      walletStatus.textContent="Camera unavailable: "+(error.message||"Allow camera access, use Scan QR from photo, or enter the address manually.");
+    }finally{
+      button.disabled=false;
+    }
+  });
+
+  document.getElementById("stopWalletScanner").addEventListener("click",stopWalletQrScanner);
+  document.getElementById("chooseQrImage").addEventListener("click",()=>qrImageInput.click());
+  qrImageInput.addEventListener("change",async()=>{
+    const file=qrImageInput.files&&qrImageInput.files[0];
+    if(!file)return;
+    walletStatus.textContent="Reading the selected QR image on this device…";
+    try{
+      await loadQrLibrary();
+      const imageScanner=new Html5Qrcode("qrReader",{
+        formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],
+        verbose:false
+      });
+      try{
+        const decoded=await imageScanner.scanFile(file,true);
+        await handleWalletQr(decoded);
+      }finally{
+        try{imageScanner.clear();}catch(_error){}
+      }
+    }catch(error){
+      walletStatus.textContent=error.message||"No supported QR code was found in that image.";
+    }finally{
+      qrImageInput.value="";
+      qrPanel.classList.add("hidden");
+      qrReader.innerHTML="";
+    }
+  });
+
+  document.addEventListener("visibilitychange",()=>{
+    if(document.hidden && qrRunning)stopWalletQrScanner();
+  });
+
   document.getElementById("walletForm").addEventListener("submit",async function(event){
     event.preventDefault();
     if(!tg || !tg.initData){document.getElementById("walletStatus").textContent="Open this page from your 9N8 Telegram private chat.";return;}
