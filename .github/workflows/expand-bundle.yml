@@ -2,7 +2,7 @@ name: Expand initial 9N8 source bundle
 on:
   push:
     paths:
-      - ".bootstrap/9n8-source.zip.b64"
+      - ".bootstrap/bundle.ready"
 permissions:
   contents: write
 jobs:
@@ -19,8 +19,11 @@ jobs:
           python - <<'PY'
           import base64, io, pathlib, zipfile
           root = pathlib.Path('.').resolve()
-          archive_path = pathlib.Path('.bootstrap/9n8-source.zip.b64')
-          raw = base64.b64decode(archive_path.read_bytes(), validate=True)
+          bootstrap = pathlib.Path('.bootstrap')
+          parts = sorted(bootstrap.glob('bundle-part-*'))
+          if not parts or not (bootstrap / 'bundle.ready').exists():
+              raise SystemExit('Bundle incomplete')
+          raw = base64.b64decode(b''.join(part.read_bytes() for part in parts), validate=True)
           with zipfile.ZipFile(io.BytesIO(raw)) as archive:
               for item in archive.infolist():
                   target = (root / item.filename).resolve()
@@ -31,7 +34,9 @@ jobs:
                   else:
                       target.parent.mkdir(parents=True, exist_ok=True)
                       target.write_bytes(archive.read(item))
-          archive_path.unlink()
+          for part in parts:
+              part.unlink()
+          (bootstrap / 'bundle.ready').unlink()
           PY
       - name: Commit expanded project
         run: |
