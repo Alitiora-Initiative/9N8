@@ -1078,6 +1078,38 @@ async function paperStatusText(userId: string): Promise<string> {
   return lines.join("\n");
 }
 
+async function startCryptoPaper(userId: string, chatId: number): Promise<{ ok: boolean; message: string }> {
+  const policies = await db(
+    "n8_risk_policies?select=kill_switch&user_id=eq." + encodeURIComponent(userId) + "&limit=1"
+  );
+  if (Array.isArray(policies) && policies[0]?.kill_switch === true) {
+    return {
+      ok: false,
+      message: "Paper trading is blocked by the emergency stop. Send /resume and confirm the resume button before starting again.",
+    };
+  }
+  const result = await db("rpc/n8_start_paper_session", "POST", {
+    p_user_id: userId,
+    p_market_type: "crypto",
+    p_chat_id: chatId,
+  });
+  if (result?.ok !== true || !result?.session_id) throw new Error("paper_session_start_not_confirmed");
+  await audit(userId, chatId, "paper_session_started", "ok", {
+    session_id: result.session_id, market_type: "crypto",
+  });
+  return {
+    ok: true,
+    message: "PAPER RUN STARTED\n\n" +
+      "Mode: PAPER ONLY · $1,000 virtual starting cash\n" +
+      "Market: Binance public crypto spot candles · 1-minute timeframe\n" +
+      "Universe: BTC, ETH, SOL, BNB, XRP, DOGE, SHIB, PEPE, BONK and WIF pairs where listed\n" +
+      "Strategy: EMA 9 / EMA 21 crossover with RSI 14 confirmation\n" +
+      "Risk: $50 maximum virtual entry · up to 3 open positions · simulated 0.10% fee and 5 bps slippage\n\n" +
+      "The first scan has been requested. A scheduled worker continues every minute. Signals may produce no trade; the bot will not invent fills.\n\n" +
+      "Use /paper for the latest scan, virtual equity, positions and simulated fills. /pause pauses scans; /stop activates the emergency stop. Real trading remains OFF."
+  };
+}
+
 async function handleMessage(update: any) {
   const m = update?.message ?? update?.edited_message;
   if (!m?.chat?.id || !m?.from?.id) return;
@@ -1100,11 +1132,11 @@ async function handleMessage(update: any) {
 
   if (command === "/start" || command === "/menu") {
     await audit(row.id, chatId, "private_start");
+    const started = await startCryptoPaper(row.id, chatId);
     await send(chatId,
       "9N8 TRADING INTELLIGENCE\n\n" +
-      "Your private control panel is ready.\n\n" +
-      "Start with PAPER TRADING: the bot scans live public crypto spot prices and records simulated trades against a $1,000 virtual balance. BTC, ETH, SOL, BNB and XRP are included, plus selected meme-coin spot pairs where supported.\n\n" +
-      "Paper trades include simulated fees and slippage. No exchange API key, wallet signature or real money is used. Live execution remains locked.",
+      (started.ok ? started.message : started.message) +
+      "\n\nYour private control panel is ready. /paper shows live paper status. Real-money execution is locked.",
       mainKeyboard());
     return;
   }
@@ -1221,25 +1253,8 @@ async function handleCallback(update: any) {
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
   if (q.data === "n8:paper_start_crypto") {
-    const result = await db("rpc/n8_start_paper_session", "POST", {
-      p_user_id: row.id,
-      p_market_type: "crypto",
-      p_chat_id: Number(chat.id),
-    });
-    if (result?.ok !== true || !result?.session_id) throw new Error("paper_session_start_not_confirmed");
-    await audit(row.id, Number(chat.id), "paper_session_started", "ok", {
-      session_id: result.session_id, market_type: "crypto",
-    });
-    await send(Number(chat.id),
-      "PAPER ENGINE STARTED\n\n" +
-      "Mode: PAPER ONLY · $1,000 virtual starting cash\n" +
-      "Market: Binance public crypto spot candles · 1-minute timeframe\n" +
-      "Universe: BTC, ETH, SOL, BNB, XRP, DOGE, SHIB, PEPE, BONK and WIF pairs where listed\n" +
-      "Strategy: EMA 9 / EMA 21 crossover with RSI 14 confirmation\n" +
-      "Risk: $50 maximum virtual entry · up to 3 open positions · simulated 0.10% fee and 5 bps slippage\n\n" +
-      "The first scan has been requested. A scheduled worker continues every minute. Signals may produce no trade; the bot will not invent fills.\n\n" +
-      "Use /paper for the latest scan, virtual equity, positions and simulated fills. /pause pauses scans; /stop activates the emergency stop. Real trading remains OFF."
-    );
+    const started = await startCryptoPaper(row.id, Number(chat.id));
+    await send(Number(chat.id), started.message);
   }
   if (q.data === "n8:paper_status") await send(Number(chat.id), await paperStatusText(row.id));
   if (q.data === "n8:connections") await send(Number(chat.id), await listConnections(row.id));
