@@ -1092,6 +1092,273 @@ async function getJupiterSwapStatus(user: any, row: any, body: any): Promise<Res
   });
 }
 
+
+async function jupiterTriggerCertification() {
+  const rows = await db(
+    "n8_jupiter_connector_certification?select=status,delegated_automation_enabled,live_manual_wallet_execution_enabled&provider=eq.jupiter_swap_v2&limit=1"
+  );
+  return Array.isArray(rows) ? rows[0] ?? null : null;
+}
+function requireJupiterApiKey() {
+  if (!JUPITER_API_KEY) throw new Error("jupiter_api_key_not_configured");
+}
+async function triggerAccess(wallet: any, accessToken: string, path: string, method: "GET" | "POST" = "GET", body?: unknown) {
+  requireJupiterApiKey();
+  if (!accessToken || accessToken.length > 4096) throw new Error("jupiter_trigger_auth_required");
+  return await jupiterApi<any>(path, {
+    method,
+    apiKey: JUPITER_API_KEY,
+    accessToken,
+    body,
+  });
+}
+async function jupiterTriggerChallenge(row: any, body: any): Promise<Response> {
+  requireJupiterApiKey();
+  const address = clean(body?.address, 64);
+  await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const result = await jupiterApi<any>("/trigger/v2/auth/challenge", {
+    method: "POST",
+    apiKey: JUPITER_API_KEY,
+    body: { walletPubkey: address, type: "message" },
+  });
+  const challenge = String(result?.challenge ?? result?.message ?? "");
+  if (!challenge) throw new Error("jupiter_trigger_challenge_invalid");
+  return response({ ok: true, challenge, walletPubkey: address });
+}
+async function jupiterTriggerVerify(row: any, body: any): Promise<Response> {
+  requireJupiterApiKey();
+  const address = clean(body?.address, 64);
+  await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const signature = clean(body?.signature, 256);
+  if (!signature) throw new Error("jupiter_trigger_signature_required");
+  const result = await jupiterApi<any>("/trigger/v2/auth/verify", {
+    method: "POST",
+    apiKey: JUPITER_API_KEY,
+    body: {
+      walletPubkey: address,
+      type: "message",
+      signature,
+      authMode: "access_refresh",
+    },
+  });
+  const accessToken = String(result?.accessToken ?? "");
+  const refreshToken = String(result?.refreshToken ?? "");
+  if (!accessToken || !refreshToken) throw new Error("jupiter_trigger_auth_response_invalid");
+  // Trigger credentials are returned only to this Telegram-authenticated owner session.
+  // They are not written to Postgres or browser localStorage.
+  return response({
+    ok: true,
+    accessToken,
+    refreshToken,
+    expiresAt: result?.expiresAt ?? null,
+    tokenType: result?.tokenType ?? "Bearer",
+  });
+}
+async function jupiterTriggerRefresh(row: any, body: any): Promise<Response> {
+  requireJupiterApiKey();
+  const refreshToken = clean(body?.refreshToken, 4096);
+  if (!refreshToken) throw new Error("jupiter_trigger_refresh_required");
+  const address = clean(body?.address, 64);
+  await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const result = await jupiterApi<any>("/trigger/v2/auth/refresh", {
+    method: "POST",
+    apiKey: JUPITER_API_KEY,
+    body: { refreshToken },
+  });
+  if (!result?.accessToken || !result?.refreshToken) throw new Error("jupiter_trigger_refresh_invalid");
+  return response({
+    ok: true,
+    accessToken: String(result.accessToken),
+    refreshToken: String(result.refreshToken),
+    expiresAt: result.expiresAt ?? null,
+    tokenType: result.tokenType ?? "Bearer",
+  });
+}
+async function jupiterTriggerVault(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const accessToken = clean(body?.accessToken, 4096);
+  try {
+    const vault = await triggerAccess(null, accessToken, "/trigger/v2/vault");
+    return response({ ok: true, vault, registered: true });
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("jupiter_http_404")) throw error;
+    const registered = await triggerAccess(null, accessToken, "/trigger/v2/vault/register");
+    return response({ ok: true, vault: registered, registered: false });
+  }
+}
+async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const cert = await jupiterTriggerCertification();
+  if (!cert || cert.status !== "passed" || cert.delegated_automation_enabled !== true) {
+    throw new Error("jupiter_delegated_execution_certification_locked");
+  }
+  const accessToken = clean(body?.accessToken, 4096);
+  const orderType = String(body?.orderType ?? "");
+  if (!["dca", "price"].includes(orderType)) throw new Error("jupiter_trigger_order_type_invalid");
+  const inputMint = new PublicKey(clean(body?.inputMint, 64)).toBase58();
+  const outputMint = new PublicKey(clean(body?.outputMint, 64)).toBase58();
+  if (inputMint === outputMint) throw new Error("jupiter_trigger_mint_pair_invalid");
+  const inputAmount = String(body?.amount ?? "");
+  if (!/^[1-9]\d*$/.test(inputAmount)) throw new Error("jupiter_trigger_amount_invalid");
+  const requestBody: Record<string, unknown> = {
+    inputMint,
+    outputMint,
+    userAddress: wallet.public_address,
+    amount: inputAmount,
+    orderType,
+  };
+  if (orderType === "price") requestBody.orderSubType = "single";
+  const result = await triggerAccess(wallet, accessToken, "/trigger/v2/deposit/craft", "POST", requestBody);
+  if (!result?.transaction || !result?.requestId || !result?.receiverAddress) {
+    throw new Error("jupiter_trigger_deposit_craft_invalid");
+  }
+  const rows = await db("n8_jupiter_automation_orders", "POST", {
+    user_id: row.id,
+    wallet_connection_id: wallet.id,
+    jupiter_order_id: String(result.requestId),
+    order_family: orderType === "dca" ? "dca" : "price",
+    input_mint: inputMint,
+    output_mint: outputMint,
+    input_amount_raw: inputAmount,
+    vault_address: String(result.receiverAddress),
+    status: "deposit_pending",
+    order_metadata: { depositRequestId: result.requestId, mint: result.mint ?? inputMint, amount: result.amount ?? inputAmount },
+  }, "return=representation");
+  if (!Array.isArray(rows) || !rows[0]?.id) throw new Error("jupiter_trigger_deposit_record_failed");
+  return response({
+    ok: true,
+    deposit: {
+      id: rows[0].id,
+      requestId: result.requestId,
+      transaction: result.transaction,
+      receiverAddress: result.receiverAddress,
+      mint: result.mint ?? inputMint,
+      amount: result.amount ?? inputAmount,
+      decimals: result.tokenDecimals ?? result.decimals ?? null,
+    },
+    custodyDisclosure: "This deposit moves the selected input token from your wallet into a Jupiter/Privy-managed vault for Trigger automation. It is not kept in your original wallet. You must review the receiver, token and amount before signing. Automation can be cancelled through a wallet-signed withdrawal.",
+  });
+}
+async function jupiterTriggerCreateDca(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const cert = await jupiterTriggerCertification();
+  if (!cert || cert.status !== "passed" || cert.delegated_automation_enabled !== true) {
+    throw new Error("jupiter_delegated_execution_certification_locked");
+  }
+  const accessToken = clean(body?.accessToken, 4096);
+  const depositRequestId = clean(body?.depositRequestId, 128);
+  const depositSignedTx = clean(body?.depositSignedTx, 120000);
+  const orderCount = Number(body?.orderCount);
+  const intervalSeconds = Number(body?.intervalSeconds);
+  if (!depositRequestId || !depositSignedTx || !Number.isInteger(orderCount) ||
+      orderCount < 2 || orderCount > 1000 || !Number.isInteger(intervalSeconds) ||
+      intervalSeconds < 60 || intervalSeconds > 31536000) {
+    throw new Error("jupiter_dca_parameters_invalid");
+  }
+  const localRows = await db(
+    "n8_jupiter_automation_orders?select=id,input_mint,output_mint,input_amount_raw,vault_address,status&jupiter_order_id=eq." +
+      encodeURIComponent(depositRequestId) + "&wallet_connection_id=eq." +
+      encodeURIComponent(wallet.id) + "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.deposit_pending&limit=1"
+  );
+  const deposit = Array.isArray(localRows) ? localRows[0] : null;
+  if (!deposit) throw new Error("jupiter_trigger_deposit_not_found");
+  const inputAmount = String(body?.inputAmount ?? deposit.input_amount_raw);
+  if (inputAmount !== String(deposit.input_amount_raw)) throw new Error("jupiter_trigger_deposit_amount_mismatch");
+  const requestBody = {
+    depositRequestId,
+    depositSignedTx,
+    userPubkey: wallet.public_address,
+    inputMint: String(deposit.input_mint),
+    outputMint: String(deposit.output_mint),
+    inputAmount,
+    orderCount,
+    intervalSeconds,
+    orderType: "time_based",
+  };
+  const result = await triggerAccess(wallet, accessToken, "/trigger/v2/orders/dca", "POST", requestBody);
+  const jupiterOrderId = String(result?.id ?? result?.orderId ?? "");
+  if (!jupiterOrderId) throw new Error("jupiter_trigger_dca_response_invalid");
+  await db(
+    "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(deposit.id) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.deposit_pending",
+    "PATCH",
+    {
+      jupiter_order_id: jupiterOrderId,
+      order_count: orderCount,
+      interval_seconds: intervalSeconds,
+      deposit_signature: String(result.txSignature ?? ""),
+      status: "active",
+      order_metadata: { response: result, depositRequestId, orderType: "time_based" },
+      updated_at: new Date().toISOString(),
+    },
+    "return=minimal"
+  );
+  await audit(row.id, null, "jupiter_dca_created", "ok", {
+    jupiter_order_id: jupiterOrderId, wallet_connection_id: wallet.id,
+    order_count: orderCount, interval_seconds: intervalSeconds,
+  });
+  return response({ ok: true, orderId: jupiterOrderId, result, vaultAddress: deposit.vault_address });
+}
+async function jupiterTriggerHistory(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
+    "/trigger/v2/orders/history/dca?state=active&limit=20");
+  return response({ ok: true, orders: result, walletConnectionId: wallet.id });
+}
+async function jupiterTriggerCancelDca(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const orderId = clean(body?.orderId, 128);
+  if (!orderId) throw new Error("jupiter_trigger_order_id_required");
+  const local = await db(
+    "n8_jupiter_automation_orders?select=id,jupiter_order_id,status&user_id=eq." +
+      encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
+      "&jupiter_order_id=eq." + encodeURIComponent(orderId) + "&limit=1"
+  );
+  if (!Array.isArray(local) || !local[0]) throw new Error("jupiter_trigger_order_not_found");
+  const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
+    "/trigger/v2/orders/dca/cancel/" + encodeURIComponent(orderId), "POST", {});
+  if (!result?.transaction || !result?.requestId) throw new Error("jupiter_trigger_cancel_response_invalid");
+  return response({
+    ok: true, orderId, cancelRequestId: result.requestId,
+    transaction: result.transaction,
+    refundAmount: result.refundAmount ?? null,
+    roundsRemaining: result.roundsRemaining ?? null,
+    disclosure: "This is a one-way cancel. Review the returned refund, then sign the withdrawal transaction in your wallet. DCA cannot be paused and resumed.",
+  });
+}
+async function jupiterTriggerConfirmCancelDca(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const orderId = clean(body?.orderId, 128);
+  const cancelRequestId = clean(body?.cancelRequestId, 128);
+  const signedTransaction = clean(body?.signedTransaction, 120000);
+  const local = await db(
+    "n8_jupiter_automation_orders?select=id,jupiter_order_id&user_id=eq." +
+      encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
+      "&jupiter_order_id=eq." + encodeURIComponent(orderId) + "&limit=1"
+  );
+  if (!Array.isArray(local) || !local[0] || !cancelRequestId || !signedTransaction) {
+    throw new Error("jupiter_trigger_cancel_confirmation_invalid");
+  }
+  const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
+    "/trigger/v2/orders/dca/confirm-cancel/" + encodeURIComponent(orderId), "POST",
+    { signedTransaction, cancelRequestId });
+  await db(
+    "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
+      "&user_id=eq." + encodeURIComponent(row.id),
+    "PATCH",
+    { status: "cancelled", order_metadata: { cancelResult: result }, updated_at: new Date().toISOString() },
+    "return=minimal"
+  );
+  await audit(row.id, null, "jupiter_dca_cancelled", "ok", { jupiter_order_id: orderId });
+  return response({ ok: true, orderId, result });
+}
+
 async function handleMiniApp(body: any): Promise<Response> {
   try {
     // Read-only account views, assessments and emergency pause remain usable while
