@@ -296,6 +296,7 @@ class TradingEngine:
         decision = await self.risk.evaluate(
             intent, account, snapshot, exposure, spread_slippage,
             leverage=leverage, forex_spread_pips=spread_pips,
+            current_open_positions=len(open_rows),
         )
         if not decision.approved or not decision.size:
             await self.store.event("WARNING", "trade_veto", decision.reason, intent.venue, intent.symbol)
