@@ -88,8 +88,10 @@ class DexSecurityGate:
                 raise RiskRejected("EVM honeypot status is unsafe or unknown.")
             if flag("is_mintable") != "0" or flag("is_open_source") != "1":
                 raise RiskRejected("EVM mint function or source verification failed.")
-            if flag("cannot_buy", "cannot_sell_all") not in {"0", "false"}:
-                raise RiskRejected("EVM token buy/sell restriction present or unknown.")
+            if flag("cannot_buy") not in {"0", "false"}:
+                raise RiskRejected("EVM token buy restriction present or unknown.")
+            if flag("cannot_sell_all") not in {"0", "false"}:
+                raise RiskRejected("EVM token sell restriction present or unknown.")
 
         buy_tax, sell_tax = pct("buy_tax"), pct("sell_tax")
         if buy_tax > max_tax_pct or sell_tax > max_tax_pct:
