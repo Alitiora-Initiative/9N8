@@ -282,6 +282,7 @@ async function connectJupiterAutomation() {
     accessToken: auth.accessToken,
   });
   $("jupiterTriggerHistory").disabled = false;
+  $("jupiterCancelDca").disabled = false;
   $("jupiterDcaControls").classList.remove("hidden");
   triggerStatus(vault.registered
     ? "Jupiter vault detected. Delegated automation still remains locked until certification passes."
@@ -313,7 +314,9 @@ async function refreshTriggerHistory() {
     address: wallet.address,
     accessToken: token.accessToken,
   });
-  $("jupiterDcaHistory").textContent = JSON.stringify(result.orders, null, 2);
+  const orderList = Array.isArray(result.orders) ? result.orders : (Array.isArray(result.orders?.orders) ? result.orders.orders : []);
+  $("jupiterDcaHistory").textContent = JSON.stringify(orderList.length ? orderList : result.orders, null, 2);
+  $("jupiterCancelDca").disabled = !getTriggerToken();
 }
 $("jupiterTriggerLogin").addEventListener("click", async () => {
   $("jupiterTriggerLogin").disabled = true;
@@ -327,33 +330,62 @@ $("jupiterTriggerHistory").addEventListener("click", async () => {
   catch (error) { triggerStatus(error.message || "Could not fetch DCA order history.", "error"); }
   finally { $("jupiterTriggerHistory").disabled = !getTriggerToken(); }
 });
+
+async function ensureTriggerAccess(wallet) {
+  let token = getTriggerToken();
+  if (!token && triggerTokens?.refreshToken) {
+    const refreshed = await post({
+      action: "jupiter_trigger_refresh",
+      walletConnectionId: wallet.walletConnectionId,
+      address: wallet.address,
+      refreshToken: triggerTokens.refreshToken,
+    });
+    triggerTokens = {
+      accessToken: refreshed.accessToken,
+      refreshToken: refreshed.refreshToken,
+      expiresAt: refreshed.expiresAt,
+    };
+    token = getTriggerToken();
+  }
+  if (!token) throw new Error("Reconnect Jupiter automation to refresh its short-lived wallet session.");
+  return token;
+}
+
 $("jupiterCreateDca").addEventListener("click", async () => {
   const wallet = currentWallet();
-  const token = getTriggerToken();
-  if (!wallet || !token) {
-    triggerStatus("Reconnect your verified Solana wallet and Jupiter Trigger session.", "warning");
+  if (!wallet) {
+    triggerStatus("Reconnect and verify your Solana mainnet wallet first.", "warning");
     return;
   }
   if (config?.delegatedAutomationEnabled !== true) {
-    triggerStatus("Delegated automation remains locked until Trigger vault, DCA, cancellation and withdrawal certification has passed. No deposit was created.", "warning");
+    triggerStatus("Delegated automation remains locked until vault, DCA, cancellation and withdrawal certification has passed. No deposit was created.", "warning");
     return;
   }
+  let token;
+  try { token = await ensureTriggerAccess(wallet); }
+  catch (error) { triggerStatus(error.message, "warning"); return; }
+
   const mint = String($("jupiterDcaMint").value || "").trim();
   const totalText = String($("jupiterDcaTotal").value || "").trim();
   const count = Number($("jupiterDcaCount").value);
   const interval = Number($("jupiterDcaInterval").value);
   let totalLamports;
-  try { totalLamports = solToLamports(totalText); } catch (error) { triggerStatus(error.message, "warning"); return; }
-  if (!mint || !Number.isInteger(count) || count < 2 || count > 1000 || !Number.isInteger(interval) || interval < 60) {
-    triggerStatus("Enter a valid mint, total SOL and at least two DCA rounds.", "warning");
+  try { totalLamports = solToLamports(totalText); }
+  catch (error) { triggerStatus(error.message || "Enter a valid SOL amount.", "warning"); return; }
+  if (!mint || !Number.isInteger(count) || count < 2 || count > 1000 ||
+      !Number.isInteger(interval) || interval < 60) {
+    triggerStatus("Enter a token mint, valid SOL amount, at least two rounds and a valid interval.", "warning");
     return;
   }
-  if (totalLamports > 500000000n) { triggerStatus("The 9N8 DCA vault deposit limit is 0.50 SOL per rolling 24 hours.", "warning"); return; }
+  if (totalLamports > 500000000n) {
+    triggerStatus("9N8 limits DCA deposits to 0.50 SOL per rolling 24 hours.", "warning");
+    return;
+  }
   const totalLamportsRaw = totalLamports.toString();
   const totalDisplay = Number(totalLamports) / 1e9;
   $("jupiterCreateDca").disabled = true;
   try {
-    triggerStatus("Crafting a wallet-signed deposit. Review the Jupiter vault receiver and amount before signing…");
+    triggerStatus("Crafting a Jupiter vault deposit transaction. No funds move until you sign it…");
     const deposit = await post({
       action: "jupiter_trigger_deposit_craft",
       walletConnectionId: wallet.walletConnectionId,
@@ -367,25 +399,17 @@ $("jupiterCreateDca").addEventListener("click", async () => {
       intervalSeconds: interval,
     });
     const tx = VersionedTransaction.deserialize(b64ToBytes(deposit.deposit.transaction));
-    if (tx.message.version !== 0) throw new Error("Unsupported deposit transaction version.");
-    const confirmed = window.confirm(
-      "JUPITER AUTOMATION DEPOSIT
-
-" +
-      "Input: " + total + " SOL
-" +
-      "Token mint: " + mint + "
-" +
-      "Jupiter vault receiver: " + deposit.deposit.receiverAddress + "
-" +
-      "Rounds: " + count + "
-" +
-      "Interval: " + interval + " seconds
-
-" +
-      "This moves the deposited SOL into a Jupiter/Privy-managed vault, not your original wallet. Continue to wallet signing?"
+    if (tx.message.version !== 0) throw new Error("Unsupported Trigger deposit transaction version.");
+    const approved = window.confirm(
+      "JUPITER AUTOMATION DEPOSIT\n\n" +
+      "Input: " + totalDisplay + " SOL\n" +
+      "Token mint: " + mint + "\n" +
+      "Jupiter vault receiver: " + deposit.deposit.receiverAddress + "\n" +
+      "Rounds: " + count + "\n" +
+      "Interval: " + interval + " seconds\n\n" +
+      "This moves the deposited SOL into a Jupiter/Privy-managed vault, not your original wallet. Review the wallet prompt carefully. Continue to sign this deposit?"
     );
-    if (!confirmed) throw new Error("Deposit cancelled before signing.");
+    if (!approved) throw new Error("Deposit cancelled before signing.");
     const signed = await wallet.signTransaction(tx);
     const depositSignedTx = bytesToB64(signed.serialize());
     const created = await post({
@@ -399,12 +423,70 @@ $("jupiterCreateDca").addEventListener("click", async () => {
       orderCount: count,
       intervalSeconds: interval,
     });
-    triggerStatus("DCA order created: " + created.orderId + ". Check the order history for keeper fills and remaining vault balance.", "success");
+    if (created.status === "unknown") {
+      triggerStatus("DCA create result is unknown. Check provider order history before retrying. Do not sign another deposit.", "warning");
+    } else {
+      triggerStatus("DCA order created: " + created.orderId + ". Monitor fills and vault balance in order history.", "success");
+    }
     await refreshTriggerHistory();
   } catch (error) {
     triggerStatus(error.message || "Could not create the DCA order.", "error");
   } finally {
     $("jupiterCreateDca").disabled = config?.delegatedAutomationEnabled !== true;
+  }
+});
+
+$("jupiterCancelDca").addEventListener("click", async () => {
+  const wallet = currentWallet();
+  const orderId = String($("jupiterCancelOrderId").value || "").trim();
+  if (!wallet || !orderId) {
+    triggerStatus("Connect and verify the Solana wallet, then enter the active DCA order ID.", "warning");
+    return;
+  }
+  let token;
+  try { token = await ensureTriggerAccess(wallet); }
+  catch (error) { triggerStatus(error.message || "Jupiter session has expired.", "warning"); return; }
+  $("jupiterCancelDca").disabled = true;
+  try {
+    triggerStatus("Requesting Jupiter's cancellation and vault-withdrawal transaction…");
+    const cancel = await post({
+      action: "jupiter_trigger_cancel_dca",
+      walletConnectionId: wallet.walletConnectionId,
+      address: wallet.address,
+      accessToken: token.accessToken,
+      orderId,
+    });
+    const tx = VersionedTransaction.deserialize(b64ToBytes(cancel.transaction));
+    if (tx.message.version !== 0) throw new Error("Unsupported DCA cancellation transaction version.");
+    const approved = window.confirm(
+      "CANCEL DCA & WITHDRAW REMAINDER\n\n" +
+      "Order: " + orderId + "\n" +
+      "Refund amount: " + String(cancel.refundAmount ?? "not supplied by Jupiter") + "\n" +
+      "Rounds remaining: " + String(cancel.roundsRemaining ?? "not supplied by Jupiter") + "\n\n" +
+      "This is a one-way cancellation. Review and sign the withdrawal transaction in your wallet to return the unspent vault funds. Continue?"
+    );
+    if (!approved) throw new Error("Cancellation stopped before wallet signing.");
+    const signed = await wallet.signTransaction(tx);
+    const signedTransaction = bytesToB64(signed.serialize());
+    const confirmed = await post({
+      action: "jupiter_trigger_confirm_cancel_dca",
+      walletConnectionId: wallet.walletConnectionId,
+      address: wallet.address,
+      accessToken: token.accessToken,
+      orderId,
+      cancelRequestId: cancel.cancelRequestId,
+      signedTransaction,
+    });
+    if (confirmed.status === "cancel_unknown") {
+      triggerStatus("Cancellation outcome unknown. Check Jupiter DCA history and vault balance before retrying.", "warning");
+    } else {
+      triggerStatus("Cancellation and withdrawal confirmation accepted. Check your wallet and Jupiter order history for final settlement.", "success");
+    }
+    await refreshTriggerHistory();
+  } catch (error) {
+    triggerStatus(error.message || "DCA cancellation did not complete.", "error");
+  } finally {
+    $("jupiterCancelDca").disabled = !getTriggerToken();
   }
 });
 
@@ -417,5 +499,6 @@ window.addEventListener("n8-wallet-session", () => {
   status("Wallet session updated. Get a fresh quote for this verified Solana wallet.");
   triggerTokens = null;
   $("jupiterTriggerHistory").disabled = true;
+  $("jupiterCancelDca").disabled = true;
 });
 loadConfig();
