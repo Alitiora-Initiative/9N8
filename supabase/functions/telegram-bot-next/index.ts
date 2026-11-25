@@ -752,6 +752,7 @@ async function handleMiniApp(body: any): Promise<Response> {
       "live_assess",
       "live_pause",
       "binance_account",
+      "okx_account",
       "wallet_revoke",
     ]);
     const maxAge = longLivedReadActions.has(String(body?.action ?? "")) ? 24 * 60 * 60 : 300;
@@ -760,13 +761,15 @@ async function handleMiniApp(body: any): Promise<Response> {
     if (body.action === "connect_exchange") {
       const provider = String(body.provider) as Provider;
       const environment = String(body.environment);
-      if (!["okx", "binance", "bybit"].includes(provider)) throw new Error("unsupported_provider");
+      if (!["okx", "binance"].includes(provider)) throw new Error("unsupported_provider");
+      const regionValue = clean(body?.credentials?.region, 16);
       const credentials: Credentials = {
         apiKey: clean(body?.credentials?.apiKey, 512),
         apiSecret: clean(body?.credentials?.apiSecret, 1024),
         passphrase: clean(body?.credentials?.passphrase, 256),
+        region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
       };
-      if (provider !== "binance" || environment !== "live") throw new Error("unsupported_provider_environment");
+      if (!["binance", "okx"].includes(provider) || environment !== "live") throw new Error("unsupported_provider_environment");
       const validation = await validateExchange(provider, environment, credentials);
       const id = await saveExchange(Number(user.id), provider, environment, validation.label, credentials,
         validation.permissions, validation.accountHint ?? null);
@@ -784,7 +787,7 @@ async function handleMiniApp(body: any): Promise<Response> {
       const address = clean(body.address, 128);
       const network = clean(body.network, 80);
       const chainId = clean(body.chainId, 40);
-      if (!["trust_wallet", "phantom", "walletconnect", "manual"].includes(provider) ||
+      if (!["trust_wallet", "phantom", "metamask", "walletconnect", "manual"].includes(provider) ||
           !walletAddressValid(namespace, address) || !network || !chainId) {
         throw new Error("wallet_address_or_network_invalid");
       }
@@ -804,6 +807,8 @@ async function handleMiniApp(body: any): Promise<Response> {
     }
     if (body.action === "binance_account") {
       return response({ ok: true, ...(await liveBinanceAccount(user, row.id)) });
+    }    if (body.action === "okx_account") {
+      return response({ ok: true, ...(await liveOkxAccount(user, row.id)) });
     }
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
@@ -825,7 +830,7 @@ async function handleMiniApp(body: any): Promise<Response> {
           public_address: mask(String(w.public_address)),
         })) : [],
         liveTradingEnabled: false,
-        message: "Binance Spot Live credentials can be connected for account access. Real orders remain locked until the live execution connector passes readiness and each order has an owner approval. A verified wallet still requires a separate trade-only signing permission.",
+        message: "Binance Spot and OKX Spot accounts can be linked for account access. OKX read access is validated separately from trade and withdrawal scopes. Real orders remain locked until each connector passes release checks and each exact order has owner approval. A verified wallet still requires a separate owner-controlled trade permission.",
       });
     }
     if (body.action === "live_status") {
@@ -1708,7 +1713,7 @@ async function mainHandler(req: Request): Promise<Response> {
   // Mini App traffic is authenticated with Telegram-signed initData.
   if (body?.action === "connect_exchange" || body?.action === "watch_wallet" ||
       ["wallet_challenge", "wallet_verify", "wallet_revoke", "live_connections", "live_status", "live_assess", "live_pause",
-       "paper_terminal", "paper_start", "binance_account"].includes(String(body?.action))) {
+       "paper_terminal", "paper_start", "binance_account", "okx_account"].includes(String(body?.action))) {
     return await handleMiniApp(body);
   }
 
