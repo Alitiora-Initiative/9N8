@@ -124,6 +124,26 @@ class TradingEngine:
                     "isolated_margin_confirmed": True,
                 })
 
+        stocks = markets.get("stocks", {})
+        if stocks.get("enabled"):
+            if self.mode != "paper":
+                raise TradingError(
+                    "Stocks are supported in live-market PAPER mode only. "
+                    "Alpaca order submission is not implemented in this connector."
+                )
+            c = AlpacaConnector(data_feed=stocks.get("data_feed") or None)
+            await self._connect_provider(c)
+            self.connectors["alpaca:stocks"] = c
+            for symbol in stocks.get("symbols", []):
+                self.specs.append({
+                    "connector": "alpaca:stocks",
+                    "venue": c.venue,
+                    "symbol": str(symbol).strip().upper(),
+                    "market_type": MarketType.STOCK,
+                    "entry_tf": stocks.get("timeframes", {}).get("entry", "5m"),
+                    "trend_tf": stocks.get("timeframes", {}).get("trend", "1h"),
+                })
+
         o = markets["oanda"]
         if o.get("enabled"):
             env = os.getenv("OANDA_ENVIRONMENT", "practice").strip().lower()
@@ -395,9 +415,15 @@ class TradingEngine:
             )
 
         quote_age = (datetime.now(timezone.utc) - snapshot.timestamp).total_seconds()
-        max_quote_age = max(
-            1.0, min(30.0, float(self.cfg["execution"].get("max_quote_age_seconds", 5)))
-        )
+        if intent.market_type is MarketType.STOCK:
+            max_quote_age = max(
+                5.0,
+                min(120.0, float(self.cfg["execution"].get("max_stock_quote_age_seconds", 60))),
+            )
+        else:
+            max_quote_age = max(
+                1.0, min(30.0, float(self.cfg["execution"].get("max_quote_age_seconds", 5)))
+            )
         if quote_age < -2 or quote_age > max_quote_age:
             raise RiskRejected(
                 f"Market quote is stale or has an invalid timestamp ({quote_age:.2f}s old)."
