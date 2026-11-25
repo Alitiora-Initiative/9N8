@@ -139,7 +139,58 @@ button:disabled{opacity:.55;cursor:wait}
         <button class="secondary" id="disconnectWalletSession" type="button" disabled>Disconnect and revoke link</button>
         <div class="status" id="walletSessionStatus" role="status">Checking wallet connection settings…</div>
         <p class="muted">The verification signature does not authorize a swap, transfer, token approval or trade. Wallet transaction approvals remain separate.</p>
-      </div>
+      <div class="divider"></div>
+      <section class="scanner-panel" id="jupiterSwapTerminal">
+        <span class="pill">JUPITER · SOLANA MAINNET</span>
+        <h3>Live BUY / SELL terminal</h3>
+        <p class="muted">Real Jupiter Swap V2 routes across liquidity sources. You review the quote and sign each exact transaction in your connected Solana wallet. No background wallet signing.</p>
+        <div class="grid">
+          <div><label for="jupiterSide">Trade direction</label><select id="jupiterSide"><option value="buy">BUY · SOL to token</option><option value="sell">SELL · token to SOL</option></select></div>
+          <div><label for="jupiterAmount">Amount <span id="jupiterAmountUnit">SOL</span></label><input id="jupiterAmount" type="number" min="0" step="any" placeholder="0.01" autocomplete="off"></div>
+        </div>
+        <label for="jupiterTokenMint">Solana token mint address</label>
+        <input id="jupiterTokenMint" type="text" maxlength="64" spellcheck="false" autocomplete="off" placeholder="Paste a verified SPL token mint">
+        <button id="jupiterGetQuote" type="button">Get live Jupiter quote</button>
+        <div id="jupiterQuoteCard" class="card hidden">
+          <div class="sim-stats">
+            <div class="sim-stat"><span>You pay</span><b id="jupiterQuoteInput">—</b></div>
+            <div class="sim-stat"><span>Estimated receive</span><b id="jupiterQuoteOutput">—</b></div>
+            <div class="sim-stat"><span>Minimum receive</span><b id="jupiterQuoteMinimum">—</b></div>
+            <div class="sim-stat"><span>Price impact</span><b id="jupiterQuoteImpact">—</b></div>
+          </div>
+          <p class="muted" id="jupiterQuoteRoute">Route and fee details will appear here.</p>
+          <p class="muted" id="jupiterQuoteExpiry">Quote expiry: —</p>
+          <p class="muted">The wallet will show the transaction details before signing. Review the input, output, fees and token mint carefully.</p>
+        </div>
+        <button class="secondary" id="jupiterSignSwap" type="button" disabled>Sign & execute swap in wallet</button>
+        <button class="secondary" id="jupiterRefreshSwap" type="button" disabled>Refresh transaction status</button>
+        <div class="status" id="jupiterSwapStatus" role="status">Connect and verify Phantom or another Solana wallet on Solana mainnet to begin.</div>
+        <div class="notice" id="jupiterCertNotice">Checking live execution certification…</div>
+      </section>
+      <div class="divider"></div>
+      <section class="scanner-panel" id="jupiterAutomationPanel">
+        <span class="pill">JUPITER TRIGGER V2</span>
+        <h3>Scheduled DCA automation</h3>
+        <p class="muted">Jupiter’s keeper can execute scheduled swaps after you sign and fund its managed vault. This is a separate custody arrangement: funds deposited for automation move from your wallet into a Jupiter/Privy-managed vault and are no longer sitting in your original wallet. Review the vault receiver, token, amount and cancellation/withdrawal path before signing a deposit.</p>
+        <div class="grid">
+          <button id="jupiterTriggerLogin" type="button">Connect Jupiter automation</button>
+          <button class="secondary" id="jupiterTriggerHistory" type="button" disabled>Refresh active DCA orders</button>
+        </div>
+        <div class="status" id="jupiterTriggerStatus" role="status">Jupiter Trigger configuration is being checked…</div>
+        <div id="jupiterDcaControls" class="hidden">
+          <label for="jupiterDcaMint">Token mint</label>
+          <input id="jupiterDcaMint" type="text" maxlength="64" spellcheck="false" placeholder="Solana token mint address">
+          <div class="grid">
+            <div><label for="jupiterDcaTotal">Total SOL to schedule</label><input id="jupiterDcaTotal" type="number" min="0" step="any" placeholder="0.20"></div>
+            <div><label for="jupiterDcaCount">Number of rounds</label><input id="jupiterDcaCount" type="number" min="2" max="1000" step="1" value="2"></div>
+          </div>
+          <label for="jupiterDcaInterval">Interval</label>
+          <select id="jupiterDcaInterval"><option value="3600">Every hour</option><option value="86400">Every day</option><option value="604800">Every week</option></select>
+          <button id="jupiterCreateDca" type="button" disabled>Create & deposit DCA</button>
+          <p class="muted">Each scheduled round must meet Jupiter’s $10 minimum. Creation is locked until 9N8 certifies vault deposit integrity, delegated order controls and cancel/withdrawal recovery.</p>
+        </div>
+        <div class="status" id="jupiterDcaHistory" role="status"></div>
+      </section>
       <div class="divider"></div>
       <h3>Optional watch-only address</h3>
       <p class="muted">You can still add a public receive address by scanning its QR code. That creates a watch-only link, not a wallet session.</p>
@@ -585,6 +636,7 @@ button:disabled{opacity:.55;cursor:wait}
 </script>
 <script type="module" src="/connections.js"></script>
 <script type="module" src="/wallet-connect.js"></script>
+<script type="module" src="/jupiter-terminal.js"></script>
 <script type="module" src="/market-simulator.js"></script>
 </body>
 </html>
