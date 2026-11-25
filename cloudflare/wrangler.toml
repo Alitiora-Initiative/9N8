@@ -1,0 +1,17 @@
+name = "9n8-cloudflare"
+main = "src/index.js"
+compatibility_date = "2026-11-25"
+workers_dev = true
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "9n8-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["* * * * *"]
+
+[observability]
+enabled = true
