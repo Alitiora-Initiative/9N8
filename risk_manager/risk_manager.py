@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable
 
@@ -81,6 +82,15 @@ class RiskManager:
         current_open_positions: int = 0,
     ) -> RiskDecision:
         await self.assert_entry_allowed()
+        numeric_inputs = [
+            account.equity_usd, account.free_usd, current_exposure_usd,
+            estimated_slippage_pct, contract_multiplier, leverage,
+            intent.entry_price, intent.risk_distance, intent.stop_loss, intent.take_profit,
+        ]
+        if forex_spread_pips is not None:
+            numeric_inputs.append(forex_spread_pips)
+        if not all(math.isfinite(float(value)) for value in numeric_inputs):
+            return RiskDecision(False, "Non-finite price, balance, sizing or slippage input.")
         if account.equity_usd <= 0 or account.free_usd <= 0:
             return RiskDecision(False, "Account equity or free collateral is not positive.")
         max_positions = min(
@@ -89,7 +99,8 @@ class RiskManager:
         )
         if current_open_positions >= max_positions:
             return RiskDecision(False, f"Maximum concurrent position count ({max_positions}) reached.")
-        if not all(map(lambda x: x > 0, (intent.entry_price, intent.risk_distance, contract_multiplier))):
+        actual_stop_distance = abs(intent.entry_price - intent.stop_loss)
+        if not all(map(lambda x: x > 0, (intent.entry_price, intent.risk_distance, actual_stop_distance, contract_multiplier))):
             return RiskDecision(False, "Invalid entry, stop distance or contract multiplier.")
         if intent.side is Side.BUY and intent.stop_loss >= intent.entry_price:
             return RiskDecision(False, "Long stop-loss must be below entry.")
@@ -120,7 +131,7 @@ class RiskManager:
             return RiskDecision(False, "Requested leverage exceeds the hard leverage ceiling.")
         risk_pct = self._bounded("risk_per_trade_pct", HARD_MAX_RISK_PER_TRADE)
         risk_budget = account.equity_usd * risk_pct
-        quantity = risk_budget / (intent.risk_distance * contract_multiplier)
+        quantity = risk_budget / (actual_stop_distance * contract_multiplier)
         notional = quantity * intent.entry_price * contract_multiplier
         max_notional = min(
             float(self.risk_cfg.get("max_position_notional_usd", 100)),
@@ -134,7 +145,7 @@ class RiskManager:
         if notional <= 0:
             return RiskDecision(False, "No risk budget or portfolio exposure remains.")
         quantity = notional / (intent.entry_price * contract_multiplier)
-        actual_risk_usd = quantity * intent.risk_distance * contract_multiplier
+        actual_risk_usd = quantity * actual_stop_distance * contract_multiplier
         if quantity <= 0:
             return RiskDecision(False, "Calculated quantity is below zero.")
         if market in {"solana_dex", "evm_dex"} and not intent.metadata.get("security_approved", False):
