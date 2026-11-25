@@ -18,6 +18,12 @@ async def async_main() -> None:
 
     store = TradeStore(settings.database_path)
     await store.open()
+    interrupted = await store.recover_interrupted_approvals()
+    if interrupted:
+        log.critical(
+            "Recovered %d interrupted approval(s). Trading is locked until provider-side order/fill reconciliation is completed.",
+            interrupted,
+        )
 
     engine = TradingEngine(settings, store)
     telegram = TelegramController(engine)
