@@ -299,10 +299,21 @@ class TradingEngine:
         spread_pips = self._forex_spread_pips(snapshot) if intent.market_type in {
             MarketType.FOREX, MarketType.COMMODITY
         } else None
+        old_entry = float(intent.entry_price)
+        planned_stop_distance = abs(old_entry - float(intent.stop_loss))
+        planned_reward_distance = abs(float(intent.take_profit) - old_entry)
+        executable_entry = snapshot.ask if intent.side is Side.BUY else snapshot.bid
+        if planned_stop_distance <= 0 or planned_reward_distance <= 0 or executable_entry <= 0:
+            raise RiskRejected("Invalid signal stop/target distance or executable quote.")
+        if intent.side is Side.BUY:
+            rebased_stop = executable_entry - planned_stop_distance
+            rebased_target = executable_entry + planned_reward_distance
+        else:
+            rebased_stop = executable_entry + planned_stop_distance
+            rebased_target = executable_entry - planned_reward_distance
         intent = TradeIntent(
             intent.venue, intent.symbol, intent.market_type, intent.side,
-            snapshot.ask if intent.side is Side.BUY else snapshot.bid,
-            intent.stop_loss, intent.take_profit, intent.risk_distance,
+            executable_entry, rebased_stop, rebased_target, planned_stop_distance,
             intent.reason, {**intent.metadata, "signal_candle_ms": candle_timestamp},
         )
         if intent.market_type in {MarketType.SOLANA_DEX, MarketType.EVM_DEX}:
