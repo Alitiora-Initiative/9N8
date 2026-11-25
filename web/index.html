@@ -9,8 +9,8 @@
 <style>
 :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:#0b1220;color:#edf2f7;font-synthesis:none}
 *{box-sizing:border-box}
-body{margin:0;background:radial-gradient(circle at top,#15253b 0,#0b1220 52%);min-height:100vh;padding:24px 16px 48px}
-main{max-width:720px;margin:0 auto}
+body{margin:0;background:radial-gradient(circle at top,#172b3e 0,#0b0e14 58%);min-height:100vh;padding:24px 16px 48px}
+main{max-width:1180px;margin:0 auto}
 .top{display:flex;align-items:center;gap:10px;margin:8px 0 20px}
 .logo{width:42px;height:42px;border-radius:13px;background:#183c35;color:#8cf0bf;display:grid;place-items:center;font-weight:900;font-size:19px}
 .brand{font-weight:800;letter-spacing:.04em}.tag{margin-left:auto;border:1px solid #325446;color:#9ae6c1;border-radius:999px;padding:6px 10px;font-size:12px}
@@ -41,39 +41,77 @@ button:disabled{opacity:.55;cursor:wait}
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #315344;border-radius:999px;padding:5px 9px;color:#9de6c1;font-size:11px;font-weight:700}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:520px){body{padding:16px 12px 36px}.card{padding:16px}.grid{grid-template-columns:1fr}.tag{font-size:10px}}
+/* Live-market simulator */
+.sim-hero{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.sim-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0}
+.sim-stat{padding:14px;border:1px solid #283950;border-radius:14px;background:rgba(8,14,23,.72);min-width:0}
+.sim-stat span{display:block;color:#91a4b9;font-size:12px}
+.sim-stat b{display:block;margin-top:7px;font-size:20px;overflow-wrap:anywhere}
+.sim-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(260px,.8fr);gap:14px}
+.sim-panel{background:rgba(8,14,23,.72);border:1px solid #283950;border-radius:16px;padding:16px;min-width:0}
+.sim-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sim-toolbar select{width:auto;min-width:100px;padding:10px}
+.sim-price{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0;color:#aab9ca;font-size:13px}
+.sim-price b{font-size:18px;color:#f1f5f9}
+.sim-chart{height:390px;min-height:300px;width:100%;position:relative}
+.sim-table{width:100%;border-collapse:collapse;font-size:12px}
+.sim-table th,.sim-table td{padding:9px 7px;border-bottom:1px solid #243247;text-align:left;white-space:nowrap}
+.sim-table th{color:#90a3b8;font-weight:600}
+.sim-table td{color:#d9e2ee}
+.sim-table-wrap{overflow:auto}
+.book-list{font-variant-numeric:tabular-nums;font-size:12px}
+.book-row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(48,65,86,.55)}
+.book-row.ask{color:#ff8b9c}.book-row.bid{color:#6fe4a9}
+.sim-muted{color:#7f93ab;font-size:12px}
+.sim-actions{display:flex;gap:8px;flex-wrap:wrap}
+.sim-actions button{width:auto;flex:1}
+.sim-primary{background:linear-gradient(120deg,#00e676,#00bd81);color:#04190f}
+.sim-danger{background:#ff1744;color:#fff}
+.sim-flag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;border-radius:999px;padding:6px 10px;background:#123b2a;color:#69f0ae;border:1px solid #1f6948}
+.sim-flag.offline{background:#3b2028;border-color:#723343;color:#ff9cab}
+.indicator-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.indicator{padding:10px;background:#0b1524;border:1px solid #24364c;border-radius:10px}
+.indicator span{display:block;color:#879bb5;font-size:11px}
+.indicator b{display:block;margin-top:5px;font-size:14px}
+@media(max-width:820px){.sim-grid{grid-template-columns:1fr}.sim-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.sim-chart{height:330px}}
+@media(max-width:420px){.sim-chart{height:280px}.sim-stat b{font-size:17px}.sim-toolbar select{min-width:85px}}
+
 </style>
 </head>
 <body>
 <main>
-  <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">SECURE · DEMO FIRST</div></div>
+  <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">LIVE DATA · VIRTUAL PAPER</div></div>
   <section id="connectPage">
     <span class="pill">PRIVATE ACCOUNT CONNECTIONS</span>
     <h1>Connect your accounts.</h1>
-    <p>Connect exchange demo accounts and add public wallet addresses from your Telegram private chat. Your personal connections are never available to group members.</p>
+    <p>Connect your Binance Spot account or wallet securely. Your API credentials are checked server-side and stored encrypted; they are never shown again. Your account is private to your Telegram identity.</p>
     <div class="tabs" role="tablist">
-      <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Exchange</button>
+      <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Binance account</button>
       <button class="tab" id="walletTab" role="tab" aria-selected="false" type="button">Wallet watch</button>
+      <button class="tab" id="simulatorTab" role="tab" aria-selected="false" type="button">Live-market simulator</button>
     </div>
     <section class="card" id="exchangePanel">
-      <h2>Exchange connection</h2>
-      <p class="muted">Use an API key you create yourself on the exchange. Select demo or testnet only. We verify access before encrypting and saving the credentials.</p>
-      <div class="notice">Never enable withdrawals. Do not use a live-trading API key here. This version only validates account access and does not place trades.</div>
+      <h2>Binance Spot LIVE connection</h2>
+      <p class="muted">Connect your real Binance Spot account using an API key and secret created in Binance. Credentials are validated on the 9N8 backend and stored encrypted in Supabase Vault. They are not saved in this browser.</p>
+      <div class="notice">Create a dedicated Spot-only API key. Enable Read and Spot Trading only. Disable withdrawals, internal transfers, universal transfers, margin, futures and options. Use IP restrictions when your deployment has a stable outbound IP. Never enter your seed phrase or wallet private key.</div>
       <form id="exchangeForm" autocomplete="off">
         <label for="provider">Exchange</label>
         <select id="provider" required>
-          <option value="okx">OKX Demo Trading</option>
-          <option value="binance">Binance Spot Testnet</option>
-          <option value="bybit">Bybit Demo Trading</option>
+          <option value="binance">Binance Spot · LIVE</option>
         </select>
         <label for="environment">Environment</label>
-        <select id="environment" required><option value="demo">Demo Trading</option></select>
+        <select id="environment" required><option value="live">Spot Mainnet · LIVE</option></select>
         <div class="grid">
           <div><label for="apiKey">API key</label><input id="apiKey" type="password" maxlength="512" autocomplete="off" required></div>
           <div><label for="apiSecret">API secret</label><input id="apiSecret" type="password" maxlength="1024" autocomplete="off" required></div>
         </div>
-        <div id="passphraseWrap"><label for="passphrase">OKX API passphrase</label><input id="passphrase" type="password" maxlength="256" autocomplete="off" required></div>
-        <button id="saveExchange" type="submit">Verify and save securely</button>
+        <button id="saveExchange" type="submit">🔐 Verify Binance LIVE key & save securely</button>
         <div class="status" id="exchangeStatus" role="status"></div>
+        <div class="divider"></div>
+        <h3>Connected account balances</h3>
+        <p class="muted">Fetches balances from your private Binance Spot account using the stored key. API secrets are never returned to the Web App.</p>
+        <button class="secondary" id="loadBinanceBalance" type="button">↻ Load Binance Spot balances</button>
+        <div class="status" id="binanceBalance" role="status">Connect Binance to view balances.</div>
       </form>
     </section>
     <section class="card hidden" id="walletPanel">
@@ -124,6 +162,81 @@ button:disabled{opacity:.55;cursor:wait}
         <div class="status" id="walletStatus" role="status"></div>
       </form>
     </section>
+    <section class="card hidden" id="simulatorPanel">
+      <div class="sim-hero">
+        <div>
+          <span class="pill">REAL BINANCE DATA · VIRTUAL EXECUTION</span>
+          <h2 style="margin-top:10px">Live-market paper simulator</h2>
+          <p class="muted">Real public candles, ticker and order book. Virtual cash, virtual positions and simulated fills. No real exchange order is sent from this simulator.</p>
+        </div>
+        <span id="marketFeedStatus" class="sim-flag offline">● Connecting to Binance…</span>
+      </div>
+      <div class="sim-stats">
+        <div class="sim-stat"><span>Virtual equity</span><b id="paperEquity">—</b><small class="sim-muted" id="paperSessionMeta">Session not loaded</small></div>
+        <div class="sim-stat"><span>Virtual cash</span><b id="paperCash">—</b><small class="sim-muted">Paper account only</small></div>
+        <div class="sim-stat"><span>Realized + unrealized P&amp;L</span><b id="paperPnl">—</b><small class="sim-muted" id="paperPnlSplit">No paper results yet</small></div>
+        <div class="sim-stat"><span>Open paper positions</span><b id="paperOpenCount">—</b><small class="sim-muted">Virtual positions only</small></div>
+      </div>
+      <div class="sim-actions">
+        <button id="startPaperButton" class="sim-primary" type="button">▶ Start / resume paper run</button>
+        <button id="refreshPaperButton" class="secondary" type="button">↻ Refresh account &amp; market</button>
+      </div>
+      <div id="paperEngineStatus" class="status" role="status">Open this Web App from your 9N8 Telegram private chat to load your paper account.</div>
+      <div class="sim-grid">
+        <div class="sim-panel">
+          <div class="sim-toolbar">
+            <label style="margin:0">Market
+              <select id="marketSymbol" class="field">
+                <option value="BTCUSDT">BTC/USDT</option><option value="ETHUSDT">ETH/USDT</option>
+                <option value="SOLUSDT">SOL/USDT</option><option value="BNBUSDT">BNB/USDT</option>
+                <option value="XRPUSDT">XRP/USDT</option><option value="DOGEUSDT">DOGE/USDT</option>
+                <option value="SHIBUSDT">SHIB/USDT</option><option value="PEPEUSDT">PEPE/USDT</option>
+                <option value="BONKUSDT">BONK/USDT</option><option value="WIFUSDT">WIF/USDT</option>
+              </select>
+            </label>
+            <label style="margin:0">Interval
+              <select id="marketTimeframe" class="field">
+                <option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option>
+                <option value="1h">1H</option><option value="4h">4H</option><option value="1d">1D</option>
+              </select>
+            </label>
+          </div>
+          <div class="sim-price">
+            <b id="marketPrice">Last @ —</b>
+            <span id="marketBid">Bid @ —</span>
+            <span id="marketAsk">Ask @ —</span>
+            <span id="marketSpread">Spread —</span>
+            <span id="marketChange">24h —</span>
+          </div>
+          <div id="marketChart" class="sim-chart"></div>
+          <div class="indicator-row">
+            <div class="indicator"><span>EMA 9</span><b id="ema9Value">—</b></div>
+            <div class="indicator"><span>EMA 21</span><b id="ema21Value">—</b></div>
+            <div class="indicator"><span>RSI 14</span><b id="rsi14Value">—</b></div>
+          </div>
+          <p class="sim-muted">Chart data: Binance Spot OHLCV. Entry and exit markers are virtual paper fills recorded by 9N8, not real orders.</p>
+        </div>
+        <div class="sim-panel">
+          <div class="panel-head"><b>🟢 Live order book</b><span class="sim-muted" id="bookUpdated">Waiting for depth…</span></div>
+          <div class="grid">
+            <div><div class="sim-muted">ASKS · SELLERS</div><div id="bookAsks" class="book-list">Waiting for real depth…</div></div>
+            <div><div class="sim-muted">BIDS · BUYERS</div><div id="bookBids" class="book-list">Waiting for real depth…</div></div>
+          </div>
+          <div class="notice">Paper fill estimate consumes visible ask depth for BUYs and bid depth for SELLs. Stale or insufficient book depth is rejected rather than fabricated.</div>
+          <div class="panel-head"><b>Paper engine</b><span class="sim-flag">VIRTUAL ONLY</span></div>
+          <p class="muted">Strategy: EMA 9 / EMA 21 crossover with RSI 14 confirmation on closed 1-minute candles.</p>
+          <p class="muted">Paper account starts at $1,000 virtual equity. Fees and slippage are modeled; live Binance balances are never used by this simulator.</p>
+        </div>
+      </div>
+      <div class="sim-panel" style="margin-top:14px">
+        <div class="panel-head"><b>Open paper positions</b><span class="sim-muted">Marked against current Binance bid</span></div>
+        <div class="sim-table-wrap"><table class="sim-table"><thead><tr><th>Market</th><th>Quantity</th><th>Entry @</th><th>Bid mark @</th><th>TP / SL @</th><th>Unrealized P&amp;L</th></tr></thead><tbody id="paperPositionsBody"><tr><td colspan="6">No open virtual positions.</td></tr></tbody></table></div>
+      </div>
+      <div class="sim-panel" style="margin-top:14px">
+        <div class="panel-head"><b>Recent simulated fills</b><span class="sim-muted">Virtual ledger · fees recorded</span></div>
+        <div class="sim-table-wrap"><table class="sim-table"><thead><tr><th>Side</th><th>Market</th><th>Quantity</th><th>Fill @</th><th>Reference @</th><th>Fee</th><th>Net P&amp;L</th><th>Time</th></tr></thead><tbody id="paperTradesBody"><tr><td colspan="8">No simulated fills yet.</td></tr></tbody></table></div>
+      </div>
+    </section>
   </section>
   <section id="setupPage" class="hidden">
     <span class="pill">OWNER SETUP</span>
@@ -140,7 +253,7 @@ button:disabled{opacity:.55;cursor:wait}
     </div>
     <p class="muted">The page sends the secret over HTTPS to 9N8 for the Telegram setWebhook call. It does not save it in browser storage.</p>
   </section>
-  <div class="footer">9N8 · Independent accounts · Demo/testnet only · No withdrawals · No seed phrases</div>
+  <div class="footer">9N8 · Binance public market data · Virtual paper simulator · No withdrawals · Never share seed phrases</div>
 </main>
 <script>
 (function(){
@@ -155,32 +268,30 @@ button:disabled{opacity:.55;cursor:wait}
   if(tg){tg.ready();tg.expand();}
   const exchangeTab=document.getElementById("exchangeTab");
   const walletTab=document.getElementById("walletTab");
+  const simulatorTab=document.getElementById("simulatorTab");
   const exchangePanel=document.getElementById("exchangePanel");
   const walletPanel=document.getElementById("walletPanel");
-  function selectTab(wallet){
-    exchangePanel.classList.toggle("hidden",wallet);
-    walletPanel.classList.toggle("hidden",!wallet);
-    exchangeTab.setAttribute("aria-selected",String(!wallet));
+  const simulatorPanel=document.getElementById("simulatorPanel");
+  function selectTab(view){
+    const simulator=view==="simulator", wallet=view==="wallet";
+    exchangePanel.classList.toggle("hidden",simulator||wallet);
+    walletPanel.classList.toggle("hidden",simulator||!wallet);
+    simulatorPanel.classList.toggle("hidden",!simulator);
+    exchangeTab.setAttribute("aria-selected",String(!simulator&&!wallet));
     walletTab.setAttribute("aria-selected",String(wallet));
+    simulatorTab.setAttribute("aria-selected",String(simulator));
+    if(simulator) window.dispatchEvent(new CustomEvent("n8:simulator-visible"));
   }
-  exchangeTab.addEventListener("click",()=>selectTab(false));
-  walletTab.addEventListener("click",()=>selectTab(true));
+  exchangeTab.addEventListener("click",()=>selectTab("exchange"));
+  walletTab.addEventListener("click",()=>selectTab("wallet"));
+  simulatorTab.addEventListener("click",()=>selectTab("simulator"));
+  const requestedView=new URLSearchParams(location.search).get("view");
+  if(requestedView==="simulator")selectTab("simulator");
+  else if(requestedView==="wallet")selectTab("wallet");
+  else selectTab("exchange");
   const provider=document.getElementById("provider");
   const env=document.getElementById("environment");
-  const passphraseWrap=document.getElementById("passphraseWrap");
   const passphrase=document.getElementById("passphrase");
-  function refreshProvider(){
-    const v=provider.value;
-    env.innerHTML="";
-    const option=document.createElement("option");
-    option.value=v==="binance"?"testnet":"demo";
-    option.textContent=v==="binance"?"Spot Testnet":"Demo Trading";
-    env.appendChild(option);
-    passphraseWrap.classList.toggle("hidden",v!=="okx");
-    passphrase.required=v==="okx";
-  }
-  provider.addEventListener("change",refreshProvider);
-  refreshProvider();
   async function apiPost(body){
     const response=await fetch(API,{
       method:"POST",
@@ -195,27 +306,39 @@ button:disabled{opacity:.55;cursor:wait}
   }
   document.getElementById("exchangeForm").addEventListener("submit",async function(event){
     event.preventDefault();
-    if(!tg || !tg.initData){document.getElementById("exchangeStatus").textContent="Open this page using the Connect button in your 9N8 Telegram private chat.";return;}
-    const button=document.getElementById("saveExchange");
     const status=document.getElementById("exchangeStatus");
-    button.disabled=true;status.textContent="Checking the selected demo/testnet account…";
+    if(!tg || !tg.initData){status.textContent="Open this form from your 9N8 Telegram private chat.";return;}
+    const button=document.getElementById("saveExchange");
+    button.disabled=true;status.textContent="Checking Binance Spot LIVE key permissions…";
     const credentials={
       apiKey:document.getElementById("apiKey").value.trim(),
       apiSecret:document.getElementById("apiSecret").value.trim()
     };
-    if(provider.value==="okx")credentials.passphrase=passphrase.value;
     try{
-      const result=await apiPost({action:"connect_exchange",initData:tg.initData,provider:provider.value,environment:env.value,credentials});
-      status.textContent="Connected: "+result.label+". Credentials encrypted and saved; they will not be displayed again.";
-      this.reset();refreshProvider();
-    }catch(error){status.textContent=error.message||"Connection failed.";}
+      const result=await apiPost({action:"connect_exchange",initData:tg.initData,provider:"binance",environment:"live",credentials});
+      status.textContent="Connected: "+result.label+". Read/Spot scopes accepted; encrypted credentials stored. Live orders are not enabled by connecting the account.";
+      this.reset();
+      document.getElementById("binanceBalance").textContent="Connection saved. Load balances to refresh your Spot account.";
+    }catch(error){status.textContent=error.message||"Binance connection failed.";}
     finally{
-      credentials.apiKey="";credentials.apiSecret="";credentials.passphrase="";
+      credentials.apiKey="";credentials.apiSecret="";
       document.getElementById("apiKey").value="";
       document.getElementById("apiSecret").value="";
-      passphrase.value="";
       button.disabled=false;
     }
+  });
+  document.getElementById("loadBinanceBalance").addEventListener("click",async()=>{
+    const button=document.getElementById("loadBinanceBalance");
+    const target=document.getElementById("binanceBalance");
+    if(!tg||!tg.initData){target.textContent="Open from your 9N8 Telegram private chat.";return;}
+    button.disabled=true;target.textContent="Loading private Binance Spot balances…";
+    try{
+      const result=await apiPost({action:"binance_account",initData:tg.initData});
+      target.innerHTML=result.balances.length
+        ? result.balances.map(v=>"<div class='book-row'><b>"+String(v.asset).replace(/[&<>]/g,"")+"</b><span>Free "+Number(v.free).toLocaleString("en-US",{maximumFractionDigits:8})+" · Locked "+Number(v.locked).toLocaleString("en-US",{maximumFractionDigits:8})+"</span></div>").join("")
+        : "No non-zero Spot balances returned.";
+    }catch(error){target.textContent=error.message||"Could not fetch Binance balances.";}
+    finally{button.disabled=false;}
   });
   // Wallet QR scanning: scan locally, extract only a public address, and require
   // the user to review and submit it. No QR contents are uploaded or logged.
@@ -416,5 +539,6 @@ button:disabled{opacity:.55;cursor:wait}
 })();
 </script>
 <script type="module" src="/wallet-connect.js"></script>
+<script type="module" src="/market-simulator.js"></script>
 </body>
 </html>
