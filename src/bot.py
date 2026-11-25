@@ -124,6 +124,20 @@ def _assert_execution_enabled() -> None:
             "OKX_API_PASSPHRASE to your private .env file. Never send them in Telegram."
         )
 
+def _verify_safe_key() -> dict:
+    """Fail closed if OKX reports a Withdraw permission on this API key."""
+    account = okx.account_config()
+    raw_permissions = str(account.get("perm", "")).strip().lower()
+    permissions = {part.strip() for part in raw_permissions.split(",") if part.strip()}
+    if not permissions:
+        raise OKXError("OKX did not return this API key's permission list. Refusing to stage an order.")
+    if "withdraw" in permissions:
+        raise OKXError(
+            "This OKX API key has Withdraw permission. 9N8 refuses to stage orders with that key. "
+            "Revoke it at OKX and create a new key with Withdraw turned OFF."
+        )
+    return account
+
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     if user:
@@ -188,9 +202,10 @@ async def cmd_okx_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Trading environment: {_mode_label()}\n"
             f"Account level: {account.get('acctLv', 'not returned')}\n"
             f"Position mode: {account.get('posMode', 'not returned')}\n"
+            f"API key permissions: {account.get('perm', 'not returned')}\n"
             f"Total equity: {_fmt(balance.get('totalEq', '0'), 4)}\n"
-            "Order permission is tested only when you confirm an order.\n"
-            "9N8 has no withdrawal or transfer functions."
+            + ("WARNING: this key has Withdraw permission. Do not trade with it; replace it." if "withdraw" in str(account.get("perm", "")).lower().split(",") else "")
+            + "\n9N8 does not call withdrawal or transfer endpoints."
         )
     except OKXError as exc:
         await update.effective_message.reply_text(f"OKX connection failed: {exc}")
@@ -317,6 +332,7 @@ async def cmd_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         _assert_execution_enabled()
         order, notional, details = _build_order(context.args)
+        await asyncio.to_thread(_verify_safe_key)
         instrument, ticker = await asyncio.gather(
             asyncio.to_thread(okx.instrument, order["instId"]),
             asyncio.to_thread(okx.ticker, order["instId"]),
@@ -458,6 +474,7 @@ async def callback_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         _assert_credentials()
         if action["kind"] == "order":
             _assert_execution_enabled()
+            await asyncio.to_thread(_verify_safe_key)
             result = await asyncio.to_thread(okx.place_spot_order, action["order"])
             message = (
                 "OKX ORDER ACCEPTED\n"
