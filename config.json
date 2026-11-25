@@ -1,0 +1,80 @@
+{
+  "app": {"name": "9N8 Multi-Asset Engine", "log_level": "INFO", "database_path": "data/9n8_trades.sqlite3"},
+  "execution": {
+    "mode": "paper",
+    "live_trading": false,
+    "allow_live_trading": false,
+    "require_live_acknowledgement": true,
+    "live_acknowledgement": "I_UNDERSTAND_REAL_FUNDS_CAN_BE_LOST",
+    "default_order_type": "market",
+    "max_order_age_seconds": 5,
+    "price_poll_seconds": 1.0,
+    "reconcile_seconds": 10,
+    "allow_perpetuals": false,
+    "allow_dex_live": false,
+    "allow_oanda_live": false
+  },
+  "markets": {
+    "crypto_spot": {
+      "enabled": true, "exchange": "bybit", "sandbox": true,
+      "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT"],
+      "timeframes": {"entry": "5m", "trend": "1h"}
+    },
+    "crypto_perpetuals": {
+      "enabled": false, "exchange": "bybit", "sandbox": true,
+      "symbols": ["BTC/USDT:USDT"], "margin_mode": "isolated", "leverage": 1
+    },
+    "solana_dex": {
+      "enabled": false, "cluster": "devnet",
+      "tokens": [],
+      "max_slippage_bps": 300,
+      "minimum_liquidity_usd": 15000,
+      "minimum_locked_liquidity_pct": 85,
+      "maximum_top10_holder_pct": 25,
+      "maximum_token_tax_pct": 5,
+      "require_buy_sell_simulation": true
+    },
+    "evm_dex": {
+      "enabled": false, "chain_ids": [1, 56, 8453],
+      "tokens": [],
+      "max_slippage_bps": 300,
+      "minimum_liquidity_usd": 15000,
+      "minimum_locked_liquidity_pct": 85,
+      "maximum_top10_holder_pct": 25,
+      "maximum_token_tax_pct": 5,
+      "require_buy_sell_simulation": true
+    },
+    "oanda": {
+      "enabled": false, "environment": "practice",
+      "instruments": ["EUR_USD", "GBP_USD", "USD_JPY", "XAU_USD"],
+      "granularities": {"entry": "M5", "trend": "H1"}
+    }
+  },
+  "strategy": {
+    "ema_fast": 50, "ema_slow": 200,
+    "entry_ema_fast": 9, "entry_ema_slow": 21,
+    "rsi_period": 14, "rsi_long_min": 35, "rsi_long_max": 60,
+    "rsi_short_min": 40, "rsi_short_max": 65,
+    "adx_period": 14, "minimum_adx": 18,
+    "atr_period": 14, "atr_stop_multiple": 2.0,
+    "take_profit_r_multiple": 3.0,
+    "memecoin_volume_spike_multiple": 3.0,
+    "memecoin_buy_sell_ratio_min": 1.5,
+    "partial_take_profit_r": 1.5,
+    "partial_take_profit_fraction": 0.5,
+    "trailing_atr_multiple": 2.5
+  },
+  "risk": {
+    "risk_per_trade_pct": 0.01,
+    "maximum_daily_drawdown_pct": 0.05,
+    "maximum_concurrent_positions": 3,
+    "maximum_portfolio_exposure_pct": 0.25,
+    "maximum_perpetual_leverage": 3,
+    "maximum_cex_slippage_pct": 0.005,
+    "maximum_dex_slippage_pct": 0.05,
+    "maximum_forex_spread_pips": 2.0,
+    "daily_halt_hours": 24,
+    "max_position_notional_usd": 100
+  },
+  "telegram": {"enabled": false, "allowed_user_ids": []}
+}
