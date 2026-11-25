@@ -52,6 +52,7 @@ PAPER_WATCHLIST = [
     item.strip().upper()
     for item in os.getenv("PAPER_WATCHLIST", "BTC-USDT,ETH-USDT,SOL-USDT").split(",")
     if re.fullmatch(r"[A-Z0-9-]{3,30}", item.strip().upper())
+    and item.strip().upper().endswith(f"-{PAPER_QUOTE_CURRENCY}")
 ]
 PAPER_MIN_24H_QUOTE_VOLUME = float(_env_decimal("PAPER_MIN_24H_QUOTE_VOLUME", "50000"))
 PAPER_MAX_SPREAD_BPS = float(_env_decimal("PAPER_MAX_SPREAD_BPS", "80"))
@@ -139,7 +140,7 @@ def _fresh_quotes(quotes: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]
             age = (now_ms - int(quote.get("ts") or 0)) / 1000
         except (TypeError, ValueError):
             continue
-        if 0 <= age <= PAPER_MAX_QUOTE_AGE_SECONDS:
+        if -2 <= age <= PAPER_MAX_QUOTE_AGE_SECONDS:
             fresh[symbol.upper()] = quote
     return fresh
 
@@ -278,6 +279,11 @@ async def cmd_paper_trade(update: Update, context: ContextTypes.DEFAULT_TYPE, ow
         await update.effective_message.reply_text("Usage: /paper_trade BTC-USDT 20  (quote-currency budget)")
         return
     symbol = context.args[0].upper()
+    if not symbol.endswith(f"-{PAPER_QUOTE_CURRENCY}"):
+        await update.effective_message.reply_text(
+            f"Paper account is denominated in {PAPER_QUOTE_CURRENCY}. Use a {PAPER_QUOTE_CURRENCY}-quoted pair."
+        )
+        return
     try:
         budget = Decimal(context.args[1])
         if not budget.is_finite() or budget <= 0:
