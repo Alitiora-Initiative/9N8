@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -23,8 +24,13 @@ class PaperBroker:
     """Paper executions use live provider bid/ask prices plus explicit fee/slippage."""
 
     def __init__(self, starting_equity_usd: float, fee_rate: float = 0.001, slippage_bps: float = 5):
-        if starting_equity_usd <= 0 or fee_rate < 0 or slippage_bps < 0:
-            raise ValueError("Invalid paper broker parameters.")
+        if (
+            not all(math.isfinite(float(v)) for v in (starting_equity_usd, fee_rate, slippage_bps))
+            or starting_equity_usd <= 0
+            or not 0 <= fee_rate < 0.05
+            or not 0 <= slippage_bps <= 500
+        ):
+            raise ValueError("Paper balance, fee rate or slippage configuration is outside safe bounds.")
         self.cash = float(starting_equity_usd)
         self.starting_equity = float(starting_equity_usd)
         self.fee_rate = float(fee_rate)
@@ -41,8 +47,8 @@ class PaperBroker:
         """Restore paper cash and open positions from the durable SQLite ledger."""
         import json
         async with self._lock:
-            if cash_balance <= 0:
-                raise ValueError("Persisted paper cash must be positive.")
+            if not math.isfinite(float(cash_balance)) or cash_balance < 0:
+                raise ValueError("Persisted paper cash must be finite and non-negative.")
             self.cash = float(cash_balance)
             self.positions.clear()
             for row in rows:
@@ -88,14 +94,24 @@ class PaperBroker:
 
     async def execute(self, intent: TradeIntent, quantity: float, snapshot: MarketSnapshot,
                       client_order_id: str) -> TradeReceipt:
-        if quantity <= 0:
-            raise ValueError("Paper order quantity must be positive.")
+        if not math.isfinite(float(quantity)) or quantity <= 0:
+            raise ValueError("Paper order quantity must be finite and positive.")
+        if not all(math.isfinite(float(v)) for v in (
+            snapshot.bid, snapshot.ask, snapshot.last, intent.entry_price
+        )):
+            raise ValueError("Paper execution received a non-finite market or signal price.")
+        if snapshot.bid <= 0 or snapshot.ask <= 0 or snapshot.last <= 0 or snapshot.ask < snapshot.bid:
+            raise ValueError("Paper execution requires a valid, uncrossed positive bid/ask quote.")
         async with self._lock:
             price = self._price(snapshot, intent.side)
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError("Calculated paper fill price is invalid.")
             notional = price * quantity
             fee = notional * self.fee_rate
             key = intent.venue + ":" + intent.symbol
             current = self.positions.get(key)
+            entry_fee_allocated = 0.0
+            remaining_entry_fee = fee if current is None else 0.0
 
             if current is None:
                 # Opening long: pay for inventory. Opening short: receive sale proceeds,
@@ -107,30 +123,50 @@ class PaperBroker:
                 else:
                     self.cash += notional - fee
                 self.positions[key] = _PaperPosition(
-                    intent.venue,intent.symbol,intent.side,quantity,price,
-                    intent.stop_loss,intent.take_profit,fee,
+                    intent.venue, intent.symbol, intent.side, quantity, price,
+                    intent.stop_loss, intent.take_profit, fee,
                 )
             elif current.side is intent.side:
                 raise ValueError("A paper position already exists in the same direction.")
             else:
                 if quantity > current.quantity + 1e-12:
                     raise ValueError("Paper close quantity exceeds the open position.")
+                # Allocate the remaining entry fee pro-rata across each partial close.
+                entry_fee_allocated = current.fees_paid * min(1.0, quantity / current.quantity)
+                remaining_entry_fee = max(0.0, current.fees_paid - entry_fee_allocated)
                 # Close an existing long with a sell, or a short with a buy.
                 if current.side is Side.BUY:
                     self.cash += notional - fee
                 else:
                     self.cash -= notional + fee
                 current.quantity -= quantity
+                current.fees_paid = remaining_entry_fee
                 if current.quantity <= 1e-12:
                     del self.positions[key]
+                    remaining_entry_fee = 0.0
 
             reference = snapshot.ask if intent.side is Side.BUY else snapshot.bid
+            gross_pnl = 0.0
+            if current is not None:
+                direction = 1.0 if current.side is Side.BUY else -1.0
+                gross_pnl = (price - current.entry_price) * quantity * direction
             return TradeReceipt(
-                intent.venue,intent.symbol,intent.side,"paper-"+client_order_id,
-                quantity,price,fee,abs(price-reference)/max(snapshot.last,1e-12),
+                intent.venue, intent.symbol, intent.side, "paper-" + client_order_id,
+                quantity, price, fee, abs(price-reference)/max(snapshot.last,1e-12),
                 datetime.now(timezone.utc),
-                raw={"mode":"paper","market_bid":snapshot.bid,"market_ask":snapshot.ask,
-                     "virtual_cash_after":self.cash,"client_order_id":client_order_id},
+                raw={
+                    "mode": "paper",
+                    "market_bid": snapshot.bid,
+                    "market_ask": snapshot.ask,
+                    "virtual_cash_after": self.cash,
+                    "client_order_id": client_order_id,
+                    "entry_fee": fee if current is None else 0.0,
+                    "entry_fee_allocated": entry_fee_allocated,
+                    "remaining_entry_fee": remaining_entry_fee,
+                    "exit_fee": fee if current is not None else 0.0,
+                    "gross_pnl": gross_pnl,
+                    "net_pnl": gross_pnl - entry_fee_allocated - (fee if current is not None else 0.0),
+                },
             )
 
     async def flatten(self, snapshots: dict[str, MarketSnapshot]) -> None:
