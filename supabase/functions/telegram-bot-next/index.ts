@@ -675,6 +675,71 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     updatedAt: observedAt,
   };
 }
+async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
+  const rows = await db(
+    "n8_exchange_connections?select=id,label,account_hint,permissions,last_validated_at&user_id=eq." +
+      encodeURIComponent(userId) + "&provider=eq.okx&environment=eq.live&status=eq.active&order=created_at.desc&limit=1"
+  );
+  const connection = Array.isArray(rows) ? rows[0] : null;
+  if (!connection?.id) throw new Error("okx_live_connection_missing");
+  const stored = await db("rpc/n8_get_exchange_credentials", "POST", {
+    p_telegram_user_id: Number(user.id),
+    p_connection_id: connection.id,
+  });
+  const regionValue = String(stored?.region ?? "global");
+  const credentials = {
+    apiKey: clean(stored?.apiKey, 512),
+    apiSecret: clean(stored?.apiSecret, 1024),
+    passphrase: clean(stored?.passphrase, 256),
+    region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
+  };
+  const validation = await validateOkxSpotRead(credentials);
+  const quote = validation.quoteBalance;
+  const observedAt = new Date().toISOString();
+  const evidence = {
+    source: "okx_signed_spot_account",
+    connectionId: connection.id,
+    region: validation.region,
+    quoteAsset: "USDT",
+    availableQuote: quote.free,
+    availableQuoteUsdValuation: "USDT nominal USD peg at 1.00",
+    balances: validation.balances,
+    accountLevel: validation.permissions.accountLevel,
+    spotTradeScope: "not_verified",
+    withdrawalScope: "not_verified",
+    transferScope: "not_verified",
+    observedAt,
+  };
+  await db("n8_live_balance_checks", "POST", {
+    user_id: userId,
+    account_type: "exchange",
+    connection_id: connection.id,
+    provider: "okx",
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    available_quote_usd: quote.free,
+    observed_at: observedAt,
+    source: "okx_signed_spot_account",
+    evidence_hash: await sha256Hex(canonicalJson(evidence)),
+    evidence,
+  }, "return=minimal");
+  await audit(userId, null, "okx_balance_refreshed", "ok", {
+    connection_id: connection.id,
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    observed_at: observedAt,
+    permission_scopes: "read validated; trade/withdraw/transfer not verified",
+  });
+  return {
+    connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
+    balances: validation.balances,
+    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, equity: quote.equity, availableUsdApprox: quote.free },
+    permissions: validation.permissions,
+    accountEquityUsdApprox: validation.accountEquityUsd,
+    updatedAt: observedAt,
+    liveOrdersEnabled: false,
+  };
+}
 async function handleMiniApp(body: any): Promise<Response> {
   try {
     // Read-only account views, assessments and emergency pause remain usable while
