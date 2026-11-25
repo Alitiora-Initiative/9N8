@@ -48,6 +48,7 @@ class TradingEngine:
         self.stop_event = asyncio.Event()
         self.tasks: list[asyncio.Task] = []
         self._panic_lock = asyncio.Lock()
+        self._flatten_lock = asyncio.Lock()
         self._market_semaphore = asyncio.Semaphore(5)
         self.risk.register_flatten_callback(self._flatten_all)
 
@@ -458,7 +459,7 @@ class TradingEngine:
                 abs(float(row["entry_price"]) - float(row["stop_loss"])),
                 "TP1 partial close", {},
             )
-            await self.paper.execute(intent, amount, snapshot, "tp1-" + uuid.uuid4().hex)
+            receipt = await self.paper.execute(intent, amount, snapshot, "tp1-" + uuid.uuid4().hex)
             await self.store.set_control("paper_cash", str(self.paper.cash))
         else:
             p = OpenPosition(
@@ -466,9 +467,27 @@ class TradingEngine:
                 float(row["quantity"]), float(row["entry_price"]), float(row["mark_price"]),
                 float(row["stop_loss"]), float(row["take_profit"]),
             )
-            await connector.close_position(p, amount)
+            receipt = await connector.close_position(p, amount)
+        direction = 1 if row["side"] == "buy" else -1
+        realized = (receipt.average_price - float(row["entry_price"])) * amount * direction - receipt.fee_usd
+        await self.store.record_trade({
+            "client_order_id": "partial:" + receipt.order_id, "venue": receipt.venue,
+            "symbol": receipt.symbol, "market_type": row["market_type"],
+            "side": receipt.side.value, "status": "partial_closed", "mode": self.mode,
+            "quantity": receipt.quantity, "average_price": receipt.average_price,
+            "entry_timestamp": row["opened_at"], "exit_timestamp": receipt.timestamp.isoformat(),
+            "stop_loss": row["stop_loss"], "take_profit": row["take_profit"],
+            "slippage_pct": receipt.slippage_pct, "commission_usd": receipt.fee_usd,
+            "realized_pnl_usd": realized,
+            "metadata": {"exit_reason": "partial_take_profit_1_5R", "order_id": receipt.order_id},
+        })
+        row["realized_pnl_usd"] = float(row.get("realized_pnl_usd", 0)) + realized
         row["quantity"] = float(row["quantity"]) - amount
-        await self.store.event("INFO", "partial_take_profit", "50% closed at 1.5R.", row["venue"], row["symbol"])
+        await self.store.event(
+            "INFO", "partial_take_profit",
+            "50% closed at 1.5R; partial fill and realized PnL saved.",
+            row["venue"], row["symbol"], {"realized_pnl_usd": realized},
+        )
 
     async def _close_position_row(self, row: dict[str, Any], connector, reason: str) -> None:
         p = OpenPosition(
@@ -510,6 +529,10 @@ class TradingEngine:
             await self.notifier.send(message)
 
     async def _flatten_all(self) -> None:
+        async with self._flatten_lock:
+            await self._flatten_all_unlocked()
+
+    async def _flatten_all_unlocked(self) -> None:
         errors = []
         for row in await self.store.positions():
             try:
