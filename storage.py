@@ -283,7 +283,7 @@ class TradeStore:
     async def decide_pending_approval(
         self, approval_id: str, status: str, decided_by: str, result: str,
     ) -> None:
-        allowed = {"APPROVED", "DENIED", "EXPIRED", "FAILED"}
+        allowed = {"APPROVED", "DENIED", "EXPIRED", "FAILED", "RECONCILIATION_REQUIRED"}
         if status not in allowed:
             raise ValueError("Invalid approval state.")
         await self._db().execute(
