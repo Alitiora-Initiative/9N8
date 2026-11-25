@@ -16,6 +16,56 @@ The bot runs on your Windows laptop at no monthly hosting cost. The laptop must 
 - OKX spot ticker/candles and EMA(9)/EMA(21)/RSI(14) observations.
 - Telegram owner lock: only the numeric `TELEGRAM_OWNER_ID` can use the bot, and only in a private chat.
 
+## Live-data paper trading
+
+The paper engine is separate from the OKX order executor:
+
+- Paper balances and fills are virtual and persisted locally in SQLite at \`PAPER_DB_PATH\`.
+- Prices, bid/ask spreads, 24-hour quote volume and candles are fetched from the public OKX SPOT market-data API. Paper mode does not generate synthetic candles or submit exchange orders.
+- Paper BUY fills are estimated from the live ask plus configured slippage; SELL fills use the live bid less configured slippage. A configurable fee is charged on both sides. These are estimates, not guaranteed real execution prices.
+- Entry filters fail closed when a quote is stale, the spread is too wide, quote volume is too low, or the spot instrument is not live.
+- Available automatic paper strategies: momentum breakout, trend following, mean reversion and a long-only range-grid seed. Scalping and cross-exchange arbitrage are not enabled because this release does not have multi-venue order-book/execution coverage.
+- Automatic paper entries are OFF until you explicitly run \`/paper_start\`. Use \`/paper_pause\` to stop new paper entries. Open paper positions continue to be monitored and can close automatically using simulated exit rules.
+- Every actual OKX order remains a separate action: it is previewed in Telegram and needs a fresh owner confirmation. The paper worker cannot call the live order endpoint.
+
+### Paper trading commands
+
+\`\`\`text
+/paper
+/paper_start
+/paper_pause
+/paper_strategy momentum
+/paper_strategy trend
+/paper_strategy mean_reversion
+/paper_strategy grid
+/paper_scan
+/paper_trade BTC-USDT 20
+/paper_positions
+/paper_balance
+/paper_history
+/paper_close TICKET
+\`\`\`
+
+\`/paper_trade BTC-USDT 20\` uses a 20 USDT virtual budget. Automatic paper sizing starts from configured risk-at-stop and is capped by the per-position allocation, available virtual cash and maximum open-position count.
+
+### Paper exit and account-protection defaults
+
+The defaults are intentionally more conservative than the example high-volatility settings in the design notes and can be changed in the private \`.env\` file:
+
+| Rule | Default |
+|---|---:|
+| Risk budget per trade | 1% of equity |
+| Maximum position allocation | 20% of equity |
+| Daily equity drawdown circuit breaker | 3% |
+| Hard stop | -5% |
+| First take-profit | +10%, sell 50% |
+| Trailing activation | +8% |
+| Trailing drawdown from high-water mark | 4% |
+| Time kill | 240 minutes when profit is below +1% |
+| Maximum simultaneous positions | 3 |
+
+These parameters are examples for controlled paper testing, not a profitable strategy or a guarantee against gaps. The drawdown breaker stops new automatic paper entries; it does not claim to protect exchange positions.
+
 ## Explicit exclusions
 
 - No MT5, MetaApi or MetaTrader terminal.
