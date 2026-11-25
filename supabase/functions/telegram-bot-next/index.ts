@@ -79,7 +79,6 @@ async function userRow(user: any): Promise<any> {
     telegram_user_id: telegramId,
     telegram_username: clean(user?.username, 64) || null,
     first_name: clean(user?.first_name, 80) || null,
-    status: "active",
   }, "resolution=merge-duplicates,return=representation");
   const row = Array.isArray(rows) ? rows[0] : null;
   if (!row?.id) throw new Error("user_registration_failed");
@@ -255,7 +254,7 @@ function connectHtml(): Response {
 "<div id='passphraseRow'><label for='passphrase'>OKX API passphrase</label><input id='passphrase' type='password' autocomplete='off' maxlength='256'></div>",
 "<button id='exchangeButton' type='submit'>Verify and save connection</button><div id='exchangeStatus' class='status' role='status'></div></form></div>",
 "<div class='card'><h2>Wallet address watch</h2><p>Link a public address for future read-only portfolio monitoring. This does not connect to your wallet or authorize transactions. Never enter a recovery phrase or private key.</p>",
-"<form id='walletForm' autocomplete='off'><label for='walletProvider'>Wallet</label><select id='walletProvider'><option value='trust_wallet'>Trust Wallet</option><option value='phantom'>Phantom</option><option value='walletconnect'>WalletConnect-connected wallet</option><option value='manual'>Other / public address</option></select>",
+"<form id='walletForm' autocomplete='off'><label for='walletProvider'>Wallet</label><select id='walletProvider'><option value='trust_wallet'>Trust Wallet</option><option value='phantom'>Phantom</option><option value='walletconnect'>WalletConnect address (watch-only)</option><option value='manual'>Other / public address</option></select>",
 "<label for='chain'>Network</label><select id='chain'><option value='eip155:1'>Ethereum mainnet</option><option value='eip155:8453'>Base mainnet</option><option value='eip155:56'>BNB Smart Chain</option><option value='solana:mainnet-beta'>Solana mainnet</option></select>",
 "<label for='address'>Public wallet address</label><input id='address' type='text' autocomplete='off' spellcheck='false' maxlength='128' required>",
 "<button id='walletButton' type='submit'>Save watch-only address</button><div id='walletStatus' class='status' role='status'></div></form></div>",
@@ -487,7 +486,7 @@ async function handleMessage(update: any) {
   if (command === "/start" || command === "/menu") {
     await audit(row.id, chatId, "private_start");
     await send(chatId,
-      "9N8 UNIVERSAL ASSISTANT\n\nYour private account is ready.\nConnect OKX Demo, Binance Spot Testnet or Bybit Demo from the secure form. You can also save Trust Wallet and Phantom public addresses as watch-only links.\n\n" +
+      "9N8 UNIVERSAL ASSISTANT\n\nYour private account is ready.\nConnect OKX Demo, Binance Spot Testnet or Bybit Demo from the secure form. You can save Trust Wallet and Phantom public addresses as watch-only links. WalletConnect signing is not enabled yet.\n\n" +
       "This candidate release is demo/testnet and read-only. No live orders, withdrawals, transfers or wallet signing.",
       mainKeyboard());
     return;
