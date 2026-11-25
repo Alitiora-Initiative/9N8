@@ -1,7 +1,7 @@
 {
   "name": "9n8-secure-connect",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "build": "vite build",
@@ -12,7 +12,8 @@
     "@reown/appkit-adapter-solana": "1.8.24",
     "@reown/appkit-adapter-wagmi": "1.8.24",
     "viem": "2.58.4",
-    "wagmi": "2.19.5"
+    "wagmi": "2.19.5",
+    "lightweight-charts": "5.3.0"
   },
   "devDependencies": {
     "vite": "8.3.8"
