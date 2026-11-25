@@ -64,6 +64,11 @@ This document applies to the **multi-asset-python feature branch**. It is a sepa
 MT5 is not included; the chosen FX connector is OANDA v20. OANDA uses REST polling in this build, not its streaming endpoint. Configure any additional OANDA instrument names only after confirming that your account exposes them.
 
 
+
+## Provider timeouts and retry policy
+
+Read-only exchange/price/RPC/security calls use a bounded three-attempt exponential backoff and a 10-second outer timeout. Order submissions and transaction broadcasts are never automatically retried: a timeout can mean the provider accepted the order. CEX/OANDA/0x transaction broadcasts are bounded to 5 seconds at the submission call; Solana's Jupiter execute HTTP request is bounded to 5 seconds. A timeout after a live/testnet submission starts triggers the persistent reconciliation lock and requires manual inspection before the bot can resume.
+
 ## Approval and operator controls
 
 Every scanner-generated entry is a stored proposal, not an order. The owner receives an inline Approve Trade / Deny keyboard in the Telegram private chat. An approval expires after 120 seconds by default; when pressed, the bot fetches a fresh quote, rejects excessive price drift (0.50% by default), rechecks position count, account exposure, spread and order-book slippage, then submits only in the configured execution mode. Denied, expired and duplicate signal proposals cannot be submitted.
