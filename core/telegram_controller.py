@@ -290,6 +290,12 @@ class TelegramController:
                 pass
         return True
 
+    async def _safe_remove_keyboard(self, message: Message) -> None:
+        try:
+            await message.edit_reply_markup(reply_markup=None)
+        except Exception as exc:
+            log.debug("Could not remove an old Telegram keyboard (%s).", type(exc).__name__)
+
     async def approval_callback(self, callback: CallbackQuery) -> None:
         user = callback.from_user
         message = callback.message
@@ -301,16 +307,22 @@ class TelegramController:
             or message.chat.type != "private"
         ):
             try:
-                await callback.answer("Unauthorized. Use the private owner chat.", show_alert=True)
+                await callback.answer(
+                    "Unauthorized. Use the private owner chat.",
+                    show_alert=True,
+                )
             except Exception:
                 pass
             return
-        data = str(callback.data or "")
+
         try:
+            # Acknowledge exactly once so Telegram's callback spinner always clears.
             try:
                 await callback.answer("Processing…")
             except Exception:
                 pass
+
+            data = str(callback.data or "")
             if data.startswith("dash:"):
                 action = data.split(":", 1)[1]
                 if action == "status":
@@ -355,40 +367,53 @@ class TelegramController:
                     result = "9N8 resumed. New proposals still require individual Telegram approval."
                 elif action == "panic":
                     confirm = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(text="🚨 CONFIRM FLATTEN", callback_data="panic:confirm"),
+                        InlineKeyboardButton(
+                            text="🚨 CONFIRM FLATTEN",
+                            callback_data="panic:confirm",
+                        ),
                         InlineKeyboardButton(text="Cancel", callback_data="panic:cancel"),
                     ]])
-                    await message.answer(
-                        "This attempts to cancel open orders and close known positions at market. "
-                        "Check every connected account after the operation. Proceed?",
-                        reply_markup=confirm,
+                    await self._send_message(
+                        message.chat.id,
+                        "Emergency flatten confirmation. This pauses new entries and attempts to close tracked positions. "
+                        "In paper mode only virtual positions are closed.",
+                        confirm,
                     )
                     return
                 else:
-                    await message.answer("Unknown dashboard action.")
-                    return
-                await message.answer(result[:4000], reply_markup=self._dashboard_keyboard())
+                    result = "Unknown dashboard action."
+                await self._send_message(
+                    message.chat.id,
+                    result[:4000],
+                    self._dashboard_keyboard(),
+                )
                 return
+
             if data == "panic:cancel":
-                try:
-                await message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
+                await self._safe_remove_keyboard(message)
+                await self._send_message(message.chat.id, "Emergency flatten cancelled.")
                 return
+
             if data == "panic:confirm":
-                await message.edit_reply_markup(reply_markup=None)
-                await message.answer(
-                    "Emergency flatten requested. 9N8 is pausing entries and attempting exits."
+                await self._safe_remove_keyboard(message)
+                await self._send_message(
+                    message.chat.id,
+                    "Emergency flatten requested. New entries are being paused and tracked positions are being processed.",
                 )
                 try:
                     await self.engine.panic()
-                    await message.answer("9N8 panic routine completed. Verify every exchange and wallet directly.")
+                    await self._send_message(
+                        message.chat.id,
+                        "9N8 panic routine completed. Verify the final state in the paper dashboard or directly with every live provider.",
+                    )
                 except Exception as exc:
-                    await message.answer(
+                    await self._send_message(
+                        message.chat.id,
                         "WARNING: flatten was incomplete. Trading remains paused. "
-                        "Inspect open orders and balances manually. " + str(exc)[:500]
+                        "Inspect orders and balances manually. " + str(exc)[:500],
                     )
                 return
+
             action, approval_id = data.split(":", 1)
             if not approval_id or len(approval_id) > 32:
                 raise ValueError("Invalid approval ID.")
@@ -397,17 +422,20 @@ class TelegramController:
             elif action == "deny":
                 result = await self.engine.deny_pending(approval_id, str(user.id))
             else:
-                await message.answer("Unknown approval action.")
+                await self._send_message(message.chat.id, "Unknown approval action.")
                 return
-            await message.edit_reply_markup(reply_markup=None)
-            await message.answer(result[:4000])
+
+            await self._safe_remove_keyboard(message)
+            await self._send_message(message.chat.id, result[:4000])
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             log.warning("Telegram control action failed (%s).", type(exc).__name__)
-            try:
-                await message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-            await message.answer("Action rejected: " + str(exc)[:1000])
+            await self._safe_remove_keyboard(message)
+            await self._send_message(
+                message.chat.id,
+                "Action rejected: " + str(exc)[:1000],
+            )
 
     async def send_approval(self, approval_id: str, text: str) -> None:
         if not self.enabled:
