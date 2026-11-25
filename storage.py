@@ -142,6 +142,90 @@ class TradeStore:
         )
         await self._db().commit()
 
+
+    async def persist_paper_fill(
+        self,
+        trade: dict[str, Any],
+        cash_balance: float,
+        *,
+        position: dict[str, Any] | None = None,
+        remove_position_key: str | None = None,
+    ) -> None:
+        """Atomically persist a paper fill, paper cash and its open/closed position."""
+        import math
+
+        cash = float(cash_balance)
+        if not math.isfinite(cash) or cash < 0:
+            raise ValueError("Paper cash must be finite and non-negative.")
+        now = datetime.now(timezone.utc).isoformat()
+        db = await aiosqlite.connect(self.path, timeout=10)
+        try:
+            await db.execute("PRAGMA busy_timeout=10000")
+            await db.execute("BEGIN IMMEDIATE")
+            cols = (
+                "client_order_id,venue,symbol,market_type,side,status,mode,quantity,average_price,"
+                "entry_timestamp,exit_timestamp,stop_loss,take_profit,slippage_pct,gas_fee_usd,"
+                "commission_usd,realized_pnl_usd,metadata_json"
+            )
+            values = (
+                trade["client_order_id"], trade["venue"], trade["symbol"], trade["market_type"],
+                trade["side"], trade["status"], trade["mode"], trade["quantity"],
+                trade["average_price"], trade["entry_timestamp"], trade.get("exit_timestamp"),
+                trade.get("stop_loss"), trade.get("take_profit"), trade.get("slippage_pct", 0),
+                trade.get("gas_fee_usd", 0), trade.get("commission_usd", 0),
+                trade.get("realized_pnl_usd", 0),
+                json.dumps(trade.get("metadata", {}), separators=(",", ":"), allow_nan=False),
+            )
+            await db.execute(
+                f"INSERT OR IGNORE INTO trades({cols}) VALUES({','.join('?' for _ in values)})",
+                values,
+            )
+
+            if position is not None:
+                await db.execute(
+                    """INSERT INTO positions(
+                      position_key,venue,symbol,market_type,side,quantity,entry_price,mark_price,
+                      stop_loss,take_profit,realized_pnl_usd,unrealized_pnl_usd,partial_closed,
+                      breakeven_moved,high_watermark,low_watermark,metadata_json,opened_at,updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(position_key) DO UPDATE SET
+                      quantity=excluded.quantity,mark_price=excluded.mark_price,
+                      stop_loss=excluded.stop_loss,take_profit=excluded.take_profit,
+                      realized_pnl_usd=excluded.realized_pnl_usd,
+                      unrealized_pnl_usd=excluded.unrealized_pnl_usd,
+                      partial_closed=excluded.partial_closed,breakeven_moved=excluded.breakeven_moved,
+                      high_watermark=excluded.high_watermark,low_watermark=excluded.low_watermark,
+                      metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
+                    (
+                        position["position_key"], position["venue"], position["symbol"],
+                        position["market_type"], position["side"], position["quantity"],
+                        position["entry_price"], position["mark_price"], position["stop_loss"],
+                        position["take_profit"], position.get("realized_pnl_usd", 0),
+                        position.get("unrealized_pnl_usd", 0), int(position.get("partial_closed", False)),
+                        int(position.get("breakeven_moved", False)), position.get("high_watermark"),
+                        position.get("low_watermark"),
+                        json.dumps(position.get("metadata", {}), separators=(",", ":"), allow_nan=False),
+                        position["opened_at"], position["updated_at"],
+                    ),
+                )
+            if remove_position_key:
+                await db.execute(
+                    "DELETE FROM positions WHERE position_key=?",
+                    (remove_position_key,),
+                )
+            await db.execute(
+                """INSERT INTO controls(key,value,updated_at) VALUES('paper_cash',?,?)
+                   ON CONFLICT(key) DO UPDATE SET
+                     value=excluded.value,updated_at=excluded.updated_at""",
+                (str(cash), now),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        finally:
+            await db.close()
+
     async def remove_position(self, key: str) -> None:
         await self._db().execute("DELETE FROM positions WHERE position_key=?", (key,))
         await self._db().commit()
