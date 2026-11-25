@@ -420,11 +420,29 @@ async function closePaperPosition(env, ticket, ownerId, reason = "MANUAL", known
 
 async function monitorPositions(env, ownerId = null) {
   if (!env.METAAPI_TOKEN || !env.METAAPI_ACCOUNT_ID) return { checked: 0, closed: 0 };
-  const query = ownerId == null
-    ? env.DB.prepare("SELECT * FROM paper_positions WHERE status='OPEN' ORDER BY ticket LIMIT 30")
-    : env.DB.prepare("SELECT * FROM paper_positions WHERE owner_id=? AND status='OPEN' ORDER BY ticket LIMIT 30").bind(String(ownerId));
-  const rows = await query.all();
-  const positions = rows.results || [];
+  let positions = [];
+  if (ownerId == null) {
+    // Rotate through batches so positions beyond the first 30 are not starved.
+    const cursor = Number(await getState(env.DB, "monitor_cursor_ticket", "0"));
+    const later = await env.DB.prepare(
+      "SELECT * FROM paper_positions WHERE status='OPEN' AND ticket>? ORDER BY ticket LIMIT 30"
+    ).bind(cursor).all();
+    positions = later.results || [];
+    if (positions.length < 30) {
+      const earlier = await env.DB.prepare(
+        "SELECT * FROM paper_positions WHERE status='OPEN' AND ticket<=? ORDER BY ticket LIMIT ?"
+      ).bind(cursor, 30 - positions.length).all();
+      positions = positions.concat(earlier.results || []);
+    }
+    if (positions.length) {
+      await setState(env.DB, "monitor_cursor_ticket", String(positions[positions.length - 1].ticket));
+    }
+  } else {
+    const rows = await env.DB.prepare(
+      "SELECT * FROM paper_positions WHERE owner_id=? AND status='OPEN' ORDER BY ticket LIMIT 30"
+    ).bind(String(ownerId)).all();
+    positions = rows.results || [];
+  }
   if (!positions.length) return { checked: 0, closed: 0 };
   await verifyDemoAccount(env);
   const ticks = new Map();
