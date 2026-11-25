@@ -27,10 +27,12 @@ class SolanaJupiterConnector(ExecutionConnector):
     venue = "jupiter-solana"
 
     def __init__(self, rpc_url: str | None = None, api_key: str | None = None,
-                 cluster: str = "devnet", private_key: str | None = None):
+                 cluster: str = "devnet", private_key: str | None = None,
+                 live_certified: bool = False):
         self.rpc_url = rpc_url or os.getenv("SOLANA_RPC_URL", "").strip()
         self.api_key = api_key or os.getenv("JUPITER_API_KEY", "").strip()
         self.cluster = cluster
+        self.live_certified = bool(live_certified)
         self.private_key = private_key or os.getenv("SOLANA_PRIVATE_KEY", "").strip()
         self.rpc: AsyncClient | None = None
         self.http: aiohttp.ClientSession | None = None
