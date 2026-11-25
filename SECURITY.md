@@ -1,41 +1,45 @@
 # 9N8 security model
 
-## Paper-only boundary
+## Personal-only access
 
-This release is a market-data reader and local paper-trading simulator. `MetaApiProvider` uses HTTP GET requests for account information, symbols, specifications, current prices and historical candles. The desktop MT5 adapter reads account/symbol/tick/candle data only. The project contains no MT5 `order_send`, MetaApi trade endpoint, wallet signer, withdrawal, transfer or sweep feature.
+- 9N8 is designed for one owner and one personal OKX account.
+- All Telegram commands except `/id` require a private chat and the configured `TELEGRAM_OWNER_ID`.
+- Other Telegram users are denied. The project does not onboard other people's exchange accounts.
+- The bot does not request or store exchange credentials in Telegram chat.
 
-The configured MT5 account must be positively identified as DEMO. Unknown or live account types are rejected. Prefer an investor/read-only password for the MT5 demo account where supported. Treat the MetaApi token as sensitive even though this build makes read-only requests.
+## OKX API boundaries
 
-## User isolation and privacy
+Implemented OKX operations:
+- Public spot market ticker, instruments and candles.
+- Private account configuration and balance reads.
+- Private open spot orders.
+- Spot cash market/limit order placement, only after an owner confirmation button.
+- Spot order cancellation, only after an owner confirmation button.
 
-- Paper positions, histories, settings and exit alerts are scoped to the Telegram numeric user ID.
-- Personal trading commands are accepted only in a private chat.
-- New users start with paper entries paused.
-- User lot/position limits are bounded by platform hard caps.
-- Private exit notifications are sent only to users who started the bot and have notifications enabled.
-- Group/channel performance uses only users who explicitly opt in with `/share_stats on`.
-- Group reports aggregate P&L by profit currency and never disclose usernames, Telegram IDs or individual positions.
-- The platform owner is the numeric `TELEGRAM_OWNER_ID`; only that owner may configure public report destinations or send community announcements.
+Not implemented:
+- Withdrawals, internal asset transfers, deposits, wallets, sub-account management.
+- Futures, swaps, margin, borrowing, leverage, options or copy trading.
+- Unattended autonomous order submission.
+- Exchange-side attached stop-loss/take-profit algos.
 
-## Group/channel posting
+Use Read and Trade permissions only if you need trading. Keep **Withdraw** disabled; the bot checks the returned permission list and refuses to stage new orders if Withdraw is present. OKX documents that Trade permission can include funding transfers as well as orders/cancellations. This application contains no transfer endpoints, but the API key itself may have capabilities beyond this app. Use a dedicated key and bind it to your IP where possible. OKX notes that unbound Trade/Withdraw keys can expire after 14 days of inactivity; check the current policy for your account.
 
-The owner adds a destination with `/report_addchat`. Before saving it, 9N8 checks that the bot is an administrator of the target. For channels it also checks the `can_post_messages` permission. Telegram permissions can change after setup; send failures are logged without recording tokens or user trading details.
+## Demo-first and execution confirmation
+
+- `OKX_TRADING_MODE=demo` is the default.
+- Demo requests add `x-simulated-trading: 1`.
+- Live order submission is blocked unless both `OKX_TRADING_MODE=live` and `OKX_LIVE_TRADING_ENABLED=true` are configured locally.
+- Every order requires an owner confirmation button, expires after 90 seconds, and includes the configured max notional cap.
+- Signals never submit orders.
+- Limit/market order acceptance is not a fill guarantee.
 
 ## Secret handling
 
-- Store `TELEGRAM_BOT_TOKEN`, `METAAPI_TOKEN`, MetaApi account ID and optional Twelve Data key only in the hosting provider's encrypted secret/environment manager.
-- Never commit `.env`, SQLite databases, broker passwords, API tokens, wallet seed phrases or private keys.
-- The `.gitignore` excludes `.env`, local databases, data folders and Python caches.
-- Do not log request Authorization headers or secret values.
-- Credentials pasted into chat or an untrusted environment must be revoked/rotated.
+- Store `TELEGRAM_BOT_TOKEN`, `OKX_API_KEY`, `OKX_API_SECRET` and `OKX_API_PASSPHRASE` only in a local, untracked `.env` file.
+- Never commit `.env`, paste credentials into Telegram, GitHub Issues, chat, logs or screenshots.
+- The OKX REST signature is computed in memory; credentials are never included in request URLs or user-facing messages.
+- If credentials are exposed, revoke the OKX API key in the OKX security/API page and create a replacement.
 
-## Operational recommendations
+## Deployment
 
-- Use an always-on worker with a persistent volume mounted at `/app/data`.
-- Run exactly one worker replica while using SQLite. Multiple replicas could run duplicate monitors and weekly reports.
-- Back up the persistent SQLite database securely. Restrict access to backups because they contain account identifiers and trading history.
-- Keep paper mode enforced. Any future live execution requires a separate risk/security review, explicit user authorization, provider write-permission review and withdrawal-disabled account credentials; this release does not include live execution.
-
-## Known simulation limitations
-
-Simulated P&L is estimated in the instrument's profit currency. It may exclude commissions, swaps, conversion, variable spread and stop gaps. The paper engine's break-even stop updates only its local database. It does not modify broker-side orders. A stop triggered after a price gap can close at a different current quote and produce a small loss despite a break-even stop setting.
+The zero-monthly-cost path is local Windows polling. The laptop and internet connection must remain available. A remote always-on server would introduce hosting and secret-management requirements; do not configure one without reviewing its cost and access controls.
