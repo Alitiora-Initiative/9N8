@@ -276,36 +276,32 @@ verifyButton?.addEventListener("click", async () => {
   }
 });
 disconnectButton?.addEventListener("click", async () => {
-  if (!modal || connectionBusy) return;
+  if ((!modal && !injectedSession) || connectionBusy) return;
   connectionBusy = true;
   disconnectButton.disabled = true;
   try {
     const selected = networkSelect?.value || "eip155:1";
-    const namespace = selected.startsWith("solana:") ? "solana" : "eip155";
-    const address = String(modal.getAddress?.() || currentProviderState?.address || "");
-    const chainId = namespace === "solana"
-      ? "mainnet-beta"
-      : normalizeEvmChainId(modal.getChainId?.() || currentProviderState?.chainId);
-    const network = namespace === "solana"
-      ? "Solana Mainnet"
-      : networkLabels[chainId] || "";
-    if (address && network) {
-      await post({ action: "wallet_revoke", namespace, address, chainId, network });
-    }
-    try { await modal.adapter?.connectionControllerClient?.disconnect?.(); } catch (_) {}
-    setStatus("Wallet session disconnected and its 9N8 link revoked.", "success");
+    const namespace = injectedSession?.namespace || (selected.startsWith("solana:") ? "solana" : "eip155");
+    const address = String(injectedSession?.address || modal?.getAddress?.() || currentProviderState?.address || "");
+    const chainId = injectedSession?.chainId || (namespace === "solana" ? "mainnet-beta" : normalizeEvmChainId(modal?.getChainId?.() || currentProviderState?.chainId));
+    const network = injectedSession?.network || (namespace === "solana" ? "Solana Mainnet" : networkLabels[chainId] || "");
+    if (address && network) await post({ action: "wallet_revoke", namespace, address, chainId, network });
+    if (modal) { try { await modal.adapter?.connectionControllerClient?.disconnect?.(); } catch (_) {} }
+    if (injectedSession?.provider?.disconnect) { try { await injectedSession.provider.disconnect(); } catch (_) {} }
+    injectedSession = null;
     currentAddress = "";
     verifyButton.disabled = true;
     disconnectButton.disabled = true;
+    setStatus("Wallet session disconnected and its 9N8 link revoked.", "success");
   } catch (error) {
     setStatus(error?.message || "Could not revoke the wallet link.", "error");
+    disconnectButton.disabled = false;
   } finally {
     connectionBusy = false;
   }
 });
-
 networkSelect?.addEventListener("change", () => {
-  if (modal?.getIsConnected?.()) {
+  if (modal?.getIsConnected?.() || injectedSession) {
     setStatus("Network selection changed. Reconnect or switch the wallet to the selected network before verifying.", "warning");
     verifyButton.disabled = true;
   }
