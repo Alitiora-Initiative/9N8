@@ -2,7 +2,7 @@ import {
   decidePaperAction,
   simulatedFillPrice,
   type PaperCandle,
-} from "../_shared/paper-engine.ts";
+} from "./paper-engine.ts";
 
 const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/+$/, "");
 const SERVICE_KEY = (() => {
