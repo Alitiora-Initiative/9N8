@@ -630,9 +630,11 @@ async function mainHandler(req: Request): Promise<Response> {
   if (!same(supplied, HOOK_SECRET)) return new Response("Forbidden", { status: 401 });
 
   if (body?.update_id !== undefined) {
-    const inserted = await db("n8_telegram_updates", "POST", { update_id: Number(body.update_id) },
-      "resolution=ignore-duplicates,return=representation");
-    if (!Array.isArray(inserted) || inserted.length === 0) return response({ ok: true, duplicate: true });
+    const claimed = await db("rpc/n8_claim_telegram_update", "POST", {
+      p_update_id: Number(body.update_id),
+      p_lease_seconds: 60,
+    });
+    if (claimed !== true) return response({ ok: true, duplicate: true });
   }
 
   try {
@@ -642,10 +644,19 @@ async function mainHandler(req: Request): Promise<Response> {
 
     if (body?.update_id !== undefined) {
       await db("n8_telegram_updates?update_id=eq." + encodeURIComponent(String(body.update_id)),
-        "PATCH", { processed_at: new Date().toISOString(), outcome: "processed" }, "return=minimal");
+        "PATCH", { processed_at: new Date().toISOString(), lease_until: null, outcome: "processed" }, "return=minimal");
     }
     return response({ ok: true });
   } catch {
+    // Release the update lease so Telegram's retry can safely re-attempt transient failures.
+    if (body?.update_id !== undefined) {
+      try {
+        await db("n8_telegram_updates?update_id=eq." + encodeURIComponent(String(body.update_id)),
+          "PATCH", { lease_until: new Date().toISOString(), outcome: "retryable_error" }, "return=minimal");
+      } catch {
+        // Retry will become available when the lease expires.
+      }
+    }
     // Do not log Telegram updates, credentials, tokens, or secret values.
     return response({ ok: false, error: "update_processing_failed" }, 500);
   }
