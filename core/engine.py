@@ -371,6 +371,26 @@ class TradingEngine:
             intent.reason,
             {**intent.metadata, "signal_candle_ms": candle_timestamp},
         )
+        if proposed.market_type in {MarketType.CRYPTO_SPOT, MarketType.CRYPTO_PERP}:
+            minimum_volume = float(
+                os.getenv(
+                    "MINIMUM_24H_QUOTE_VOLUME_USD",
+                    self.cfg["execution"].get("minimum_24h_quote_volume_usd", 100000),
+                )
+            )
+            quote_volume = snapshot.quote_volume_24h_usd
+            if (
+                not math.isfinite(minimum_volume)
+                or minimum_volume < 0
+                or quote_volume is None
+                or not math.isfinite(float(quote_volume))
+                or float(quote_volume) < minimum_volume
+            ):
+                raise RiskRejected(
+                    f"24h quote-volume filter failed for {proposed.symbol}: "
+                    f"reported={quote_volume!r}, required={minimum_volume:,.0f} USD."
+                )
+
         decision = await self.risk.evaluate(
             proposed, account, snapshot, exposure, spread_slippage,
             leverage=leverage, forex_spread_pips=spread_pips,
@@ -1044,6 +1064,53 @@ class TradingEngine:
             self.stop_event.set()
             if self.notifier:
                 await self.notifier.send("PANIC complete: known positions flattened; engine shutting down.")
+
+    async def paper_status_text(self) -> str:
+        if self.mode != "paper":
+            return (
+                "9N8 PAPER ACCOUNT\n"
+                f"Current mode: {self.mode.upper()}\n"
+                "Paper controls are read-only unless TRADING_MODE=paper."
+            )
+        account = await self.paper.account(self.snapshots)
+        positions = await self.store.positions()
+        now = datetime.now(timezone.utc)
+        start = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc)
+        trades = await self.store.closed_trades_between(
+            start.isoformat(), now.isoformat()
+        )
+        realized = sum(float(row.get("realized_pnl_usd") or 0) for row in trades)
+        unrealized = sum(
+            float(row.get("unrealized_pnl_usd") or 0) for row in positions
+        )
+        daily_start = await self.store.get_daily_equity(now.date().isoformat())
+        drawdown = (
+            max(0.0, (daily_start - account.equity_usd) / daily_start * 100.0)
+            if daily_start and daily_start > 0 else 0.0
+        )
+        paused, reason = await self.risk.is_paused()
+        state = "PAUSED" if paused else "RUNNING"
+        lines = [
+            "9N8 PAPER ACCOUNT",
+            "Market feed: live provider quotes/candles",
+            "Execution: simulated fills only; no exchange orders",
+            "Engine: " + state,
+            "Virtual equity: $" + format(account.equity_usd, ",.2f"),
+            "Available paper cash: $" + format(account.free_usd, ",.2f"),
+            "Realized PnL today (UTC): " + format(realized, "+,.2f") + " USD",
+            "Open-position unrealized PnL: " + format(unrealized, "+,.2f") + " USD",
+            "Open positions: " + str(len(positions)),
+            "Daily equity drawdown: {:.2f}% / {:.2f}%".format(
+                drawdown, float(self.cfg["risk"].get("maximum_daily_drawdown_pct", 0.05)) * 100
+            ),
+            "Paper fee rate: {:.3f}%".format(self.paper.fee_rate * 100),
+            "Paper slippage: {:.1f} bps".format(self.paper.slippage_bps),
+        ]
+        if reason:
+            lines.append("Risk lock: " + reason[:300])
+        if await self.store.get_control("execution_reconciliation_required", "false") == "true":
+            lines.append("CRITICAL: provider reconciliation lock is active.")
+        return "\n".join(lines)
 
     async def status_text(self) -> str:
         positions = await self.store.positions()
