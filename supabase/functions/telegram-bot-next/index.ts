@@ -57,7 +57,7 @@ function b64(bytes: Uint8Array): string {
   for (const byte of bytes) value += String.fromCharCode(byte);
   return btoa(value);
 }
-async function mac(keyBytes: Uint8Array, message: string): Promise<Uint8Array> {
+async function mac(keyBytes: BufferSource, message: string): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(message)));
 }
@@ -372,8 +372,11 @@ async function verifyWalletProof(challenge: any, signature: string): Promise<boo
     const publicKey = decodeBase58(String(challenge.public_address));
     const proof = decodeBase64(signature);
     if (publicKey.length !== 32 || proof.length !== 64) return false;
-    const key = await crypto.subtle.importKey("raw", publicKey, { name: "Ed25519" }, false, ["verify"]);
-    return await crypto.subtle.verify("Ed25519", key, proof, enc.encode(String(challenge.message)));
+    // Copy into ArrayBuffer-backed views for WebCrypto's strict BufferSource overloads.
+    const publicKeyData = new Uint8Array(publicKey).buffer;
+    const signatureData = new Uint8Array(proof).buffer;
+    const key = await crypto.subtle.importKey("raw", publicKeyData, { name: "Ed25519" }, false, ["verify"]);
+    return await crypto.subtle.verify("Ed25519", key, signatureData, enc.encode(String(challenge.message)));
   }
   return false;
 }
