@@ -408,6 +408,41 @@ class TradingEngine:
         free = sum(state.free_usd for state in valid)
         return AccountState("portfolio", equity, free, equity)
 
+    async def _maybe_daily_summary(self) -> None:
+        now = datetime.now(timezone.utc)
+        today = now.date()
+        report_key = today.isoformat()
+        if await self.store.get_control("daily_summary_sent_for", "") == report_key:
+            return
+        yesterday_start = datetime.combine(
+            today.fromordinal(today.toordinal() - 1),
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+        today_start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+        trades = await self.store.closed_trades_between(
+            yesterday_start.isoformat(), today_start.isoformat()
+        )
+        realized = sum(float(row.get("realized_pnl_usd") or 0) for row in trades)
+        wins = sum(1 for row in trades if float(row.get("realized_pnl_usd") or 0) > 0)
+        losses = sum(1 for row in trades if float(row.get("realized_pnl_usd") or 0) < 0)
+        summary = (
+            "9N8 DAILY PNL SUMMARY (UTC)\n"
+            + yesterday_start.date().isoformat()
+            + "\nClosed/partial exits: " + str(len(trades))
+            + "\nWins: " + str(wins) + " · Losses: " + str(losses)
+            + "\nRealized PnL: " + format(realized, "+.4f") + " USD"
+        )
+        await self.store.event(
+            "INFO", "daily_pnl_summary", summary,
+            metadata={"date_utc": yesterday_start.date().isoformat(),
+                      "closed_exits": len(trades), "wins": wins,
+                      "losses": losses, "realized_pnl_usd": realized},
+        )
+        if self.notifier:
+            await self.notifier.send(summary)
+        await self.store.set_control("daily_summary_sent_for", report_key)
+
     async def _equity_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
@@ -416,6 +451,7 @@ class TradingEngine:
                 if tripped and self.notifier:
                     await self.notifier.send("9N8 DAILY DRAWDOWN: emergency flatten requested; trading halted for 24 hours.")
                 await self.store.set_control("equity_monitor_failed", "false")
+                await self._maybe_daily_summary()
             except asyncio.CancelledError:
                 raise
             except Exception:
