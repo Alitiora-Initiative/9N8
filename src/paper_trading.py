@@ -235,13 +235,13 @@ class PaperTradingEngine:
         return drawdown_pct
 
     def is_enabled(self) -> bool:
-        with self._connect() as db:
+        with self._db() as db:
             self._roll_day(db)
             account = self._account(db)
             return bool(account["enabled"]) and not str(account["paused_reason"] or "").startswith("DAILY_DRAWDOWN")
 
     def set_enabled(self, enabled: bool) -> None:
-        with self._connect() as db:
+        with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             self._roll_day(db)
             account = self._account(db)
@@ -255,7 +255,7 @@ class PaperTradingEngine:
             )
 
     def strategy(self) -> str:
-        with self._connect() as db:
+        with self._db() as db:
             return str(self._account(db)["strategy"])
 
     def set_strategy(self, name: str) -> None:
@@ -264,12 +264,12 @@ class PaperTradingEngine:
             raise PaperTradingError(
                 "Choose one of: momentum, trend, mean_reversion, grid."
             )
-        with self._connect() as db:
+        with self._db() as db:
             db.execute("UPDATE paper_account SET strategy=?, updated_at=? WHERE id=1", (strategy, _now()))
 
     def suggest_quote_budget(self) -> Decimal:
         """Size by configured loss-at-stop, then cap by allocation and available cash."""
-        with self._connect() as db:
+        with self._db() as db:
             self._roll_day(db)
             drawdown = self._check_daily_drawdown(db)
             if drawdown >= self.config.daily_loss_limit_pct:
@@ -313,7 +313,7 @@ class PaperTradingEngine:
         now = _now()
         ticket = uuid.uuid4().hex[:12].upper()
 
-        with self._connect() as db:
+        with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             self._roll_day(db)
             self._check_daily_drawdown(db)
@@ -462,7 +462,7 @@ class PaperTradingEngine:
         bid_price = _decimal(bid, "Bid")
         if bid_price <= 0:
             raise PaperTradingError("Bid price must be greater than zero.")
-        with self._connect() as db:
+        with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             position = db.execute(
                 "SELECT * FROM paper_positions WHERE ticket=? AND status='OPEN'",
@@ -479,7 +479,7 @@ class PaperTradingEngine:
     def update_prices(self, quotes: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         """Mark positions and evaluate the configured automatic paper exits."""
         events: list[dict[str, Any]] = []
-        with self._connect() as db:
+        with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             self._roll_day(db)
             positions = db.execute(
@@ -549,7 +549,7 @@ class PaperTradingEngine:
         return events
 
     def positions(self) -> list[dict[str, Any]]:
-        with self._connect() as db:
+        with self._db() as db:
             rows = db.execute(
                 "SELECT * FROM paper_positions WHERE status='OPEN' ORDER BY opened_at"
             ).fetchall()
@@ -557,14 +557,14 @@ class PaperTradingEngine:
 
     def history(self, limit: int = 20) -> list[dict[str, Any]]:
         bounded = max(1, min(int(limit), 100))
-        with self._connect() as db:
+        with self._db() as db:
             rows = db.execute(
                 "SELECT * FROM paper_trades ORDER BY id DESC LIMIT ?", (bounded,)
             ).fetchall()
             return [dict(row) for row in rows]
 
     def summary(self) -> dict[str, Any]:
-        with self._connect() as db:
+        with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             self._roll_day(db)
             drawdown = self._check_daily_drawdown(db)
@@ -605,7 +605,7 @@ class PaperTradingEngine:
         balance = _decimal(new_balance, "New balance")
         if balance <= 0:
             raise PaperTradingError("New paper balance must be greater than zero.")
-        with self._connect() as db:
+        with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             open_count = db.execute(
                 "SELECT COUNT(*) AS n FROM paper_positions WHERE status='OPEN'"
