@@ -191,27 +191,67 @@ class TradingEngine:
                 log.exception("Connector shutdown failed.")
         self.tasks.clear()
 
+    @staticmethod
+    def _timeframe_ms(value: str) -> int:
+        text = str(value).strip().lower()
+        if text.startswith("m") and text[1:].isdigit():
+            return int(text[1:]) * 60_000
+        if text.startswith("h") and text[1:].isdigit():
+            return int(text[1:]) * 3_600_000
+        if text.endswith("m") and text[:-1].isdigit():
+            return int(text[:-1]) * 60_000
+        if text.endswith("h") and text[:-1].isdigit():
+            return int(text[:-1]) * 3_600_000
+        if text.endswith("d") and text[:-1].isdigit():
+            return int(text[:-1]) * 86_400_000
+        return 0
+
+    def _only_closed_candles(self, candles: list, timeframe: str) -> list:
+        duration = self._timeframe_ms(timeframe)
+        if duration <= 0:
+            return candles
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        return [c for c in candles if c.timestamp + duration <= now_ms]
+
     async def _market_loop(self, spec: dict[str, Any]) -> None:
         connector = self.connectors[spec["connector"]]
         delay = 1.0
+        last_candle_fetch = 0.0
+        last_evaluated_candle = None
+        cached_trend = []
+        cached_entry = []
+        candle_refresh = max(5.0, float(self.cfg["execution"].get("candle_refresh_seconds", 15)))
         while not self.stop_event.is_set():
             try:
                 async with self._market_semaphore:
-                    snapshot = await connector.fetch_snapshot(spec["symbol"])
+                    if hasattr(connector, "watch_snapshot"):
+                        snapshot = await connector.watch_snapshot(spec["symbol"])
+                    else:
+                        snapshot = await connector.fetch_snapshot(spec["symbol"])
                 key = self._key(spec["venue"], spec["symbol"])
                 self.snapshots[key] = snapshot
                 if spec.get("dex_data_only"):
                     await asyncio.sleep(5)
                     continue
-                trend, entry = await asyncio.gather(
-                    connector.fetch_candles(spec["symbol"], spec["trend_tf"], 250),
-                    connector.fetch_candles(spec["symbol"], spec["entry_tf"], 120),
-                )
-                intent = self.trend_strategy.evaluate(
-                    spec["venue"], spec["symbol"], spec["market_type"], trend, entry
-                )
-                if intent is not None:
-                    await self._consider_entry(spec, connector, intent, snapshot, entry[-1].timestamp)
+                now = asyncio.get_running_loop().time()
+                if now - last_candle_fetch >= candle_refresh or not cached_entry:
+                    trend_raw, entry_raw = await asyncio.gather(
+                        connector.fetch_candles(spec["symbol"], spec["trend_tf"], 250),
+                        connector.fetch_candles(spec["symbol"], spec["entry_tf"], 120),
+                    )
+                    cached_trend = self._only_closed_candles(trend_raw, spec["trend_tf"])
+                    cached_entry = self._only_closed_candles(entry_raw, spec["entry_tf"])
+                    last_candle_fetch = now
+                if cached_entry:
+                    candle_time = cached_entry[-1].timestamp
+                    if candle_time != last_evaluated_candle and cached_trend:
+                        last_evaluated_candle = candle_time
+                        intent = self.trend_strategy.evaluate(
+                            spec["venue"], spec["symbol"], spec["market_type"],
+                            cached_trend, cached_entry,
+                        )
+                        if intent is not None:
+                            await self._consider_entry(spec, connector, intent, snapshot, candle_time)
                 delay = 1.0
                 await asyncio.sleep(float(self.cfg["execution"].get("price_poll_seconds", 1.0)))
             except asyncio.CancelledError:
@@ -361,7 +401,10 @@ class TradingEngine:
                     if not spec:
                         raise TradingError("Open position has no configured connector mapping.")
                     connector = self.connectors[spec["connector"]]
-                    snapshot = await connector.fetch_snapshot(row["symbol"])
+                    if hasattr(connector, "watch_snapshot"):
+                        snapshot = await connector.watch_snapshot(row["symbol"])
+                    else:
+                        snapshot = await connector.fetch_snapshot(row["symbol"])
                     self.snapshots[row["position_key"]] = snapshot
                     side = Side(row["side"])
                     mark = snapshot.bid if side is Side.BUY else snapshot.ask
