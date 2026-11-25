@@ -27,6 +27,7 @@ load_dotenv()
 from .okx_provider import OKXClient, OKXError
 from .market_data import Candle
 from .strategy import analyse
+from .paper_commands import register_paper_handlers, paper_post_init
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -182,7 +183,14 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "• Each order must be confirmed with a Telegram button.\n"
         f"• Maximum order notional: {MAX_ORDER_NOTIONAL} quote currency units.\n"
         "• Demo trading is the default.\n"
-        "• No withdrawals, internal transfers or unattended auto-trading.\n\n"
+        "• No withdrawals, internal transfers or unattended live auto-trading.\n\n"
+        "PAPER COMMANDS (live market data, virtual funds):\n"
+        "/paper — paper control dashboard\n"
+        "/paper_start or /paper_pause — enable/disable automatic paper entries\n"
+        "/paper_strategy momentum|trend|mean_reversion|grid\n"
+        "/paper_trade BTC-USDT 20 — open a virtual position\n"
+        "/paper_positions, /paper_balance, /paper_history\n"
+        "/paper_close TICKET, /paper_scan\n\n"
         "Limit order format: /order SYMBOL buy|sell limit SIZE PRICE\n"
         "Market order format: /order SYMBOL buy|sell market SIZE\n"
         "For market BUY, SIZE is quote currency spend; for market SELL, SIZE is base currency quantity."
@@ -522,7 +530,8 @@ def main() -> None:
         raise RuntimeError("Set a valid TELEGRAM_BOT_TOKEN in your private .env file.")
     if not OWNER_ID:
         logger.warning("TELEGRAM_OWNER_ID is not set. Only /id will work until the owner lock is configured.")
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(paper_post_init(okx, OWNER_ID)).build()
+    register_paper_handlers(app, okx, OWNER_ID)
     handlers = {
         "id": cmd_id,
         "start": cmd_start,
