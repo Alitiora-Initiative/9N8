@@ -82,6 +82,9 @@ class CCXTConnector(ExecutionConnector):
         if ex.has.get("watchOrderBook"):
             try:
                 book = await ex.watch_order_book(symbol, 5)
+                if not book.get("bids") or not book.get("asks"):
+                    log.warning("WebSocket returned an empty book for %s; using REST fallback.", symbol)
+                    return await self.fetch_snapshot(symbol)
                 ticker = await ex.fetch_ticker(symbol)
                 bid, ask = float(book["bids"][0][0]), float(book["asks"][0][0])
                 return MarketSnapshot(self.venue,symbol,self.market_type,bid,ask,
@@ -180,15 +183,21 @@ class CCXTConnector(ExecutionConnector):
         ex = self._ex()
         if self.settings.mode.value == "live":
             certified = bool(self.settings.config["execution"].get("live_execution_certified", False))
-            if not self.settings.live_enabled or not certified:
+            env_certified = os.getenv("LIVE_EXECUTION_CERTIFIED", "false").lower() == "true"
+            if not self.settings.live_enabled or not certified or not env_certified:
                 raise ConnectorUnavailable("Live CEX submission is locked by the Settings/certification gate.")
         if not self._bracket_capability(intent.symbol):
             raise ConnectorUnavailable(
                 f"{self.venue} does not advertise attached SL+TP for {intent.symbol}; live entry refused."
             )
         side = intent.side.value
+        client_id_key = {
+            "bybit": "orderLinkId",
+            "okx": "clOrdId",
+            "binance": "newClientOrderId",
+        }.get(str(ex.id).lower(), "clientOrderId")
         params = {
-            "clientOrderId": client_order_id,
+            client_id_key: client_order_id[:32],
             "stopLoss": {"triggerPrice": intent.stop_loss, "type": "market"},
             "takeProfit": {"triggerPrice": intent.take_profit, "type": "market"},
         }
