@@ -125,7 +125,7 @@ async function verifyInitData(raw: string): Promise<any> {
   const entries = Array.from(p.entries()).filter(([key]) => key !== "hash");
   entries.sort(([a], [b]) => a.localeCompare(b));
   const check = entries.map(([key, value]) => key + "=" + value).join("\n");
-  const derived = await mac(enc.encode(TOKEN), "WebAppData");
+  const derived = await mac(enc.encode("WebAppData"), TOKEN); // Telegram: HMAC key=WebAppData, message=bot token.
   const calculated = hex(await mac(derived, check));
   if (!same(calculated, supplied)) throw new Error("telegram_auth_invalid");
   let user: any;
