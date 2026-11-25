@@ -729,22 +729,22 @@ async def twelve_data_signal_monitor(application: Application) -> None:
                     if current_label != previous and recipients:
                         if current_label in active_labels:
                             message = (
-                                "9N8 AUTOMATIC MARKET SIGNAL\\n"
-                                f"{current_label} — {signal.symbol}\\n"
-                                f"Timeframe: {config.timeframe}\\n"
-                                f"Last candle close: {signal.close}\\n"
-                                f"EMA 9: {signal.ema_fast:.5f} | EMA 21: {signal.ema_slow:.5f}\\n"
-                                f"RSI 14: {signal.rsi:.1f}\\n"
-                                f"Candle time: {signal.candle_time}\\n"
-                                f"Reason: {signal.explanation}\\n\\n"
+                                "9N8 AUTOMATIC MARKET SIGNAL\n"
+                                f"{current_label} — {signal.symbol}\n"
+                                f"Timeframe: {config.timeframe}\n"
+                                f"Last candle close: {signal.close}\n"
+                                f"EMA 9: {signal.ema_fast:.5f} | EMA 21: {signal.ema_slow:.5f}\n"
+                                f"RSI 14: {signal.rsi:.1f}\n"
+                                f"Candle time: {signal.candle_time}\n"
+                                f"Reason: {signal.explanation}\n\n"
                                 "This is a rule-based market observation, not a probability or guarantee. "
                                 "Check current prices and risk independently. No order was placed."
                             )
                         elif previous in active_labels and current_label == "NO CLEAR SETUP":
                             message = (
-                                f"9N8 SETUP UPDATE — {signal.symbol}\\n"
-                                "The previous bullish/bearish conditions are no longer aligned.\\n"
-                                f"Latest close: {signal.close} | RSI 14: {signal.rsi:.1f}\\n"
+                                f"9N8 SETUP UPDATE — {signal.symbol}\n"
+                                "The previous bullish/bearish conditions are no longer aligned.\n"
+                                f"Latest close: {signal.close} | RSI 14: {signal.rsi:.1f}\n"
                                 "This is an indicator update only; no order was placed."
                             )
                         else:
