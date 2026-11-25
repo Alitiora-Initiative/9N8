@@ -510,11 +510,13 @@ class TelegramController:
 
     async def close(self) -> None:
         self._closed = True
-        if self.dispatcher and self.dispatcher.is_running:
+        if self.dispatcher:
             try:
                 await self.dispatcher.stop_polling()
             except Exception as exc:
-                log.warning("Telegram polling shutdown reported %s.", type(exc).__name__)
+                # aiogram may report that polling was never started; this is
+                # expected when Telegram is unconfigured or disabled.
+                log.debug("Telegram polling shutdown reported %s.", type(exc).__name__)
         if self.bot:
             try:
                 await self.bot.session.close()
