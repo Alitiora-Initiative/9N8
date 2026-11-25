@@ -119,12 +119,12 @@ button:disabled{opacity:.55;cursor:wait}
         <div class="status" id="binanceBalance" role="status">Connect Binance or OKX to view balances.</div>
         <div class="divider"></div>
         <h3>Live readiness assessment</h3>
-        <p class="muted">Refreshes your Binance Spot balance, then checks the 30-day paper and connector gates. This is an assessment only; it does not enable live trading or submit an order.</p>
+        <p class="muted">Refreshes the selected exchange balance, then checks the 30-day paper and connector gates. This is an assessment only; it does not enable live trading or submit an order.</p>
         <div class="grid">
           <button id="assessLiveReadiness" type="button">🔎 Run 30-day readiness check</button>
           <button id="refreshLiveStatus" class="secondary" type="button">↻ Refresh live status</button>
         </div>
-        <div class="status" id="liveReadinessStatus" role="status" style="white-space:pre-wrap">Connect Binance and run the assessment to see the current requirements.</div>
+        <div class="status" id="liveReadinessStatus" role="status" style="white-space:pre-wrap">Connect an exchange and run the assessment to see the current requirements.</div>
       </form>
     </section>
     <section class="card hidden" id="walletPanel">
@@ -330,7 +330,7 @@ button:disabled{opacity:.55;cursor:wait}
       "Closed paper exits: "+String(paper.completedTrades??0),
       "Enabled strategies: "+String(paper.enabledStrategies??0)+" · Passing: "+String(paper.strategiesPassing??0),
       "Open virtual positions: "+String(paper.openPositions??"—"),
-      "Available Binance USDT: "+(account.availableQuoteUsd==null?"not checked":"$"+Number(account.availableQuoteUsd).toFixed(2)),
+      "Available exchange USDT: "+(account.availableQuoteUsd==null?"not checked":"$"+Number(account.availableQuoteUsd).toFixed(2)),
       "Minimum required: $"+Number(account.minimumBalanceUsd??10).toFixed(2),
       "",
       reasons.length?"Blocking requirements:":"No eligibility blockers were returned."
@@ -343,18 +343,19 @@ button:disabled{opacity:.55;cursor:wait}
   readinessButton.addEventListener("click",async()=>{
     if(!tg||!tg.initData){readinessTarget.textContent="Open this screen from your 9N8 Telegram private chat.";return;}
     readinessButton.disabled=true;statusButton.disabled=true;
-    readinessTarget.textContent="Refreshing Binance Spot account permissions and USDT balance…";
+    const provider=document.getElementById("provider").value;
+    readinessTarget.textContent="Refreshing "+provider.toUpperCase()+" Spot account balance…";
     try{
-      const account=await apiPost({action:"binance_account",initData:tg.initData});
-      window.n8ActiveBinanceConnectionId=account.connection?.id||"";
-      if(!window.n8ActiveBinanceConnectionId)throw new Error("Connect your Binance Spot LIVE account first.");
-      readinessTarget.textContent="Binance balance refreshed. Running the 30-day live-eligibility assessment…";
+      const account=await apiPost({action:provider==="okx"?"okx_account":"binance_account",initData:tg.initData});
+      window.n8ActiveExchangeConnectionId=account.connection?.id||"";
+      if(!window.n8ActiveExchangeConnectionId)throw new Error("Connect your selected exchange account first.");
+      readinessTarget.textContent=provider.toUpperCase()+" balance refreshed. Running the 30-day live-eligibility assessment…";
       const result=await apiPost({
         action:"live_assess",
         initData:tg.initData,
         accountType:"exchange",
         marketType:"crypto",
-        connectionId:window.n8ActiveBinanceConnectionId,
+        connectionId:window.n8ActiveExchangeConnectionId,
         windowDays:30
       });
       showReadinessAssessment(result.assessment||{},result.nextStep||"");
