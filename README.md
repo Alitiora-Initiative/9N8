@@ -35,6 +35,22 @@ Telegram Bot API
 
 MT5 market data is obtained via MetaApi's cloud REST API, so a local MT5 terminal is not required for the normal cloud setup. MetaApi is a separate service and may charge for its account/API service. 9N8 does not create or fund a MetaApi account.
 
+## Automatic Twelve Data signal alerts
+
+The always-on worker also scans the configured Twelve Data `WATCHLIST` automatically when `TWELVEDATA_API_KEY` (or the compatible `TWELVE_DATA_API_KEY` environment name) is set.
+
+- Default cadence: every 15 minutes (`SIGNAL_SCAN_INTERVAL_SECONDS=900`).
+- Default timeframe: `15min`; configure with `TIMEFRAME`.
+- Default watchlist: `XAU/USD,EUR/USD,GBP/USD,USD/JPY,XAG/USD`; configure with `WATCHLIST`.
+- Indicators: EMA 9, EMA 21 and RSI 14; a bullish or bearish observation requires all configured conditions to align.
+- Users who have started a private chat receive an alert when a symbol changes into a qualifying bullish/bearish setup. A follow-up message is sent if that setup becomes unaligned.
+- `/scan` remains available for an on-demand scan and `/signals` shows the most recently calculated observations.
+- Users can stop personal notifications with `/notifications off`.
+
+The alert is a rules-based technical observation, not a probability, guaranteed prediction or personalised investment recommendation. It does not calculate an exchange order, submit trades, or attach broker stop-loss/take-profit instructions. Provider availability, supported symbols, market sessions and API-credit limits apply.
+
+For the Render worker, set the secret values in the Render service's own **Environment** settings. GitHub repository Actions secrets are not automatically injected into a separately hosted Render worker. The app accepts `TELEGRAM_CHAT_ID` as a fallback for `TELEGRAM_OWNER_ID`, and `TWELVE_DATA_API_KEY` as a fallback for `TWELVEDATA_API_KEY`.
+
 ## Multi-user onboarding
 
 1. A user opens the bot in a private Telegram chat and sends `/start`.
