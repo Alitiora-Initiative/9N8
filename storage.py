@@ -390,26 +390,75 @@ class TradeStore:
         return max(0, int(cur.rowcount))
 
     async def recover_interrupted_approvals(self) -> int:
-        """Fail closed after a process restart during an approval/execution operation.
+        """Recover interrupted paper approvals and lock uncertain external submissions.
 
-        A PROCESSING approval may have crossed the provider submission boundary
-        before the previous process died. It must never be retried automatically.
+        A paper fill is considered committed only when the position row containing
+        its approval ID and the virtual cash balance were persisted atomically.
+        A non-paper PROCESSING approval is conservatively locked for reconciliation.
         """
         now = datetime.now(timezone.utc).isoformat()
         db = self._db()
+        cur = await db.execute(
+            "SELECT approval_id,signal_key,payload_json FROM pending_approvals WHERE status='PROCESSING'"
+        )
+        interrupted = await cur.fetchall()
+        locked_count = 0
+        recovered_count = 0
+
         await db.execute("BEGIN IMMEDIATE")
         try:
-            cur = await db.execute(
-                """UPDATE pending_approvals
-                   SET status='RECONCILIATION_REQUIRED', decided_at=?,
-                       decided_by='startup-recovery',
-                       result='9N8 restarted while this proposal was processing. '
-                              'Inspect provider orders, fills and balances before resuming.'
-                   WHERE status='PROCESSING'""",
-                (now,),
-            )
-            count = max(0, int(cur.rowcount))
-            if count:
+            for row in interrupted:
+                approval_id = str(row["approval_id"])
+                signal_key = str(row["signal_key"])
+                try:
+                    payload = json.loads(row["payload_json"])
+                except (TypeError, json.JSONDecodeError):
+                    payload = {}
+                if payload.get("mode") == "paper":
+                    position_cur = await db.execute(
+                        "SELECT metadata_json FROM positions"
+                    )
+                    position_rows = await position_cur.fetchall()
+                    durable_fill = False
+                    for position_row in position_rows:
+                        try:
+                            metadata = json.loads(position_row["metadata_json"] or "{}")
+                        except (TypeError, json.JSONDecodeError):
+                            metadata = {}
+                        if isinstance(metadata, dict) and metadata.get("approval_id") == approval_id:
+                            durable_fill = True
+                            break
+                    status = "APPROVED" if durable_fill else "FAILED"
+                    result = (
+                        "Paper fill and virtual cash were durably committed before restart."
+                        if durable_fill else
+                        "Process restarted before this paper fill was durably committed. "
+                        "No exchange order was submitted."
+                    )
+                    await db.execute(
+                        """UPDATE pending_approvals
+                           SET status=?,decided_at=?,decided_by='startup-recovery',result=?
+                           WHERE approval_id=? AND status='PROCESSING'""",
+                        (status, now, result, approval_id),
+                    )
+                    await db.execute(
+                        "UPDATE idempotency SET state=?,updated_at=? WHERE key=?",
+                        ("filled" if durable_fill else "failed", now, signal_key),
+                    )
+                    recovered_count += 1
+                else:
+                    await db.execute(
+                        """UPDATE pending_approvals
+                           SET status='RECONCILIATION_REQUIRED',decided_at=?,
+                               decided_by='startup-recovery',
+                               result='9N8 restarted while this non-paper proposal was processing. '
+                                      'Inspect provider orders, fills and balances before resuming.'
+                           WHERE approval_id=? AND status='PROCESSING'""",
+                        (now, approval_id),
+                    )
+                    locked_count += 1
+
+            if locked_count:
                 for key, value in (
                     ("execution_reconciliation_required", "true"),
                     ("kill_switch", "true"),
@@ -421,18 +470,34 @@ class TradeStore:
                              value=excluded.value,updated_at=excluded.updated_at""",
                         (key, value, now),
                     )
+            if interrupted:
                 await db.execute(
                     """INSERT INTO events(
                          timestamp,level,event_type,venue,symbol,message,metadata_json
                        ) VALUES(?,?,?,?,?,?,?)""",
                     (
-                        now, "CRITICAL", "interrupted_approval_recovery", None, None,
-                        f"Recovered {count} interrupted trade approval(s). New entries are locked until manual reconciliation.",
-                        json.dumps({"count": count}, separators=(",", ":")),
+                        now,
+                        "CRITICAL" if locked_count else "WARNING",
+                        "interrupted_approval_recovery",
+                        None,
+                        None,
+                        (
+                            f"Restart recovery processed {len(interrupted)} approval(s): "
+                            f"{recovered_count} paper result(s) reconciled from SQLite, "
+                            f"{locked_count} external execution(s) locked for provider review."
+                        ),
+                        json.dumps(
+                            {
+                                "processed": len(interrupted),
+                                "paper_recovered": recovered_count,
+                                "external_locked": locked_count,
+                            },
+                            separators=(",", ":"),
+                        ),
                     ),
                 )
             await db.commit()
-            return count
+            return locked_count
         except Exception:
             await db.rollback()
             raise
