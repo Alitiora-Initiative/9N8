@@ -828,7 +828,8 @@ async function rpcSignatureStatus(signature: string): Promise<any> {
 }
 
 async function createJupiterSwapOrder(user: any, row: any, body: any): Promise<Response> {
-  requireJupiterApiKey();
+  // Swap V2 /order is a quote-building endpoint and supports keyless requests
+  // at a deliberately low rate limit. Trigger automation remains API-key gated.
   const address = clean(body?.address, 64);
   const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
   const side = String(body?.side ?? "").toLowerCase();
