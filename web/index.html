@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>9N8 · Secure Connections</title>
+<script src="https://telegram.org/js/telegram-web-app.js?67"></script>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:#0b1220;color:#edf2f7;font-synthesis:none}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at top,#15253b 0,#0b1220 52%);min-height:100vh;padding:24px 16px 48px}
+main{max-width:720px;margin:0 auto}
+.top{display:flex;align-items:center;gap:10px;margin:8px 0 20px}
+.logo{width:42px;height:42px;border-radius:13px;background:#183c35;color:#8cf0bf;display:grid;place-items:center;font-weight:900;font-size:19px}
+.brand{font-weight:800;letter-spacing:.04em}.tag{margin-left:auto;border:1px solid #325446;color:#9ae6c1;border-radius:999px;padding:6px 10px;font-size:12px}
+h1{font-size:clamp(26px,6vw,38px);line-height:1.1;margin:12px 0}
+h2{font-size:19px;margin:0 0 8px}
+p{line-height:1.55;color:#acbbce;margin:8px 0}
+.card{background:rgba(19,30,48,.94);border:1px solid #283950;border-radius:18px;padding:20px;margin:16px 0;box-shadow:0 16px 50px rgba(0,0,0,.16)}
+.notice{border-left:3px solid #d7a955;padding:10px 13px;background:#2b2419;border-radius:7px;color:#f5d99b;font-size:13px;margin:14px 0}
+label{display:block;font-size:13px;color:#b5c4d7;margin:15px 0 7px}
+input,select{font:inherit;width:100%;border:1px solid #3a4e68;border-radius:11px;padding:13px 14px;background:#0b1524;color:#f5f7fa;outline:none}
+input:focus,select:focus{border-color:#58c89b;box-shadow:0 0 0 3px rgba(88,200,155,.12)}
+button{font:inherit;width:100%;border:0;border-radius:11px;padding:14px 16px;margin-top:16px;background:#38c58b;color:#062116;font-weight:800;cursor:pointer}
+button:disabled{opacity:.55;cursor:wait}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0 14px}
+.tab{width:auto;margin:0;padding:10px 14px;background:#1b2b40;color:#c6d3e3;border:1px solid #35475f}
+.tab[aria-selected=true]{background:#214a3e;border-color:#36795e;color:#a6f0ce}
+.status{min-height:24px;margin-top:12px;white-space:pre-wrap;font-size:14px;color:#a5edc8}
+.muted{font-size:13px;color:#879bb5}
+.hidden{display:none!important}
+.footer{font-size:12px;color:#7f93ab;text-align:center;margin:28px 0}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #315344;border-radius:999px;padding:5px 9px;color:#9de6c1;font-size:11px;font-weight:700}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:520px){body{padding:16px 12px 36px}.card{padding:16px}.grid{grid-template-columns:1fr}.tag{font-size:10px}}
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">SECURE · DEMO FIRST</div></div>
+  <section id="connectPage">
+    <span class="pill">PRIVATE ACCOUNT CONNECTIONS</span>
+    <h1>Connect your accounts.</h1>
+    <p>Connect exchange demo accounts and add public wallet addresses from your Telegram private chat. Your personal connections are never available to group members.</p>
+    <div class="tabs" role="tablist">
+      <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Exchange</button>
+      <button class="tab" id="walletTab" role="tab" aria-selected="false" type="button">Wallet watch</button>
+    </div>
+    <section class="card" id="exchangePanel">
+      <h2>Exchange connection</h2>
+      <p class="muted">Use an API key you create yourself on the exchange. Select demo or testnet only. We verify access before encrypting and saving the credentials.</p>
+      <div class="notice">Never enable withdrawals. Do not use a live-trading API key here. This version only validates account access and does not place trades.</div>
+      <form id="exchangeForm" autocomplete="off">
+        <label for="provider">Exchange</label>
+        <select id="provider" required>
+          <option value="okx">OKX Demo Trading</option>
+          <option value="binance">Binance Spot Testnet</option>
+          <option value="bybit">Bybit Demo Trading</option>
+        </select>
+        <label for="environment">Environment</label>
+        <select id="environment" required><option value="demo">Demo Trading</option></select>
+        <div class="grid">
+          <div><label for="apiKey">API key</label><input id="apiKey" type="password" maxlength="512" autocomplete="off" required></div>
+          <div><label for="apiSecret">API secret</label><input id="apiSecret" type="password" maxlength="1024" autocomplete="off" required></div>
+        </div>
+        <div id="passphraseWrap"><label for="passphrase">OKX API passphrase</label><input id="passphrase" type="password" maxlength="256" autocomplete="off" required></div>
+        <button id="saveExchange" type="submit">Verify and save securely</button>
+        <div class="status" id="exchangeStatus" role="status"></div>
+      </form>
+    </section>
+    <section class="card hidden" id="walletPanel">
+      <h2>Wallet address watch</h2>
+      <p class="muted">Add a public address for future read-only portfolio monitoring. This does not connect to your wallet or approve transactions.</p>
+      <div class="notice">Never enter a seed phrase, recovery phrase, private key, or wallet password. Only paste a public receiving address.</div>
+      <form id="walletForm" autocomplete="off">
+        <label for="walletProvider">Wallet</label>
+        <select id="walletProvider">
+          <option value="trust_wallet">Trust Wallet</option>
+          <option value="phantom">Phantom</option>
+          <option value="walletconnect">WalletConnect address (watch-only)</option>
+          <option value="manual">Other public address</option>
+        </select>
+        <label for="network">Network</label>
+        <select id="network">
+          <option value="eip155:1">Ethereum mainnet</option>
+          <option value="eip155:8453">Base mainnet</option>
+          <option value="eip155:56">BNB Smart Chain</option>
+          <option value="solana:mainnet-beta">Solana mainnet</option>
+        </select>
+        <label for="address">Public wallet address</label>
+        <input id="address" type="text" maxlength="128" spellcheck="false" autocomplete="off" required>
+        <button id="saveWallet" type="submit">Save watch-only address</button>
+        <div class="status" id="walletStatus" role="status"></div>
+      </form>
+    </section>
+  </section>
+  <section id="setupPage" class="hidden">
+    <span class="pill">OWNER SETUP</span>
+    <h1>Activate the Telegram webhook.</h1>
+    <p>This connects your Telegram bot to the new 9N8 backend. First save the bot token and matching webhook secret in your Supabase Edge Function Secrets.</p>
+    <div class="card">
+      <div class="notice">Enter only your webhook secret. Never enter your BotFather token here, and never share either value in chat.</div>
+      <form id="setupForm" autocomplete="off">
+        <label for="setupSecret">TELEGRAM_WEBHOOK_SECRET</label>
+        <input id="setupSecret" type="password" minlength="32" maxlength="256" autocomplete="off" required>
+        <button id="activateWebhook" type="submit">Register 9N8 webhook</button>
+        <div class="status" id="setupStatus" role="status"></div>
+      </form>
+    </div>
+    <p class="muted">The page sends the secret over HTTPS to 9N8 for the Telegram setWebhook call. It does not save it in browser storage.</p>
+  </section>
+  <div class="footer">9N8 · Independent accounts · Demo/testnet only · No withdrawals · No seed phrases</div>
+</main>
+<script>
+(function(){
+  "use strict";
+  const API = "https://qlfcazdfxexcnzdgpqqm.supabase.co/functions/v1/telegram-bot-next";
+  const path = location.pathname.replace(/\/+$/,"") || "/";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const connectPage = document.getElementById("connectPage");
+  const setupPage = document.getElementById("setupPage");
+  const isSetup = path === "/setup" || new URLSearchParams(location.search).get("view") === "setup";
+  if(isSetup){connectPage.classList.add("hidden");setupPage.classList.remove("hidden");}
+  if(tg){tg.ready();tg.expand();}
+  const exchangeTab=document.getElementById("exchangeTab");
+  const walletTab=document.getElementById("walletTab");
+  const exchangePanel=document.getElementById("exchangePanel");
+  const walletPanel=document.getElementById("walletPanel");
+  function selectTab(wallet){
+    exchangePanel.classList.toggle("hidden",wallet);
+    walletPanel.classList.toggle("hidden",!wallet);
+    exchangeTab.setAttribute("aria-selected",String(!wallet));
+    walletTab.setAttribute("aria-selected",String(wallet));
+  }
+  exchangeTab.addEventListener("click",()=>selectTab(false));
+  walletTab.addEventListener("click",()=>selectTab(true));
+  const provider=document.getElementById("provider");
+  const env=document.getElementById("environment");
+  const passphraseWrap=document.getElementById("passphraseWrap");
+  const passphrase=document.getElementById("passphrase");
+  function refreshProvider(){
+    const v=provider.value;
+    env.innerHTML="";
+    const option=document.createElement("option");
+    option.value=v==="binance"?"testnet":"demo";
+    option.textContent=v==="binance"?"Spot Testnet":"Demo Trading";
+    env.appendChild(option);
+    passphraseWrap.classList.toggle("hidden",v!=="okx");
+    passphrase.required=v==="okx";
+  }
+  provider.addEventListener("change",refreshProvider);
+  refreshProvider();
+  async function apiPost(body){
+    const response=await fetch(API,{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify(body),
+      cache:"no-store",
+      credentials:"omit"
+    });
+    const payload=await response.json().catch(()=>({}));
+    if(!response.ok || payload.ok!==true) throw new Error(payload.message || payload.error || "Request rejected.");
+    return payload;
+  }
+  document.getElementById("exchangeForm").addEventListener("submit",async function(event){
+    event.preventDefault();
+    if(!tg || !tg.initData){document.getElementById("exchangeStatus").textContent="Open this page using the Connect button in your 9N8 Telegram private chat.";return;}
+    const button=document.getElementById("saveExchange");
+    const status=document.getElementById("exchangeStatus");
+    button.disabled=true;status.textContent="Checking the selected demo/testnet account…";
+    const credentials={
+      apiKey:document.getElementById("apiKey").value.trim(),
+      apiSecret:document.getElementById("apiSecret").value.trim()
+    };
+    if(provider.value==="okx")credentials.passphrase=passphrase.value;
+    try{
+      const result=await apiPost({action:"connect_exchange",initData:tg.initData,provider:provider.value,environment:env.value,credentials});
+      status.textContent="Connected: "+result.label+". Credentials encrypted and saved; they will not be displayed again.";
+      this.reset();refreshProvider();
+    }catch(error){status.textContent=error.message||"Connection failed.";}
+    finally{
+      credentials.apiKey="";credentials.apiSecret="";credentials.passphrase="";
+      document.getElementById("apiKey").value="";
+      document.getElementById("apiSecret").value="";
+      passphrase.value="";
+      button.disabled=false;
+    }
+  });
+  document.getElementById("walletForm").addEventListener("submit",async function(event){
+    event.preventDefault();
+    if(!tg || !tg.initData){document.getElementById("walletStatus").textContent="Open this page from your 9N8 Telegram private chat.";return;}
+    const button=document.getElementById("saveWallet");
+    const status=document.getElementById("walletStatus");
+    const parts=document.getElementById("network").value.split(":");
+    button.disabled=true;status.textContent="Saving the public address…";
+    try{
+      const result=await apiPost({
+        action:"watch_wallet",initData:tg.initData,
+        provider:document.getElementById("walletProvider").value,
+        namespace:parts[0],chainId:parts.slice(1).join(":"),
+        network:document.getElementById("network").selectedOptions[0].textContent,
+        address:document.getElementById("address").value.trim()
+      });
+      status.textContent="Saved "+result.address+" as watch-only. No signing permissions were granted.";
+      document.getElementById("address").value="";
+    }catch(error){status.textContent=error.message||"Could not save address.";}
+    finally{button.disabled=false;}
+  });
+  document.getElementById("setupForm").addEventListener("submit",async function(event){
+    event.preventDefault();
+    const button=document.getElementById("activateWebhook");
+    const status=document.getElementById("setupStatus");
+    const setupSecret=document.getElementById("setupSecret").value;
+    button.disabled=true;status.textContent="Registering the new endpoint with Telegram…";
+    try{
+      await apiPost({action:"register_webhook",setupSecret});
+      status.textContent="Webhook registered. Open your Telegram bot and send /start.";
+      document.getElementById("setupSecret").value="";
+    }catch(error){status.textContent=error.message||"Registration failed. Check Supabase Edge Function Secrets.";}
+    finally{button.disabled=false;}
+  });
+})();
+</script>
+</body>
+</html>
