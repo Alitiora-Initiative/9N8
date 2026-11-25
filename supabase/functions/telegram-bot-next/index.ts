@@ -1702,7 +1702,10 @@ async function handleMiniApp(body: any): Promise<Response> {
         exchanges: Array.isArray(exchangeRows) ? exchangeRows : [],
         wallets: Array.isArray(walletRows) ? walletRows.map((w: any) => ({
           ...w,
-          public_address: mask(String(w.public_address)),
+          // Public wallet addresses are returned only inside this Telegram-
+          // authenticated, owner-scoped private Mini App response.
+          public_address: String(w.public_address),
+          masked_address: mask(String(w.public_address)),
         })) : [],
         liveTradingEnabled: false,
         message: "Binance Spot and OKX Spot accounts can be linked for account access. OKX read access is validated separately from trade and withdrawal scopes. Real orders remain locked until each connector passes release checks and each exact order has owner approval. A verified wallet still requires a separate owner-controlled trade permission.",
