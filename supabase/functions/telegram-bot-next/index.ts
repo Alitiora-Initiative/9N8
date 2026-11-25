@@ -1,9 +1,5 @@
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const HOOK_SECRET = (Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "").trim();
-const OWNER_ID = (Deno.env.get("TELEGRAM_OWNER_ID") ?? "").trim();
-const LEGACY_OKX_KEY = (Deno.env.get("OKX_API_KEY") ?? "").trim();
-const LEGACY_OKX_SECRET = (Deno.env.get("OKX_API_SECRET") ?? "").trim();
-const LEGACY_OKX_PHRASE = (Deno.env.get("OKX_API_PASSPHRASE") ?? "").trim();
 const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") ?? "").trim().replace(/\/+$/, "");
 const SUPABASE_SERVICE_KEY = (() => {
   const legacy = (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "").trim();
@@ -468,23 +464,6 @@ async function groupCommand(m: any, command: string, args: string[], actorRow: a
   }
 }
 
-async function migrateLegacyOwner(userId: number, row: any): Promise<boolean> {
-  if (!OWNER_ID || String(userId) !== OWNER_ID || !LEGACY_OKX_KEY || !LEGACY_OKX_SECRET || !LEGACY_OKX_PHRASE) return false;
-  try {
-    const existing = await db("n8_exchange_connections?select=id&user_id=eq." + encodeURIComponent(row.id) +
-      "&provider=eq.okx&environment=eq.demo&status=eq.active");
-    if (Array.isArray(existing) && existing.length > 0) return false;
-    const credentials = { apiKey: LEGACY_OKX_KEY, apiSecret: LEGACY_OKX_SECRET, passphrase: LEGACY_OKX_PHRASE };
-    const result = await validateExchange("okx", "demo", credentials);
-    await saveExchange(userId, "okx", "demo", "Migrated OKX Demo", credentials, result.permissions);
-    await audit(row.id, null, "legacy_okx_secret_migrated");
-    return true;
-  } catch {
-    // Keep legacy project secrets untouched if migration fails. Never reveal the failure body.
-    return false;
-  }
-}
-
 async function handleMessage(update: any) {
   const m = update?.message ?? update?.edited_message;
   if (!m?.chat?.id || !m?.from?.id) return;
@@ -506,11 +485,9 @@ async function handleMessage(update: any) {
   if (chatType !== "private") return;
 
   if (command === "/start" || command === "/menu") {
-    const migrated = await migrateLegacyOwner(Number(actor.id), row);
     await audit(row.id, chatId, "private_start");
     await send(chatId,
       "9N8 UNIVERSAL ASSISTANT\n\nYour private account is ready.\nConnect OKX Demo, Binance Spot Testnet or Bybit Demo from the secure form. You can also save Trust Wallet and Phantom public addresses as watch-only links.\n\n" +
-      (migrated ? "Your existing OKX demo connection was moved into encrypted account storage.\n\n" : "") +
       "This candidate release is demo/testnet and read-only. No live orders, withdrawals, transfers or wallet signing.",
       mainKeyboard());
     return;
@@ -568,6 +545,11 @@ async function mainHandler(req: Request): Promise<Response> {
   if (req.method === "GET" && url.searchParams.get("view") === "connect") return connectHtml();
   if (req.method === "GET") return response({
     ok: true, service: "9N8 universal candidate", state: "staging", environment: "demo-testnet-only",
+    config: {
+      telegramTokenConfigured: Boolean(TOKEN),
+      webhookSecretConfigured: Boolean(HOOK_SECRET),
+      databaseAdminConfigured: Boolean(SUPABASE_SERVICE_KEY),
+    },
   });
   if (req.method !== "POST") return response({ ok: false, error: "method_not_allowed" }, 405);
   let body: any;
