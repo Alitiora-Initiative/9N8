@@ -72,3 +72,47 @@ async def test_reconciliation_required_is_a_persistent_terminal_state(tmp_path):
         assert not await store.claim_pending_approval("APPROVAL003")
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_approvals_are_expired_automatically(tmp_path):
+    store = TradeStore(tmp_path / "expiry.sqlite3")
+    await store.open()
+    try:
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        await store.create_pending_approval(
+            "APPROVALEXP", "bybit:BTC/USDT:buy:999", expired, {"intent": {}}
+        )
+        assert await store.pending_approvals() == []
+        row = await store.get_pending_approval("APPROVALEXP")
+        assert row is not None
+        assert row["status"] == "EXPIRED"
+        assert row["decided_by"] == "system"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_recovers_interrupted_execution_and_locks_entries(tmp_path):
+    store = TradeStore(tmp_path / "restart-recovery.sqlite3")
+    await store.open()
+    try:
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()
+        await store.create_pending_approval(
+            "APPROVALREC", "okx:BTC/USDT:buy:777", expires, {"intent": {}}
+        )
+        assert await store.claim_pending_approval("APPROVALREC")
+
+        recovered = await store.recover_interrupted_approvals()
+        assert recovered == 1
+        assert await store.get_control("execution_reconciliation_required") == "true"
+        assert await store.get_control("kill_switch") == "true"
+        assert await store.get_control("paused") == "true"
+
+        row = await store.get_pending_approval("APPROVALREC")
+        assert row is not None
+        assert row["status"] == "RECONCILIATION_REQUIRED"
+        assert row["decided_by"] == "startup-recovery"
+        assert await store.recover_interrupted_approvals() == 0
+    finally:
+        await store.close()
