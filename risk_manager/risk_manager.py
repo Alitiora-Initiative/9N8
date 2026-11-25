@@ -20,6 +20,7 @@ HARD_MAX_CEX_SLIPPAGE = 0.005
 HARD_MAX_DEX_SLIPPAGE = 0.05
 HARD_MAX_FOREX_SPREAD_PIPS = 2.0
 HARD_MAX_PORTFOLIO_EXPOSURE = 0.25
+HARD_MAX_OPEN_POSITIONS = 10
 
 
 class RiskManager:
@@ -72,10 +73,17 @@ class RiskManager:
         contract_multiplier: float = 1.0,
         leverage: float = 1.0,
         forex_spread_pips: float | None = None,
+        current_open_positions: int = 0,
     ) -> RiskDecision:
         await self.assert_entry_allowed()
         if account.equity_usd <= 0 or account.free_usd <= 0:
             return RiskDecision(False, "Account equity or free collateral is not positive.")
+        max_positions = min(
+            max(1, int(self.risk_cfg.get("maximum_concurrent_positions", 3))),
+            HARD_MAX_OPEN_POSITIONS,
+        )
+        if current_open_positions >= max_positions:
+            return RiskDecision(False, f"Maximum concurrent position count ({max_positions}) reached.")
         if not all(map(lambda x: x > 0, (intent.entry_price, intent.risk_distance, contract_multiplier))):
             return RiskDecision(False, "Invalid entry, stop distance or contract multiplier.")
         if intent.side is Side.BUY and intent.stop_loss >= intent.entry_price:
