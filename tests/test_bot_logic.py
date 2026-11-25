@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 from decimal import Decimal
 
-from src.bot import _build_order, _step_ok, _verify_safe_key
+from src.bot import _assert_credentials, _build_order, _step_ok, _verify_safe_key
 from src.okx_provider import OKXError
 
 
@@ -48,6 +48,17 @@ class BotLogicTests(unittest.TestCase):
     def test_lot_step_validation(self):
         self.assertTrue(_step_ok(Decimal("0.002"), "0.001"))
         self.assertFalse(_step_ok(Decimal("0.0025"), "0.001"))
+
+    def test_credentials_guard_rejects_unconfigured_keys(self):
+        fake = type("Fake", (), {"credentials_configured": False})()
+        with patch("src.bot.okx", fake):
+            with self.assertRaises(OKXError):
+                _assert_credentials()
+
+    def test_credentials_guard_accepts_configured_keys(self):
+        fake = type("Fake", (), {"credentials_configured": True})()
+        with patch("src.bot.okx", fake):
+            _assert_credentials()
 
     def test_withdraw_permission_blocks_order_staging(self):
         fake = type("Fake", (), {"account_config": lambda self: {"perm": "read_only,trade,withdraw"}})()
