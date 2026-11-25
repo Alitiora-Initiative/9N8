@@ -471,6 +471,35 @@ class TelegramController:
                 "TELEGRAM_ALLOWED_USER_IDS to numeric owner IDs."
             )
             return
+        # This controller uses long polling. Do not silently delete a webhook:
+        # another N8 deployment may be using the same bot token.
+        try:
+            webhook = await self.bot.get_webhook_info()
+            if webhook.url:
+                log.critical(
+                    "Telegram polling is disabled because this bot token still has a webhook. "
+                    "Use one update receiver per bot token or configure a separate bot token."
+                )
+                try:
+                    await self.engine.store.set_control(
+                        "telegram_polling_status", "webhook_conflict"
+                    )
+                except Exception:
+                    pass
+                await self.send(
+                    "9N8 Telegram is not receiving commands because this bot token has an active webhook. "
+                    "The Python bot uses long polling. Stop the other webhook receiver or use a separate "
+                    "Telegram bot token; 9N8 will not delete the existing webhook automatically."
+                )
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning(
+                "Could not inspect Telegram webhook state (%s); attempting long polling.",
+                type(exc).__name__,
+            )
+
         delay = 1.0
         while not self._closed:
             try:
@@ -493,6 +522,22 @@ class TelegramController:
                         await self.engine.store.set_control("telegram_polling_status", "unauthorized")
                     except Exception:
                         pass
+                    return
+                if error_name == "TelegramConflictError":
+                    log.critical(
+                        "Telegram polling conflict: another process is using getUpdates "
+                        "or a webhook became active. Only one update receiver can use this bot token."
+                    )
+                    try:
+                        await self.engine.store.set_control(
+                            "telegram_polling_status", "conflict"
+                        )
+                    except Exception:
+                        pass
+                    await self.send(
+                        "9N8 Telegram polling conflict: another webhook or polling process is using this bot token. "
+                        "Stop the other receiver or use a separate bot token."
+                    )
                     return
                 log.error(
                     "Telegram polling disconnected (%s); retrying in %.1fs.",
