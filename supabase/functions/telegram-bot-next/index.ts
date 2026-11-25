@@ -1,4 +1,14 @@
 import { isAddress as isEvmAddress, verifyMessage as verifyEvmMessage } from "npm:viem@2.58.4";
+import {
+  binanceSignedRequest,
+  buildSpotMarketOrder,
+  canonicalJson,
+  estimateDepthExecution,
+  mapBinanceOrderStatus,
+  sha256Hex,
+  type BinanceBook,
+  type BinanceSymbolInfo,
+} from "./binance-live.ts";
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
@@ -596,11 +606,20 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     p_telegram_user_id: Number(user.id),
     p_connection_id: connection.id,
   });
-  const account = await binanceSignedGet({
+  const exchangeCredentials = {
     apiKey: clean(credentials?.apiKey, 512),
     apiSecret: clean(credentials?.apiSecret, 1024),
-  }, "/api/v3/account");
-  if (!Array.isArray(account?.balances)) throw new Error("exchange_credentials_rejected");
+  };
+  await validateBinanceLive(exchangeCredentials);
+  const account = await binanceSignedRequest<any>(
+    exchangeCredentials,
+    "GET",
+    "/api/v3/account",
+    { omitZeroBalances: "true" },
+  );
+  if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
+    throw new Error("exchange_credentials_rejected");
+  }
   const balances = account.balances
     .map((entry: any) => ({
       asset: String(entry.asset ?? ""),
@@ -610,11 +629,45 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     .filter((entry: any) => Number.isFinite(entry.free) && Number.isFinite(entry.locked) &&
       entry.free + entry.locked > 0)
     .slice(0, 100);
+  const quote = balances.find((entry: any) => entry.asset === "USDT") ?? { free: 0, locked: 0 };
+  const observedAt = new Date().toISOString();
+  const evidence = {
+    source: "binance_signed_spot_account",
+    connectionId: connection.id,
+    quoteAsset: "USDT",
+    availableQuote: quote.free,
+    // USDT is the exchange's quote unit for this release; it is valued at its USD peg
+    // for risk gating and the exact USDT quantity is preserved alongside this USD proxy.
+    availableQuoteUsdValuation: "USDT nominal USD peg at 1.00",
+    balances,
+    accountCanTrade: true,
+    observedAt,
+  };
+  await db("n8_live_balance_checks", "POST", {
+    user_id: userId,
+    account_type: "exchange",
+    connection_id: connection.id,
+    provider: "binance",
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    available_quote_usd: quote.free,
+    observed_at: observedAt,
+    source: "binance_signed_spot_account",
+    evidence_hash: await sha256Hex(canonicalJson(evidence)),
+    evidence,
+  }, "return=minimal");
+  await audit(userId, null, "binance_balance_refreshed", "ok", {
+    connection_id: connection.id,
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    observed_at: observedAt,
+  });
   return {
     connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
     balances,
-    accountCanTrade: account.canTrade === true,
-    updatedAt: new Date().toISOString(),
+    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, availableUsdApprox: quote.free },
+    accountCanTrade: true,
+    updatedAt: observedAt,
   };
 }
 async function handleMiniApp(body: any): Promise<Response> {
@@ -934,6 +987,19 @@ async function assessLiveMigration(user: any, row: any, body: any): Promise<Resp
     }
   } else {
     return response({ ok: false, message: "A live broker connector is not yet certified for this market." }, 400);
+  }
+
+  if (windowDays === 30 && marketType === "crypto") {
+    const finalized = await db("rpc/n8_finalize_mature_paper_session", "POST", {
+      p_user_id: row.id,
+      p_market_type: "crypto",
+    });
+    if (finalized?.ok === true && finalized?.already_completed !== true) {
+      await audit(row.id, null, "paper_evaluation_finalized", "ok", {
+        session_id: finalized.session_id,
+        completed_at: finalized.completed_at,
+      });
+    }
   }
 
   let assessment = await db("rpc/n8_live_gate_assess", "POST", {
