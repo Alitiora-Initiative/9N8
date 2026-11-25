@@ -21,7 +21,10 @@ class TelegramController:
         }
         self.bot = Bot(self.token) if self.token else None
         self.dispatcher = Dispatcher()
+        self.dispatcher.message.register(self.menu, Command("start", "menu"))
         self.dispatcher.message.register(self.status, Command("status"))
+        self.dispatcher.message.register(self.positions, Command("positions"))
+        self.dispatcher.message.register(self.history, Command("history"))
         self.dispatcher.message.register(self.pause, Command("pause"))
         self.dispatcher.message.register(self.panic, Command("panic"))
         self.dispatcher.message.register(self.resume, Command("resume"))
@@ -39,6 +42,70 @@ class TelegramController:
             and message.chat
             and message.chat.type == "private"
         )
+
+    def _dashboard_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📊 Status", callback_data="dash:status"),
+                InlineKeyboardButton(text="📍 Positions", callback_data="dash:positions"),
+            ],
+            [
+                InlineKeyboardButton(text="🧾 Pending approvals", callback_data="dash:pending"),
+                InlineKeyboardButton(text="📜 Trade history", callback_data="dash:history"),
+            ],
+            [
+                InlineKeyboardButton(text="⏸ Pause entries", callback_data="dash:pause"),
+                InlineKeyboardButton(text="▶️ Resume entries", callback_data="dash:resume"),
+            ],
+            [InlineKeyboardButton(text="🚨 Emergency flatten", callback_data="dash:panic")],
+        ])
+
+    async def menu(self, message: Message) -> None:
+        if not self._authorized(message):
+            await message.answer("Unauthorized. Use the private owner chat.")
+            return
+        await message.answer(
+            "9N8 · PRIVATE TRADING CONTROL\n"
+            "Every new trade needs a separate approval. Risk-managed exits remain active.\n"
+            "Select a control below.",
+            reply_markup=self._dashboard_keyboard(),
+        )
+
+    async def positions(self, message: Message) -> None:
+        if not self._authorized(message):
+            await message.answer("Unauthorized. Use the private owner chat.")
+            return
+        rows = await self.engine.store.positions()
+        if not rows:
+            await message.answer("No open positions are recorded.")
+            return
+        lines = []
+        for p in rows[:20]:
+            lines.append(
+                f"{p['symbol']} · {p['side'].upper()} · {p['venue']}\n"
+                f"Qty {float(p['quantity']):.8g} · entry {float(p['entry_price']):.10g} "
+                f"· mark {float(p['mark_price']):.10g}\n"
+                f"Unrealized PnL {float(p.get('unrealized_pnl_usd') or 0):+.4f} USD"
+            )
+        await message.answer("OPEN POSITIONS\n\n" + "\n\n".join(lines))
+
+    async def history(self, message: Message) -> None:
+        if not self._authorized(message):
+            await message.answer("Unauthorized. Use the private owner chat.")
+            return
+        rows = await self.engine.store.query_trades(10)
+        if not rows:
+            await message.answer("No trades recorded yet.")
+            return
+        lines = []
+        for trade in rows:
+            pnl = float(trade.get("realized_pnl_usd") or 0)
+            lines.append(
+                f"{trade['symbol']} · {trade['side'].upper()} · {trade['status']}\n"
+                f"Qty {float(trade['quantity']):.8g} · avg {float(trade['average_price']):.10g} "
+                f"· realized {pnl:+.4f} USD"
+            )
+        await message.answer("RECENT TRADE HISTORY\n\n" + "\n\n".join(lines))
 
     async def status(self, message: Message) -> None:
         if not self._authorized(message):
@@ -114,6 +181,79 @@ class TelegramController:
             return
         data = str(callback.data or "")
         try:
+            if data.startswith("dash:"):
+                action = data.split(":", 1)[1]
+                if action == "status":
+                    result = await self.engine.status_text()
+                elif action == "positions":
+                    rows = await self.engine.store.positions()
+                    result = "OPEN POSITIONS\\n" + (
+                        "\\n\\n".join(
+                            f"{p['symbol']} · {p['side'].upper()} · qty {float(p['quantity']):.8g} "
+                            f"· entry {float(p['entry_price']):.10g} · mark {float(p['mark_price']):.10g}"
+                            for p in rows[:20]
+                        ) if rows else "None"
+                    )
+                elif action == "pending":
+                    rows = await self.engine.store.pending_approvals(20)
+                    result = "PENDING APPROVALS\\n" + (
+                        "\\n".join(
+                            f"{r['approval_id']} · {r['payload']['intent']['side'].upper()} "
+                            f"{r['payload']['intent']['symbol']} · expires {r['expires_at']}"
+                            for r in rows
+                        ) if rows else "None"
+                    )
+                elif action == "history":
+                    rows = await self.engine.store.query_trades(10)
+                    result = "RECENT TRADES\\n" + (
+                        "\\n".join(
+                            f"{r['symbol']} · {r['status']} · PnL {float(r.get('realized_pnl_usd') or 0):+.4f} USD"
+                            for r in rows
+                        ) if rows else "None"
+                    )
+                elif action == "pause":
+                    await self.engine.risk.pause()
+                    result = "9N8 paused. New proposals are blocked; risk-managed exits continue."
+                elif action == "resume":
+                    await self.engine.risk.resume()
+                    result = "9N8 resumed. New proposals still require individual Telegram approval."
+                elif action == "panic":
+                    confirm = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(text="🚨 CONFIRM FLATTEN", callback_data="panic:confirm"),
+                        InlineKeyboardButton(text="Cancel", callback_data="panic:cancel"),
+                    ]])
+                    await callback.answer("Confirm emergency flatten.", show_alert=True)
+                    await message.answer(
+                        "This attempts to cancel open orders and close known positions at market. "
+                        "Check every connected account after the operation. Proceed?",
+                        reply_markup=confirm,
+                    )
+                    return
+                else:
+                    await callback.answer("Unknown dashboard action.", show_alert=True)
+                    return
+                await callback.answer("Done.")
+                await message.answer(result[:4000], reply_markup=self._dashboard_keyboard())
+                return
+            if data == "panic:cancel":
+                await callback.answer("Cancelled.")
+                await message.edit_reply_markup(reply_markup=None)
+                return
+            if data == "panic:confirm":
+                await callback.answer("Emergency flatten started.", show_alert=True)
+                await message.edit_reply_markup(reply_markup=None)
+                await message.answer(
+                    "Emergency flatten requested. 9N8 is pausing entries and attempting exits."
+                )
+                try:
+                    await self.engine.panic()
+                    await message.answer("9N8 panic routine completed. Verify every exchange and wallet directly.")
+                except Exception as exc:
+                    await message.answer(
+                        "WARNING: flatten was incomplete. Trading remains paused. "
+                        "Inspect open orders and balances manually. " + str(exc)[:500]
+                    )
+                return
             action, approval_id = data.split(":", 1)
             if not approval_id or len(approval_id) > 32:
                 raise ValueError("Invalid approval ID.")
@@ -129,9 +269,13 @@ class TelegramController:
             await message.edit_reply_markup(reply_markup=None)
             await message.answer(result[:4000])
         except Exception as exc:
-            log.warning("Telegram trade approval action failed (%s).", type(exc).__name__)
+            log.warning("Telegram control action failed (%s).", type(exc).__name__)
+            try:
+                await callback.answer("Action rejected.", show_alert=True)
+            except Exception:
+                pass
             await message.edit_reply_markup(reply_markup=None)
-            await message.answer("Trade action rejected: " + str(exc)[:1000])
+            await message.answer("Action rejected: " + str(exc)[:1000])
 
     async def send_approval(self, approval_id: str, text: str) -> None:
         if not self.enabled:
