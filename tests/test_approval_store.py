@@ -260,3 +260,79 @@ async def test_paper_fill_transaction_rolls_back_on_invalid_position_metadata(tm
         assert await store.get_control("paper_cash", "missing") == "missing"
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_marks_uncommitted_paper_approval_failed_without_live_lock(tmp_path):
+    store = TradeStore(tmp_path / "paper-restart-no-fill.sqlite3")
+    await store.open()
+    try:
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()
+        await store.create_pending_approval(
+            "PAPERFAIL001",
+            "okx:BTC/USDT:buy:1001",
+            expires,
+            {"mode": "paper", "intent": {}},
+        )
+        assert await store.claim_pending_approval("PAPERFAIL001")
+        assert await store.recover_interrupted_approvals() == 0
+        row = await store.get_pending_approval("PAPERFAIL001")
+        assert row is not None
+        assert row["status"] == "FAILED"
+        assert "No exchange order" in row["result"]
+        assert await store.get_control("execution_reconciliation_required", "false") == "false"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_recognizes_durably_committed_paper_fill(tmp_path):
+    store = TradeStore(tmp_path / "paper-restart-filled.sqlite3")
+    await store.open()
+    try:
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()
+        await store.create_pending_approval(
+            "PAPEROK001",
+            "okx:BTC/USDT:buy:1002",
+            expires,
+            {"mode": "paper", "intent": {}},
+        )
+        assert await store.claim_pending_approval("PAPEROK001")
+        now = datetime.now(timezone.utc).isoformat()
+        trade = {
+            "client_order_id": "paper-order-approved",
+            "venue": "okx",
+            "symbol": "BTC/USDT",
+            "market_type": "crypto_spot",
+            "side": "buy",
+            "status": "open",
+            "mode": "paper",
+            "quantity": 0.001,
+            "average_price": 50000.0,
+            "entry_timestamp": now,
+            "metadata": {"mode": "paper"},
+        }
+        position = {
+            "position_key": "okx:BTC/USDT",
+            "venue": "okx",
+            "symbol": "BTC/USDT",
+            "market_type": "crypto_spot",
+            "side": "buy",
+            "quantity": 0.001,
+            "entry_price": 50000.0,
+            "mark_price": 50000.0,
+            "stop_loss": 49000.0,
+            "take_profit": 53000.0,
+            "metadata": {"approval_id": "PAPEROK001", "paper_fees_paid": 0.05},
+            "opened_at": now,
+            "updated_at": now,
+        }
+        await store.persist_paper_fill(trade, 949.95, position=position)
+        assert await store.recover_interrupted_approvals() == 0
+        row = await store.get_pending_approval("PAPEROK001")
+        assert row is not None
+        assert row["status"] == "APPROVED"
+        assert await store.get_control("execution_reconciliation_required", "false") == "false"
+        assert len(await store.positions()) == 1
+    finally:
+        await store.close()
