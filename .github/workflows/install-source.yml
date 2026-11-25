@@ -1,0 +1,54 @@
+name: Install 9N8 source bundle
+on:
+  push:
+    paths:
+      - ".bootstrap/source.ready"
+permissions:
+  contents: write
+jobs:
+  expand:
+    if: github.event.head_commit.message != 'Install 9N8 project source'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Validate and expand source
+        run: |
+          python - <<'PY'
+          import base64, io, lzma, pathlib, tarfile
+          root = pathlib.Path.cwd().resolve()
+          staging = root / ".bootstrap"
+          parts = sorted(staging.glob("source-part-*"))
+          if not (staging / "source.ready").is_file() or not parts:
+              raise SystemExit("Source upload is incomplete")
+          packed = base64.b64decode(b"".join(p.read_bytes() for p in parts), validate=True)
+          archive = lzma.decompress(packed)
+          with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tf:
+              for member in tf.getmembers():
+                  rel = pathlib.PurePosixPath(member.name)
+                  target = (root / pathlib.Path(*rel.parts)).resolve()
+                  if rel.is_absolute() or ".." in rel.parts or (target != root and root not in target.parents):
+                      raise SystemExit("Unsafe archive path: " + member.name)
+                  if member.isdir():
+                      target.mkdir(parents=True, exist_ok=True)
+                  elif member.isfile():
+                      source = tf.extractfile(member)
+                      if source is None:
+                          raise SystemExit("Could not read archive member")
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      target.write_bytes(source.read())
+                  else:
+                      raise SystemExit("Unsupported archive member: " + member.name)
+          for part in parts:
+              part.unlink()
+          (staging / "source.ready").unlink()
+          PY
+      - name: Commit expanded project
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Install 9N8 project source"
+          git push origin HEAD:main
