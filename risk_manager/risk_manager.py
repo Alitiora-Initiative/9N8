@@ -63,6 +63,11 @@ class RiskManager:
     def _bounded(self, name: str, hard_max: float) -> float:
         return min(max(float(self.risk_cfg.get(name, hard_max)), 0.0), hard_max)
 
+    def slippage_limit_pct(self, market_type: str) -> float:
+        if market_type in {"solana_dex", "evm_dex"}:
+            return self._bounded("maximum_dex_slippage_pct", HARD_MAX_DEX_SLIPPAGE)
+        return self._bounded("maximum_cex_slippage_pct", HARD_MAX_CEX_SLIPPAGE)
+
     async def evaluate(
         self,
         intent: TradeIntent,
