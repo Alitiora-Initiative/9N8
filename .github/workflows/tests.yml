@@ -27,5 +27,6 @@ jobs:
         with:
           deno-version: v2.x
       - run: deno test --no-check supabase/functions/_shared/paper-engine_test.ts
+      - run: deno test --no-check supabase/functions/telegram-bot-next/jupiter-live_test.ts
       - run: deno check supabase/functions/n8-paper-worker/index.ts
       - run: deno check supabase/functions/telegram-bot-next/index.ts
