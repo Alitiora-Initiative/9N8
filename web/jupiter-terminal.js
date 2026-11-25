@@ -49,7 +49,7 @@ function base58Encode(bytes) {
 }
 function solToLamports(value) {
   const raw = String(value ?? "").trim();
-  if (!/^(?:0|[1-9]\\d*)(?:\\.\\d{1,9})?$/.test(raw)) throw new Error("Enter a valid SOL amount with at most 9 decimal places.");
+  if (!/^(?:0|[1-9][0-9]*)(?:[.][0-9]{1,9})?$/.test(raw)) throw new Error("Enter a valid SOL amount with at most 9 decimal places.");
   const [whole, fraction = ""] = raw.split(".");
   const units = BigInt(whole) * 1000000000n + BigInt((fraction + "000000000").slice(0, 9));
   if (units <= 0n) throw new Error("SOL amount must be positive.");
@@ -342,11 +342,15 @@ $("jupiterCreateDca").addEventListener("click", async () => {
   const totalText = String($("jupiterDcaTotal").value || "").trim();
   const count = Number($("jupiterDcaCount").value);
   const interval = Number($("jupiterDcaInterval").value);
-  let totalLamports;\n  try { totalLamports = solToLamports(totalText); } catch (error) { triggerStatus(error.message, "warning"); return; }\n  if (!mint || !Number.isInteger(count) || count < 2 || count > 1000 || !Number.isInteger(interval) || interval < 60) {
+  let totalLamports;
+  try { totalLamports = solToLamports(totalText); } catch (error) { triggerStatus(error.message, "warning"); return; }
+  if (!mint || !Number.isInteger(count) || count < 2 || count > 1000 || !Number.isInteger(interval) || interval < 60) {
     triggerStatus("Enter a valid mint, total SOL and at least two DCA rounds.", "warning");
     return;
   }
-  if (totalLamports > 500000000n) { triggerStatus("The 9N8 DCA vault deposit limit is 0.50 SOL per rolling 24 hours.", "warning"); return; }\n  const totalLamportsRaw = totalLamports.toString();\n  const totalDisplay = Number(totalLamports) / 1e9;
+  if (totalLamports > 500000000n) { triggerStatus("The 9N8 DCA vault deposit limit is 0.50 SOL per rolling 24 hours.", "warning"); return; }
+  const totalLamportsRaw = totalLamports.toString();
+  const totalDisplay = Number(totalLamports) / 1e9;
   $("jupiterCreateDca").disabled = true;
   try {
     triggerStatus("Crafting a wallet-signed deposit. Review the Jupiter vault receiver and amount before signing…");
@@ -358,17 +362,27 @@ $("jupiterCreateDca").addEventListener("click", async () => {
       orderType: "dca",
       inputMint: SOL_MINT,
       outputMint: mint,
-      amount: totalLamportsRaw,\n      orderCount: count,\n      intervalSeconds: interval,
+      amount: totalLamportsRaw,
+      orderCount: count,
+      intervalSeconds: interval,
     });
     const tx = VersionedTransaction.deserialize(b64ToBytes(deposit.deposit.transaction));
     if (tx.message.version !== 0) throw new Error("Unsupported deposit transaction version.");
     const confirmed = window.confirm(
-      "JUPITER AUTOMATION DEPOSIT\n\n" +
-      "Input: " + total + " SOL\n" +
-      "Token mint: " + mint + "\n" +
-      "Jupiter vault receiver: " + deposit.deposit.receiverAddress + "\n" +
-      "Rounds: " + count + "\n" +
-      "Interval: " + interval + " seconds\n\n" +
+      "JUPITER AUTOMATION DEPOSIT
+
+" +
+      "Input: " + total + " SOL
+" +
+      "Token mint: " + mint + "
+" +
+      "Jupiter vault receiver: " + deposit.deposit.receiverAddress + "
+" +
+      "Rounds: " + count + "
+" +
+      "Interval: " + interval + " seconds
+
+" +
       "This moves the deposited SOL into a Jupiter/Privy-managed vault, not your original wallet. Continue to wallet signing?"
     );
     if (!confirmed) throw new Error("Deposit cancelled before signing.");
