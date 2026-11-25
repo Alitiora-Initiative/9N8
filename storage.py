@@ -176,10 +176,12 @@ class TradeStore:
                 trade.get("realized_pnl_usd", 0),
                 json.dumps(trade.get("metadata", {}), separators=(",", ":"), allow_nan=False),
             )
-            await db.execute(
-                f"INSERT OR IGNORE INTO trades({cols}) VALUES({','.join('?' for _ in values)})",
+            inserted = await db.execute(
+                f"INSERT INTO trades({cols}) VALUES({','.join('?' for _ in values)})",
                 values,
             )
+            if inserted.rowcount != 1:
+                raise ValueError("Duplicate paper fill ID; virtual cash was not changed.")
 
             if position is not None:
                 await db.execute(
