@@ -249,10 +249,17 @@ class PaperTradingEngine:
                 raise PaperTradingError(
                     "The daily drawdown circuit breaker is active. It will reset at the next UTC day; new paper entries are blocked."
                 )
-            db.execute(
-                "UPDATE paper_account SET enabled=?, paused_reason=NULL, updated_at=? WHERE id=1",
-                (1 if enabled else 0, _now()),
-            )
+            if enabled:
+                db.execute(
+                    "UPDATE paper_account SET enabled=1, paused_reason=NULL, updated_at=? WHERE id=1",
+                    (_now(),),
+                )
+            else:
+                # A manual pause must never clear an active risk circuit breaker.
+                db.execute(
+                    "UPDATE paper_account SET enabled=0, updated_at=? WHERE id=1",
+                    (_now(),),
+                )
 
     def strategy(self) -> str:
         with self._db() as db:
