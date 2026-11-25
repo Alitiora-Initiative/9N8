@@ -308,7 +308,7 @@ class TelegramController:
         data = str(callback.data or "")
         try:
             try:
-                await callback.answer()
+                await callback.answer("Processing…")
             except Exception:
                 pass
             if data.startswith("dash:"):
@@ -328,12 +328,16 @@ class TelegramController:
                     )
                 elif action == "pending":
                     rows = await self.engine.store.pending_approvals(20)
-                    result = "PENDING APPROVALS\n" + (
-                        "\n".join(
-                            f"{r['approval_id']} · {r['payload']['intent']['side'].upper()} "
-                            f"{r['payload']['intent']['symbol']} · expires {r['expires_at']}"
-                            for r in rows
-                        ) if rows else "None"
+                    sent = await self._send_pending_to_user(user.id)
+                    result = (
+                        f"PENDING APPROVALS: {len(rows)} active · {sent} approval cards sent\n"
+                        + (
+                            "\n".join(
+                                f"{r['approval_id']} · {r['payload']['intent']['side'].upper()} "
+                                f"{r['payload']['intent']['symbol']} · expires {r['expires_at']}"
+                                for r in rows
+                            ) if rows else "None"
+                        )
                     )
                 elif action == "history":
                     rows = await self.engine.store.query_trades(10)
@@ -354,7 +358,6 @@ class TelegramController:
                         InlineKeyboardButton(text="🚨 CONFIRM FLATTEN", callback_data="panic:confirm"),
                         InlineKeyboardButton(text="Cancel", callback_data="panic:cancel"),
                     ]])
-                    await callback.answer("Confirm emergency flatten.", show_alert=True)
                     await message.answer(
                         "This attempts to cancel open orders and close known positions at market. "
                         "Check every connected account after the operation. Proceed?",
@@ -362,17 +365,17 @@ class TelegramController:
                     )
                     return
                 else:
-                    await callback.answer("Unknown dashboard action.", show_alert=True)
+                    await message.answer("Unknown dashboard action.")
                     return
-                await callback.answer("Done.")
                 await message.answer(result[:4000], reply_markup=self._dashboard_keyboard())
                 return
             if data == "panic:cancel":
-                await callback.answer("Cancelled.")
+                try:
                 await message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
                 return
             if data == "panic:confirm":
-                await callback.answer("Emergency flatten started.", show_alert=True)
                 await message.edit_reply_markup(reply_markup=None)
                 await message.answer(
                     "Emergency flatten requested. 9N8 is pausing entries and attempting exits."
@@ -390,23 +393,20 @@ class TelegramController:
             if not approval_id or len(approval_id) > 32:
                 raise ValueError("Invalid approval ID.")
             if action == "approve":
-                await callback.answer("Rechecking live price and risk…")
                 result = await self.engine.approve_pending(approval_id, str(user.id))
             elif action == "deny":
-                await callback.answer("Proposal denied.")
                 result = await self.engine.deny_pending(approval_id, str(user.id))
             else:
-                await callback.answer("Unknown approval action.", show_alert=True)
+                await message.answer("Unknown approval action.")
                 return
             await message.edit_reply_markup(reply_markup=None)
             await message.answer(result[:4000])
         except Exception as exc:
             log.warning("Telegram control action failed (%s).", type(exc).__name__)
             try:
-                await callback.answer("Action rejected.", show_alert=True)
+                await message.edit_reply_markup(reply_markup=None)
             except Exception:
                 pass
-            await message.edit_reply_markup(reply_markup=None)
             await message.answer("Action rejected: " + str(exc)[:1000])
 
     async def send_approval(self, approval_id: str, text: str) -> None:
