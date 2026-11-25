@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from types import SimpleNamespace
+import pytest
 
 from aiogram.types import Chat, Message, User
 
@@ -68,10 +68,11 @@ def test_telegram_dashboard_and_approval_callbacks_are_short_and_valid(monkeypat
     assert all(len(value.encode("utf-8")) <= 64 for value in callbacks + approval_callbacks)
 
 
+@pytest.mark.asyncio
 async def test_telegram_send_fails_closed_without_a_valid_bot(monkeypatch):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123456")
     controller = TelegramController(FakeEngine())
-    assert await controller._send_message(123456, "No message is sent.")
+    assert not await controller._send_message(123456, "No message is sent.")
     assert await controller.run() is None
     await controller.close()
