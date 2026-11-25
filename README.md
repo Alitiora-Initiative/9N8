@@ -174,7 +174,7 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
-For cloud use, connect the private GitHub repository to a persistent worker service, build from the included Dockerfile, mount `/app/data`, set the environment variables above, and deploy one worker replica. The included Procfile is also `worker: python -m src.bot`.
+For cloud use, connect the GitHub repository to a persistent worker service, build from the included Dockerfile, mount `/app/data`, set the environment variables above, and deploy one worker replica. The included Procfile is also `worker: python -m src.bot`.
 
 After deployment, message the bot with `/start`. As owner, use `/id` to identify your numeric Telegram ID, then set that number as `TELEGRAM_OWNER_ID` in the hosting dashboard and restart the worker. The owner should also run `/start` in the private chat to create their own paper account.
 
@@ -182,7 +182,8 @@ After deployment, message the bot with `/start`. As owner, use `/id` to identify
 
 ```bash
 python -m pip install -r requirements.txt
-python -m unittest discover -s tests -v
+python -m pip install -r requirements.txt pytest
+python -m pytest -q
 ```
 
 Tests use mocked MT5/MetaApi responses and temporary SQLite databases. They do not prove external credentials work or place broker orders. After deployment, `/mt5_status` verifies that the configured MetaApi connection is reachable and positively identifies an MT5 DEMO account.
