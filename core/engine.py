@@ -880,126 +880,221 @@ class TradingEngine:
             await asyncio.sleep(5)
 
     async def _position_loop(self) -> None:
+        """Monitor every open position independently; one bad market must not block others."""
         while not self.stop_event.is_set():
             try:
-                for row in await self.store.positions():
-                    spec = next((s for s in self.specs if s["venue"] == row["venue"] and s["symbol"] == row["symbol"]), None)
-                    if not spec:
-                        raise TradingError("Open position has no configured connector mapping.")
-                    connector = self.connectors[spec["connector"]]
-                    if hasattr(connector, "watch_snapshot"):
-                        snapshot = await connector.watch_snapshot(row["symbol"])
-                    else:
-                        snapshot = await connector.fetch_snapshot(row["symbol"])
-                    self.snapshots[row["position_key"]] = snapshot
-                    side = Side(row["side"])
-                    mark = snapshot.bid if side is Side.BUY else snapshot.ask
-                    direction = 1 if side is Side.BUY else -1
-                    row["mark_price"] = mark
-                    row["unrealized_pnl_usd"] = (mark - float(row["entry_price"])) * float(row["quantity"]) * direction
-                    row["updated_at"] = datetime.now(timezone.utc).isoformat()
-                    stop, target = float(row["stop_loss"]), float(row["take_profit"])
-                    stop_hit = mark <= stop if side is Side.BUY else mark >= stop
-                    target_hit = mark >= target if side is Side.BUY else mark <= target
-                    if stop_hit or target_hit:
-                        exit_reason = "stop_loss" if stop_hit else "take_profit"
-                        if self.mode == "paper":
-                            await self._close_position_row(row, connector, exit_reason)
-                        else:
-                            # Live/testnet entries already carry native venue-side
-                            # stop/TP instructions. Do not submit a second local
-                            # market close at the same instant: that can race the
-                            # bracket fill and create a reversed/oversized order.
-                            marker = "native_bracket_breach:" + hashlib.sha256(
-                                str(row["position_key"]).encode()
-                            ).hexdigest()[:24]
-                            if await self.store.get_control(marker, "false") != "true":
-                                await self.store.set_control(marker, "true")
-                                await self.store.set_control(
-                                    "execution_reconciliation_required", "true"
-                                )
-                                await self.store.set_control("kill_switch", "true")
-                                await self.risk.pause()
-                                message = (
-                                    "9N8 LIVE EXIT RECONCILIATION REQUIRED\n"
-                                    f"{row['venue']} · {row['symbol']} · {exit_reason.upper()} threshold observed.\n"
-                                    "The venue-side protective bracket was submitted with the entry. "
-                                    "9N8 did not send a duplicate market close. Inspect the provider's "
-                                    "open orders, fills and current position now; the bot remains paused "
-                                    "until the position is reconciled."
-                                )
-                                await self.store.event(
-                                    "CRITICAL", "native_bracket_breach_reconciliation",
-                                    message, row["venue"], row["symbol"],
-                                    {"position_key": row["position_key"], "reason": exit_reason},
-                                )
-                                if self.notifier:
-                                    try:
-                                        await self.notifier.send(message)
-                                    except Exception:
-                                        log.error("Could not deliver native bracket reconciliation alert.")
-                            await self.store.upsert_position(row)
-                        continue
-                    if self.mode == "paper":
-                        risk_per_unit = abs(float(row["entry_price"]) - stop)
-                        favourable = (mark - float(row["entry_price"])) * direction
-                        entry_price = max(float(row["entry_price"]), 1e-12)
-                        pnl_pct = ((mark - entry_price) / entry_price) * 100.0 * direction
-                        try:
-                            opened_at = datetime.fromisoformat(str(row["opened_at"]))
-                            if opened_at.tzinfo is None:
-                                opened_at = opened_at.replace(tzinfo=timezone.utc)
-                            elapsed_minutes = (
-                                datetime.now(timezone.utc) - opened_at
-                            ).total_seconds() / 60.0
-                        except (TypeError, ValueError):
-                            elapsed_minutes = 0.0
-                        max_hold_minutes = max(
-                            1,
-                            min(
-                                10080,
-                                int(os.getenv(
-                                    "PAPER_MAX_HOLD_MINUTES",
-                                    self.cfg["execution"].get("paper_max_hold_minutes", 240),
-                                )),
-                            ),
-                        )
-                        stagnation_profit_pct = float(os.getenv(
-                            "PAPER_MIN_STAGNATION_PROFIT_PCT",
-                            self.cfg["execution"].get("paper_min_stagnation_profit_pct", 1.0),
-                        ))
-                        if (
-                            elapsed_minutes >= max_hold_minutes
-                            and pnl_pct < stagnation_profit_pct
-                        ):
-                            await self._close_position_row(row, connector, "time_kill_switch")
-                            continue
-                        if not row["partial_closed"] and risk_per_unit > 0 and favourable >= 1.5 * risk_per_unit:
-                            await self._partial_close(row, connector, snapshot)
-                            row["partial_closed"] = True
-                            row["breakeven_moved"] = True
-                            row["stop_loss"] = float(row["entry_price"])
-                        elif row["partial_closed"]:
-                            candles = self._only_closed_candles(
-                                await connector.fetch_candles(row["symbol"], "5m", 60), "5m"
-                            )
-                            current_atr = atr(candles, int(self.cfg["strategy"]["atr_period"]))
-                            if current_atr:
-                                distance = current_atr * float(self.cfg["strategy"]["trailing_atr_multiple"])
-                                if side is Side.BUY:
-                                    row["stop_loss"] = max(float(row["stop_loss"]), mark - distance)
-                                else:
-                                    row["stop_loss"] = min(float(row["stop_loss"]), mark + distance)
-                    # Live trades keep the exchange-side hard bracket submitted on entry.
-                    # Partial exits/trailing require venue-specific bracket amendment and
-                    # are therefore deliberately restricted to the paper engine.
-                    await self.store.upsert_position(row)
+                await self._monitor_positions_once()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                log.exception("Position watcher iteration failed.")
-                await self.store.event("ERROR", "position_watcher_error", "Position watcher iteration failed.")
+            except Exception as exc:
+                log.exception("Position monitor snapshot failed (%s).", type(exc).__name__)
+                try:
+                    await self.store.event(
+                        "ERROR",
+                        "position_watcher_cycle_error",
+                        "Could not load the open-position list for this monitoring cycle.",
+                    )
+                except Exception:
+                    log.error("Could not persist position watcher cycle failure.")
             await asyncio.sleep(1)
+
+    async def _monitor_positions_once(self) -> None:
+        rows = await self.store.positions()
+        if not hasattr(self, "_position_alert_state"):
+            self._position_alert_state = {}
+        loop = asyncio.get_running_loop()
+        for row in rows:
+            key = str(row.get("position_key") or row.get("symbol") or "unknown-position")
+            try:
+                await self._monitor_position_row(row)
+                self._position_alert_state.pop(key, None)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                now = loop.time()
+                last_alert = self._position_alert_state.get(key, 0.0)
+                # A broken/stale quote is visible, but it must not flood the database
+                # or Telegram every one-second monitor tick.
+                if now - last_alert >= 300.0:
+                    self._position_alert_state[key] = now
+                    log.error(
+                        "Position monitoring failed for %s (%s). Other positions continue.",
+                        key,
+                        type(exc).__name__,
+                        exc_info=True,
+                    )
+                    try:
+                        await self.store.event(
+                            "ERROR",
+                            "position_monitor_error",
+                            "Could not safely evaluate this position; it remains open and will be retried.",
+                            row.get("venue"),
+                            row.get("symbol"),
+                            {"position_key": key, "error_type": type(exc).__name__},
+                        )
+                    except Exception:
+                        log.error("Could not persist position-specific monitoring error for %s.", key)
+                    if self.notifier:
+                        try:
+                            await self.notifier.send(
+                                "9N8 POSITION MONITOR WARNING\n"
+                                f"{row.get('venue', 'unknown')} · {row.get('symbol', 'unknown')}\n"
+                                "This position could not be evaluated from a valid market update. "
+                                "It remains recorded; 9N8 will retry while monitoring other positions. "
+                                "Inspect the exchange/account directly if this is a real/testnet position."
+                            )
+                        except Exception:
+                            log.warning("Could not deliver position warning for %s.", key)
+
+    async def _monitor_position_row(self, row: dict[str, Any]) -> None:
+        """Perform one position update and its configured exit checks."""
+        spec = next(
+            (
+                item for item in self.specs
+                if item["venue"] == row["venue"] and item["symbol"] == row["symbol"]
+            ),
+            None,
+        )
+        if not spec:
+            raise TradingError("Open position has no configured connector mapping.")
+        connector = self.connectors[spec["connector"]]
+        if hasattr(connector, "watch_snapshot"):
+            snapshot = await connector.watch_snapshot(row["symbol"])
+        else:
+            snapshot = await connector.fetch_snapshot(row["symbol"])
+
+        numeric = (snapshot.bid, snapshot.ask, snapshot.last)
+        if not all(math.isfinite(float(value)) and float(value) > 0 for value in numeric):
+            raise ConnectorUnavailable("Market snapshot contains a missing, non-finite or non-positive price.")
+        if snapshot.ask < snapshot.bid:
+            raise ConnectorUnavailable("Market snapshot is crossed; refusing to evaluate position exits.")
+        age = (datetime.now(timezone.utc) - snapshot.timestamp).total_seconds()
+        max_age = max(
+            1.0,
+            min(30.0, float(self.cfg["execution"].get("max_quote_age_seconds", 5))),
+        )
+        if age < -2.0 or age > max_age:
+            raise ConnectorUnavailable(
+                f"Market snapshot is stale or has an invalid clock ({age:.2f}s old)."
+            )
+
+        self.snapshots[row["position_key"]] = snapshot
+        side = Side(row["side"])
+        mark = snapshot.bid if side is Side.BUY else snapshot.ask
+        direction = 1 if side is Side.BUY else -1
+        quantity = float(row["quantity"])
+        entry_price = float(row["entry_price"])
+        if not math.isfinite(quantity) or quantity <= 0 or not math.isfinite(entry_price) or entry_price <= 0:
+            raise TradingError("Open position has invalid quantity or entry price.")
+        row["mark_price"] = mark
+        row["unrealized_pnl_usd"] = (mark - entry_price) * quantity * direction
+        row["updated_at"] = datetime.now(timezone.utc).isoformat()
+        stop = float(row["stop_loss"])
+        target = float(row["take_profit"])
+        stop_hit = mark <= stop if side is Side.BUY else mark >= stop
+        target_hit = mark >= target if side is Side.BUY else mark <= target
+
+        if stop_hit or target_hit:
+            exit_reason = "stop_loss" if stop_hit else "take_profit"
+            if self.mode == "paper":
+                await self._close_position_row(row, connector, exit_reason)
+            else:
+                # Native SL/TP orders are installed at entry. Never race them with
+                # a second local market order. Stop new entries and require a
+                # provider-side order/fill reconciliation.
+                marker = "native_bracket_breach:" + hashlib.sha256(
+                    str(row["position_key"]).encode()
+                ).hexdigest()[:24]
+                if await self.store.get_control(marker, "false") != "true":
+                    await self.store.set_control(marker, "true")
+                    await self.store.set_control(
+                        "execution_reconciliation_required", "true"
+                    )
+                    await self.store.set_control("kill_switch", "true")
+                    await self.risk.pause()
+                    message = (
+                        "9N8 LIVE EXIT RECONCILIATION REQUIRED\n"
+                        f"{row['venue']} · {row['symbol']} · {exit_reason.upper()} threshold observed.\n"
+                        "The venue-side protective bracket was submitted with the entry. "
+                        "9N8 did not send a duplicate market close. Inspect the provider's "
+                        "open orders, fills and current position now; the bot remains paused "
+                        "until the position is reconciled."
+                    )
+                    await self.store.event(
+                        "CRITICAL",
+                        "native_bracket_breach_reconciliation",
+                        message,
+                        row["venue"],
+                        row["symbol"],
+                        {"position_key": row["position_key"], "reason": exit_reason},
+                    )
+                    if self.notifier:
+                        try:
+                            await self.notifier.send(message)
+                        except Exception:
+                            log.error("Could not deliver native bracket reconciliation alert.")
+                await self.store.upsert_position(row)
+            return
+
+        if self.mode == "paper":
+            risk_per_unit = abs(entry_price - stop)
+            favourable = (mark - entry_price) * direction
+            pnl_pct = ((mark - entry_price) / entry_price) * 100.0 * direction
+            try:
+                opened_at = datetime.fromisoformat(str(row["opened_at"]))
+                if opened_at.tzinfo is None:
+                    opened_at = opened_at.replace(tzinfo=timezone.utc)
+                elapsed_minutes = (
+                    datetime.now(timezone.utc) - opened_at
+                ).total_seconds() / 60.0
+            except (TypeError, ValueError):
+                elapsed_minutes = 0.0
+
+            max_hold_minutes = max(
+                1,
+                min(
+                    10080,
+                    int(os.getenv(
+                        "PAPER_MAX_HOLD_MINUTES",
+                        self.cfg["execution"].get("paper_max_hold_minutes", 240),
+                    )),
+                ),
+            )
+            stagnation_profit_pct = float(os.getenv(
+                "PAPER_MIN_STAGNATION_PROFIT_PCT",
+                self.cfg["execution"].get("paper_min_stagnation_profit_pct", 1.0),
+            ))
+            if elapsed_minutes >= max_hold_minutes and pnl_pct < stagnation_profit_pct:
+                await self._close_position_row(row, connector, "time_kill_switch")
+                return
+
+            if (
+                not bool(row["partial_closed"])
+                and risk_per_unit > 0
+                and favourable >= 1.5 * risk_per_unit
+            ):
+                await self._partial_close(row, connector, snapshot)
+                row["partial_closed"] = True
+                row["breakeven_moved"] = True
+                row["stop_loss"] = entry_price
+            elif bool(row["partial_closed"]):
+                candles = self._only_closed_candles(
+                    await connector.fetch_candles(row["symbol"], "5m", 60),
+                    "5m",
+                )
+                current_atr = atr(candles, int(self.cfg["strategy"]["atr_period"]))
+                if current_atr and math.isfinite(float(current_atr)) and current_atr > 0:
+                    distance = current_atr * float(
+                        self.cfg["strategy"]["trailing_atr_multiple"]
+                    )
+                    if side is Side.BUY:
+                        row["stop_loss"] = max(float(row["stop_loss"]), mark - distance)
+                    else:
+                        row["stop_loss"] = min(float(row["stop_loss"]), mark + distance)
+
+        # The local stop for a live/testnet position is not treated as an amended
+        # exchange order. Native bracket protection remains the only live exit.
+        await self.store.upsert_position(row)
 
     async def _persist_paper_fill(
         self,
