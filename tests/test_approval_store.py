@@ -1,0 +1,74 @@
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from storage import TradeStore
+
+
+@pytest.mark.asyncio
+async def test_approval_is_persisted_and_can_only_be_claimed_once(tmp_path):
+    store = TradeStore(tmp_path / "approval.sqlite3")
+    await store.open()
+    try:
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()
+        payload = {
+            "intent": {
+                "venue": "bybit",
+                "symbol": "BTC/USDT",
+                "side": "buy",
+                "entry_price": 50000.0,
+            },
+            "size": {"quantity": 0.001, "notional_usd": 50.0, "risk_usd": 0.5},
+        }
+
+        assert await store.create_pending_approval(
+            "APPROVAL001", "bybit:BTC/USDT:buy:123", expires, payload
+        )
+        assert not await store.create_pending_approval(
+            "APPROVAL002", "bybit:BTC/USDT:buy:123", expires, payload
+        )
+
+        pending = await store.get_pending_approval("APPROVAL001")
+        assert pending is not None
+        assert pending["status"] == "PENDING"
+        assert pending["payload"] == payload
+        assert len(await store.pending_approvals()) == 1
+
+        assert await store.claim_pending_approval("APPROVAL001")
+        assert not await store.claim_pending_approval("APPROVAL001")
+        assert await store.pending_approvals() == []
+
+        await store.decide_pending_approval(
+            "APPROVAL001", "APPROVED", "123456", "Filled 0.001 at 50001."
+        )
+        decided = await store.get_pending_approval("APPROVAL001")
+        assert decided is not None
+        assert decided["status"] == "APPROVED"
+        assert decided["decided_by"] == "123456"
+        assert decided["result"] == "Filled 0.001 at 50001."
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_required_is_a_persistent_terminal_state(tmp_path):
+    store = TradeStore(tmp_path / "reconciliation.sqlite3")
+    await store.open()
+    try:
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=90)).isoformat()
+        assert await store.create_pending_approval(
+            "APPROVAL003", "okx:ETH/USDT:buy:456", expires, {"intent": {}}
+        )
+        assert await store.claim_pending_approval("APPROVAL003")
+        await store.decide_pending_approval(
+            "APPROVAL003",
+            "RECONCILIATION_REQUIRED",
+            "123456",
+            "Provider submission outcome could not be verified.",
+        )
+        result = await store.get_pending_approval("APPROVAL003")
+        assert result is not None
+        assert result["status"] == "RECONCILIATION_REQUIRED"
+        assert not await store.claim_pending_approval("APPROVAL003")
+    finally:
+        await store.close()
