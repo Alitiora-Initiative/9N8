@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from models import AccountState, MarketSnapshot, OpenPosition, Side, TradeIntent, TradeReceipt
+from models import AccountState, MarketSnapshot, MarketType, OpenPosition, Side, TradeIntent, TradeReceipt
 
 
 @dataclass
@@ -105,6 +105,15 @@ class PaperBroker:
             raise ValueError("Paper execution received a non-finite market or signal price.")
         if snapshot.bid <= 0 or snapshot.ask <= 0 or snapshot.last <= 0 or snapshot.ask < snapshot.bid:
             raise ValueError("Paper execution requires a valid, uncrossed positive bid/ask quote.")
+        if snapshot.market_type is MarketType.STOCK:
+            visible_size = snapshot.ask_size if intent.side is Side.BUY else snapshot.bid_size
+            if visible_size is None or not math.isfinite(float(visible_size)) or visible_size <= 0:
+                raise ValueError("Stock paper fill requires a positive displayed size at the executable quote.")
+            if quantity > float(visible_size) + 1e-12:
+                raise ValueError(
+                    f"Stock paper quantity {quantity:.8g} exceeds the displayed top-of-book size "
+                    f"{float(visible_size):.8g}; no fill was simulated."
+                )
         async with self._lock:
             price = self._price(snapshot, intent.side)
             if not math.isfinite(price) or price <= 0:
