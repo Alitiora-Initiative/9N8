@@ -1215,6 +1215,28 @@ async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response
   if (inputMint === outputMint) throw new Error("jupiter_trigger_mint_pair_invalid");
   const inputAmount = String(body?.amount ?? "");
   if (!/^[1-9]\d*$/.test(inputAmount)) throw new Error("jupiter_trigger_amount_invalid");
+  const orderCount = Number(body?.orderCount ?? 0);
+  const intervalSeconds = Number(body?.intervalSeconds ?? 0);
+  let usdPerDcaRound: number | null = null;
+  if (orderType === "dca") {
+    if (inputMint !== SOL_MINT || !Number.isInteger(orderCount) || orderCount < 2 || orderCount > 1000 ||
+        !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 31536000) {
+      throw new Error("jupiter_dca_parameters_invalid");
+    }
+    const priceResponse = await jupiterApi<any>("/price/v3?ids=" + encodeURIComponent(SOL_MINT), { apiKey: JUPITER_API_KEY });
+    const solPrice = Number(priceResponse?.[SOL_MINT]?.usdPrice ?? priceResponse?.data?.[SOL_MINT]?.usdPrice);
+    if (!Number.isFinite(solPrice) || solPrice <= 0) throw new Error("jupiter_sol_price_unavailable");
+    usdPerDcaRound = (Number(BigInt(inputAmount)) / 1e9 * solPrice) / orderCount;
+    if (usdPerDcaRound < 10) throw new Error("jupiter_dca_round_below_minimum_usd");
+  }
+  let depositTx: VersionedTransaction;
+  try { depositTx = VersionedTransaction.deserialize(base64ToBytes(String(body?.transaction ?? ""))); }
+  catch { throw new Error("jupiter_trigger_deposit_transaction_invalid"); }
+  if (depositTx.message.version !== 0 ||
+      (depositTx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address) {
+    throw new Error("jupiter_trigger_deposit_transaction_invalid");
+  }
+  const depositMessageHash = await sha256HexBytes(depositTx.message.serialize());
   const requestBody: Record<string, unknown> = {
     inputMint,
     outputMint,
@@ -1237,7 +1259,11 @@ async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response
     input_amount_raw: inputAmount,
     vault_address: String(result.receiverAddress),
     status: "deposit_pending",
-    order_metadata: { depositRequestId: result.requestId, mint: result.mint ?? inputMint, amount: result.amount ?? inputAmount },
+    order_metadata: {
+      depositRequestId: result.requestId, mint: result.mint ?? inputMint, amount: result.amount ?? inputAmount,
+      depositMessageHash, orderCount: orderType === "dca" ? orderCount : null,
+      intervalSeconds: orderType === "dca" ? intervalSeconds : null, usdPerDcaRound,
+    },
   }, "return=representation");
   if (!Array.isArray(rows) || !rows[0]?.id) throw new Error("jupiter_trigger_deposit_record_failed");
   return response({
@@ -1272,7 +1298,7 @@ async function jupiterTriggerCreateDca(row: any, body: any): Promise<Response> {
     throw new Error("jupiter_dca_parameters_invalid");
   }
   const localRows = await db(
-    "n8_jupiter_automation_orders?select=id,input_mint,output_mint,input_amount_raw,vault_address,status&jupiter_order_id=eq." +
+    "n8_jupiter_automation_orders?select=id,input_mint,output_mint,input_amount_raw,vault_address,status,order_metadata&jupiter_order_id=eq." +
       encodeURIComponent(depositRequestId) + "&wallet_connection_id=eq." +
       encodeURIComponent(wallet.id) + "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.deposit_pending&limit=1"
   );
@@ -1280,6 +1306,30 @@ async function jupiterTriggerCreateDca(row: any, body: any): Promise<Response> {
   if (!deposit) throw new Error("jupiter_trigger_deposit_not_found");
   const inputAmount = String(body?.inputAmount ?? deposit.input_amount_raw);
   if (inputAmount !== String(deposit.input_amount_raw)) throw new Error("jupiter_trigger_deposit_amount_mismatch");
+  const orderMetadata = deposit.order_metadata ?? {};
+  if (orderCount !== Number(orderMetadata.orderCount) || intervalSeconds !== Number(orderMetadata.intervalSeconds)) {
+    throw new Error("jupiter_dca_parameters_mismatch");
+  }
+  let depositTx: VersionedTransaction;
+  try { depositTx = VersionedTransaction.deserialize(base64ToBytes(depositSignedTx)); }
+  catch { throw new Error("jupiter_trigger_deposit_signature_invalid"); }
+  const depositMessageBytes = depositTx.message.serialize();
+  if (depositTx.message.version !== 0 ||
+      (depositTx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address ||
+      await sha256HexBytes(depositMessageBytes) !== String(orderMetadata.depositMessageHash ?? "")) {
+    throw new Error("jupiter_trigger_deposit_message_changed");
+  }
+  const depositSignature = depositTx.signatures?.[0];
+  if (!depositSignature || depositSignature.length !== 64 || depositSignature.every((v: number) => v === 0)) {
+    throw new Error("jupiter_trigger_deposit_signature_missing");
+  }
+  const depositPub = new Uint8Array(new PublicKey(wallet.public_address).toBytes()).buffer;
+  const depositSig = new Uint8Array(depositSignature).buffer;
+  const depositMessage = new Uint8Array(depositMessageBytes).buffer;
+  const depositKey = await crypto.subtle.importKey("raw", depositPub, { name: "Ed25519" }, false, ["verify"]);
+  if (!await crypto.subtle.verify("Ed25519", depositKey, depositSig, depositMessage)) {
+    throw new Error("jupiter_trigger_deposit_signature_invalid");
+  }
   const requestBody = {
     depositRequestId,
     depositSignedTx,
