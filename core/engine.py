@@ -420,24 +420,28 @@ class TradingEngine:
                     if stop_hit or target_hit:
                         await self._close_position_row(row, connector, "stop_loss" if stop_hit else "take_profit")
                         continue
-                    risk_per_unit = abs(float(row["entry_price"]) - stop)
-                    favourable = (mark - float(row["entry_price"])) * direction
-                    if not row["partial_closed"] and risk_per_unit > 0 and favourable >= 1.5 * risk_per_unit:
-                        await self._partial_close(row, connector, snapshot)
-                        row["partial_closed"] = True
-                        row["breakeven_moved"] = True
-                        row["stop_loss"] = float(row["entry_price"])
-                    elif row["partial_closed"]:
-                        candles = await connector.fetch_candles(row["symbol"], "5m", 60)
-                        current_atr = atr(candles, int(self.cfg["strategy"]["atr_period"]))
-                        if current_atr:
-                            distance = current_atr * float(self.cfg["strategy"]["trailing_atr_multiple"])
-                            if side is Side.BUY:
-                                row["stop_loss"] = max(float(row["stop_loss"]), mark - distance)
-                            else:
-                                row["stop_loss"] = min(float(row["stop_loss"]), mark + distance)
-                    # The local stored trail is not a substitute for amending native venue
-                    # protection. Live orders retain the hard SL/TP attached at entry.
+                    if self.mode == "paper":
+                        risk_per_unit = abs(float(row["entry_price"]) - stop)
+                        favourable = (mark - float(row["entry_price"])) * direction
+                        if not row["partial_closed"] and risk_per_unit > 0 and favourable >= 1.5 * risk_per_unit:
+                            await self._partial_close(row, connector, snapshot)
+                            row["partial_closed"] = True
+                            row["breakeven_moved"] = True
+                            row["stop_loss"] = float(row["entry_price"])
+                        elif row["partial_closed"]:
+                            candles = self._only_closed_candles(
+                                await connector.fetch_candles(row["symbol"], "5m", 60), "5m"
+                            )
+                            current_atr = atr(candles, int(self.cfg["strategy"]["atr_period"]))
+                            if current_atr:
+                                distance = current_atr * float(self.cfg["strategy"]["trailing_atr_multiple"])
+                                if side is Side.BUY:
+                                    row["stop_loss"] = max(float(row["stop_loss"]), mark - distance)
+                                else:
+                                    row["stop_loss"] = min(float(row["stop_loss"]), mark + distance)
+                    # Live trades keep the exchange-side hard bracket submitted on entry.
+                    # Partial exits/trailing require venue-specific bracket amendment and
+                    # are therefore deliberately restricted to the paper engine.
                     await self.store.upsert_position(row)
             except asyncio.CancelledError:
                 raise
