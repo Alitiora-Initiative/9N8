@@ -37,6 +37,28 @@ class PaperBroker:
         factor = 1 + self.slippage_bps / 10_000 if side is Side.BUY else 1 - self.slippage_bps / 10_000
         return reference * factor
 
+    async def restore_state(self, cash_balance: float, rows: list[dict]) -> None:
+        """Restore paper cash and open positions from the durable SQLite ledger."""
+        import json
+        async with self._lock:
+            if cash_balance <= 0:
+                raise ValueError("Persisted paper cash must be positive.")
+            self.cash = float(cash_balance)
+            self.positions.clear()
+            for row in rows:
+                raw = row.get("metadata_json", {})
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw)
+                    except json.JSONDecodeError:
+                        raw = {}
+                self.positions[str(row["position_key"])] = _PaperPosition(
+                    str(row["venue"]), str(row["symbol"]), Side(row["side"]),
+                    float(row["quantity"]), float(row["entry_price"]),
+                    float(row["stop_loss"]), float(row["take_profit"]),
+                    float(raw.get("paper_fees_paid", 0.0)),
+                )
+
     async def account(self, snapshots: dict[str, MarketSnapshot]) -> AccountState:
         async with self._lock:
             equity = self.cash
