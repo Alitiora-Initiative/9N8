@@ -33,16 +33,30 @@ class SolanaJupiterConnector(ExecutionConnector):
         self.api_key = api_key or os.getenv("JUPITER_API_KEY", "").strip()
         self.cluster = cluster
         self.live_certified = bool(live_certified)
-        self.private_key = private_key or os.getenv("SOLANA_PRIVATE_KEY", "").strip()
+        self.private_key = (private_key or os.getenv("SOLANA_PRIVATE_KEY", "").strip()) if self._live_execution_authorized() else ""
         self.rpc: AsyncClient | None = None
         self.http: aiohttp.ClientSession | None = None
         self.keypair: Keypair | None = None
         self.base_url = "https://api.jup.ag/swap/v2"
         self.security = DexSecurityGate()
 
+    def _live_execution_authorized(self) -> bool:
+        return bool(
+            self.live_certified
+            and os.getenv("TRADING_MODE", "").strip().lower() == "live"
+            and os.getenv("LIVE_TRADING", "false").strip().lower() == "true"
+            and os.getenv("ALLOW_LIVE_TRADING", "false").strip().lower() == "true"
+            and os.getenv("LIVE_EXECUTION_CERTIFIED", "false").strip().lower() == "true"
+            and os.getenv("ALLOW_LIVE_DEX_EXECUTION", "false").strip().lower() == "true"
+            and os.getenv("LIVE_ACKNOWLEDGEMENT", "") == "I_UNDERSTAND_REAL_FUNDS_CAN_BE_LOST"
+        )
+
     async def connect(self) -> None:
         if not self.rpc_url:
             raise ConnectorUnavailable("SOLANA_RPC_URL is required.")
+        if not self._live_execution_authorized():
+            self.private_key = ""
+            log.warning("Solana signing is disabled; this connector is in market-data-only mode.")
         if self.cluster == "mainnet-beta" and not self.api_key:
             raise ConnectorUnavailable("JUPITER_API_KEY is required for mainnet usage.")
         self.rpc = AsyncClient(self.rpc_url, timeout=15)
@@ -166,6 +180,8 @@ class SolanaJupiterConnector(ExecutionConnector):
         raise ConnectorUnavailable("Solana transaction could not be reconciled; do not retry until chain status is checked.")
 
     async def _swap(self, intent: TradeIntent, quantity: float, client_order_id: str) -> TradeReceipt:
+        if not self._live_execution_authorized():
+            raise RiskRejected("Solana live execution is locked by the connector-level certification gate.")
         if self.cluster != "mainnet-beta":
             raise ConnectorUnavailable("Jupiter Swap API does not provide a Devnet trading venue.")
         if not self.keypair or not self.api_key or not self.http:
