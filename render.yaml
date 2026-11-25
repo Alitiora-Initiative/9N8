@@ -1,0 +1,34 @@
+services:
+  - type: worker
+    name: 9n8-telegram-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    disk:
+      name: 9n8-paper-data
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_OWNER_ID
+        sync: false
+      - key: TWELVEDATA_API_KEY
+        sync: false
+      - key: MODE
+        value: paper
+      - key: MT5_PROVIDER
+        value: metaapi
+      - key: METAAPI_TOKEN
+        sync: false
+      - key: METAAPI_ACCOUNT_ID
+        sync: false
+      - key: PAPER_DB_PATH
+        value: /app/data/9n8_paper.sqlite3
+      - key: REPORT_TIMEZONE
+        value: Africa/Nairobi
+      - key: REPORT_DAY
+        value: MON
+      - key: REPORT_TIME
+        value: "09:00"

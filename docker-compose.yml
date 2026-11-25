@@ -1,0 +1,16 @@
+services:
+  9n8:
+    build: .
+    container_name: 9n8-telegram-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PAPER_DB_PATH: /app/data/9n8_paper.sqlite3
+      MT5_PROVIDER: metaapi
+      MODE: paper
+    volumes:
+      - 9n8-data:/app/data
+
+volumes:
+  9n8-data:

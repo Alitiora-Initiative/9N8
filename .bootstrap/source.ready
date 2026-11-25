@@ -1,4 +1,0 @@
-validated=true
-archive=base64(lzma(tar))
-parts=8
-retry=after-workflow-permission-fix
