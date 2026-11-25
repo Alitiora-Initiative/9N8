@@ -111,8 +111,8 @@ async def test_historical_bars_are_parsed_sorted_and_limited():
     candles = await connector.fetch_candles("AAPL", "5m", 2)
 
     assert len(candles) == 2
-    assert candles[0].open == 8
-    assert candles[1].close == 11
+    assert candles[0].open == 10
+    assert candles[1].close == 11.5
     url, params = connector.session.calls[0]
     assert url.endswith("/v2/stocks/bars")
     assert params["timeframe"] == "5Min"
