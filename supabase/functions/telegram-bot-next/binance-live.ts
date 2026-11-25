@@ -63,7 +63,19 @@ export async function binanceSignedRequest<T = Record<string, unknown>>(
   baseUrl = "https://api.binance.com",
 ): Promise<T> {
   if (!credentials.apiKey || !credentials.apiSecret) throw new Error("binance_credentials_missing");
-  if (!/^\/(?:api\/v3|sapi\/v1)\/[A-Za-z0-9/_-]+$/.test(path)) {
+  const allowedPaths = new Set([
+    "/api/v3/account",
+    "/api/v3/exchangeInfo",
+    "/api/v3/depth",
+    "/api/v3/ticker/price",
+    "/api/v3/ticker/bookTicker",
+    "/api/v3/order",
+    "/api/v3/order/test",
+    "/api/v3/orderList",
+    "/api/v3/orderList/oco",
+    "/sapi/v1/account/apiRestrictions",
+  ]);
+  if (!allowedPaths.has(path)) {
     throw new Error("binance_path_not_allowlisted");
   }
   const query = new URLSearchParams();
@@ -163,8 +175,11 @@ export function buildSpotMarketOrder(
     const notional = Number(quoteOrderQty);
     if (notional < 10) throw new Error("market_buy_below_10_usdt");
     const notionalFilter = filter(symbol, "NOTIONAL");
-    const minNotional = Number(notionalFilter?.minNotional ?? 0);
-    const applyMin = notionalFilter?.applyMinToMarket !== false;
+    const minNotionalFilter = notionalFilter ?? filter(symbol, "MIN_NOTIONAL");
+    const minNotional = Number(minNotionalFilter?.minNotional ?? 0);
+    const applyMin = notionalFilter
+      ? notionalFilter.applyMinToMarket !== false
+      : minNotionalFilter?.applyToMarket !== false;
     if (applyMin && minNotional > 0 && notional < minNotional) {
       throw new Error("market_buy_below_exchange_min_notional");
     }
