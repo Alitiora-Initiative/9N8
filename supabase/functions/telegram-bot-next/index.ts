@@ -944,6 +944,19 @@ async function executeJupiterSwap(user: any, row: any, body: any): Promise<Respo
     throw new Error("swap_quote_expired");
   }
 
+  const certificationRows = await db(
+    "n8_jupiter_connector_certification?select=status,live_manual_wallet_execution_enabled&provider=eq.jupiter_swap_v2&limit=1"
+  );
+  const certification = Array.isArray(certificationRows) ? certificationRows[0] : null;
+  if (!certification || certification.status !== "passed" ||
+      certification.live_manual_wallet_execution_enabled !== true) {
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) + "&user_id=eq." + encodeURIComponent(row.id),
+      "PATCH", { status: "failed", result_payload: { error: "jupiter_execution_certification_locked" }, updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    throw new Error("jupiter_execution_certification_locked");
+  }
   const walletRows = await db(
     "n8_wallet_connections?select=id,public_address,status,chain_namespace,chain_id,network,verified_at&id=eq." +
       encodeURIComponent(String(saved.wallet_connection_id)) + "&user_id=eq." +
@@ -991,19 +1004,6 @@ async function executeJupiterSwap(user: any, row: any, body: any): Promise<Respo
 
   // Certification is deliberately checked after the owner signature is verified,
   // and before any transaction is handed to Jupiter for submission.
-  const certificationRows = await db(
-    "n8_jupiter_connector_certification?select=status,live_manual_wallet_execution_enabled&provider=eq.jupiter_swap_v2&limit=1"
-  );
-  const certification = Array.isArray(certificationRows) ? certificationRows[0] : null;
-  if (!certification || certification.status !== "passed" ||
-      certification.live_manual_wallet_execution_enabled !== true) {
-    await db(
-      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) + "&user_id=eq." + encodeURIComponent(row.id),
-      "PATCH", { status: "failed", result_payload: { error: "jupiter_execution_certification_locked" }, updated_at: new Date().toISOString() },
-      "return=minimal"
-    );
-    throw new Error("jupiter_execution_certification_locked");
-  }
 
   try {
     const execution = await jupiterApi<any>("/swap/v2/execute", {
@@ -1052,6 +1052,19 @@ async function executeJupiterSwap(user: any, row: any, body: any): Promise<Respo
   }
 }
 
+async function getJupiterLiveConfig(row: any): Promise<Response> {
+  const cert = await jupiterTriggerCertification();
+  return response({
+    ok: true,
+    manualWalletExecutionEnabled: cert?.status === "passed" && cert?.live_manual_wallet_execution_enabled === true,
+    delegatedAutomationEnabled: cert?.status === "passed" && cert?.delegated_automation_enabled === true,
+    certificationStatus: cert?.status ?? "missing",
+    triggerApiConfigured: Boolean(JUPITER_API_KEY),
+    maxSwapSol: "0.05",
+    dailySwapSol: "0.10",
+    maxPriceImpactPct: 2,
+  });
+}
 async function getJupiterSwapStatus(user: any, row: any, body: any): Promise<Response> {
   const orderId = clean(body?.orderId, 64);
   const rows = await db(
@@ -1375,6 +1388,7 @@ async function handleMiniApp(body: any): Promise<Response> {
       "wallet_revoke",
       "jupiter_swap_status",
       "jupiter_trigger_history",
+      "jupiter_live_config",
       "jupiter_trigger_vault",
     ]);
     const maxAge = longLivedReadActions.has(String(body?.action ?? "")) ? 24 * 60 * 60 : 300;
@@ -1435,6 +1449,7 @@ async function handleMiniApp(body: any): Promise<Response> {
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
     if (body.action === "wallet_revoke") return await revokeWalletSession(user, body);
+    if (body.action === "jupiter_live_config") return await getJupiterLiveConfig(row);
     if (body.action === "jupiter_swap_order") return await createJupiterSwapOrder(user, row, body);
     if (body.action === "jupiter_swap_execute") return await executeJupiterSwap(user, row, body);
     if (body.action === "jupiter_swap_status") return await getJupiterSwapStatus(user, row, body);
@@ -2350,7 +2365,7 @@ async function mainHandler(req: Request): Promise<Response> {
   if (body?.action === "connect_exchange" || body?.action === "watch_wallet" ||
       ["wallet_challenge", "wallet_verify", "wallet_revoke", "live_connections", "live_status", "live_assess", "live_pause",
        "paper_terminal", "paper_start", "binance_account", "okx_account",
-       "jupiter_swap_order", "jupiter_swap_execute", "jupiter_swap_status",
+       "jupiter_live_config", "jupiter_swap_order", "jupiter_swap_execute", "jupiter_swap_status",
        "jupiter_trigger_challenge", "jupiter_trigger_verify", "jupiter_trigger_refresh",
        "jupiter_trigger_vault", "jupiter_trigger_deposit_craft", "jupiter_trigger_create_dca",
        "jupiter_trigger_history", "jupiter_trigger_cancel_dca",
