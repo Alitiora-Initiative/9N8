@@ -216,7 +216,265 @@ class TradingEngine:
             return int(text[:-1]) * 3_600_000
         if text.endswith("d") and text[:-1].isdigit():
             return int(text[:-1]) * 86_400_000
-        return 0    async def approve_pending(self, approval_id: str, approved_by: str) -> str:
+        return 0
+
+    @classmethod
+    def _only_closed_candles(cls, candles: list, timeframe: str) -> list:
+        interval_ms = cls._timeframe_ms(timeframe)
+        if interval_ms <= 0:
+            return []
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        closed = [
+            candle for candle in candles
+            if isinstance(candle.timestamp, (int, float))
+            and int(candle.timestamp) + interval_ms <= now_ms
+        ]
+        return sorted(closed, key=lambda candle: candle.timestamp)
+
+    async def _market_loop(self, spec: dict[str, Any]) -> None:
+        connector = self.connectors[spec["connector"]]
+        delay = 1.0
+        last_candle_fetch = 0.0
+        last_evaluated_candle = None
+        cached_trend = []
+        cached_entry = []
+        candle_refresh = max(
+            5.0, float(self.cfg["execution"].get("candle_refresh_seconds", 15))
+        )
+        while not self.stop_event.is_set():
+            try:
+                async with self._market_semaphore:
+                    if hasattr(connector, "watch_snapshot"):
+                        snapshot = await connector.watch_snapshot(spec["symbol"])
+                    else:
+                        snapshot = await connector.fetch_snapshot(spec["symbol"])
+                key = self._key(spec["venue"], spec["symbol"])
+                self.snapshots[key] = snapshot
+                if spec.get("dex_data_only"):
+                    await asyncio.sleep(5)
+                    continue
+
+                loop_now = asyncio.get_running_loop().time()
+                if loop_now - last_candle_fetch >= candle_refresh or not cached_entry:
+                    trend_raw, entry_raw = await asyncio.gather(
+                        connector.fetch_candles(spec["symbol"], spec["trend_tf"], 250),
+                        connector.fetch_candles(spec["symbol"], spec["entry_tf"], 120),
+                    )
+                    cached_trend = self._only_closed_candles(trend_raw, spec["trend_tf"])
+                    cached_entry = self._only_closed_candles(entry_raw, spec["entry_tf"])
+                    last_candle_fetch = loop_now
+
+                if cached_entry and cached_trend:
+                    candle_time = cached_entry[-1].timestamp
+                    if candle_time != last_evaluated_candle:
+                        last_evaluated_candle = candle_time
+                        intent = self.trend_strategy.evaluate(
+                            spec["venue"], spec["symbol"], spec["market_type"],
+                            cached_trend, cached_entry,
+                        )
+                        if intent is not None:
+                            await self._consider_entry(
+                                spec, connector, intent, snapshot, candle_time
+                            )
+                delay = 1.0
+                await asyncio.sleep(
+                    float(self.cfg["execution"].get("price_poll_seconds", 1.0))
+                )
+            except asyncio.CancelledError:
+                raise
+            except RiskRejected as exc:
+                await self.store.event(
+                    "WARNING", "risk_veto", str(exc), spec["venue"], spec["symbol"]
+                )
+                await asyncio.sleep(2)
+            except Exception as exc:
+                log.exception("Market loop error for %s %s", spec["venue"], spec["symbol"])
+                await self.store.event(
+                    "ERROR", "market_loop_error", str(exc), spec["venue"], spec["symbol"]
+                )
+                if self.notifier:
+                    try:
+                        await self.notifier.send(
+                            "9N8 feed error: " + spec["venue"] + " "
+                            + spec["symbol"] + ": " + str(exc)[:180]
+                        )
+                    except Exception:
+                        log.warning("Could not deliver market-feed error notification.")
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30)
+
+    def _forex_spread_pips(self, snapshot: MarketSnapshot) -> float:
+        pip = 0.01 if "JPY" in snapshot.symbol.upper() else 0.0001
+        return (snapshot.ask - snapshot.bid) / pip
+
+    async def _consider_entry(
+        self, spec: dict[str, Any], connector, intent: TradeIntent,
+        snapshot: MarketSnapshot, candle_timestamp: int,
+    ) -> None:
+        """Create a short-lived Telegram approval proposal; never open on signal alone."""
+        await self.risk.assert_entry_allowed()
+        key = self._key(intent.venue, intent.symbol)
+        open_rows = await self.store.positions()
+        if any(row["position_key"] == key for row in open_rows):
+            return
+        if intent.market_type in {MarketType.SOLANA_DEX, MarketType.EVM_DEX}:
+            raise RiskRejected(
+                "DEX entries remain data-only until independent transaction simulation "
+                "and durable position reconciliation are complete."
+            )
+
+        quote_age = (datetime.now(timezone.utc) - snapshot.timestamp).total_seconds()
+        max_quote_age = max(
+            1.0, min(30.0, float(self.cfg["execution"].get("max_quote_age_seconds", 5)))
+        )
+        if quote_age < -2 or quote_age > max_quote_age:
+            raise RiskRejected(
+                f"Market quote is stale or has an invalid timestamp ({quote_age:.2f}s old)."
+            )
+
+        account = await self._portfolio_account()
+        exposure = sum(
+            float(row["quantity"]) * float(row["mark_price"]) for row in open_rows
+        )
+        spread_slippage = max(snapshot.spread_pct / 2, 0.0)
+        leverage = float(spec.get("leverage", 1))
+        contract_multiplier = (
+            connector.contract_multiplier(intent.symbol)
+            if hasattr(connector, "contract_multiplier") else 1.0
+        )
+        spread_pips = (
+            self._forex_spread_pips(snapshot)
+            if intent.market_type is MarketType.FOREX else None
+        )
+        signal_entry = float(intent.entry_price)
+        stop_distance = abs(signal_entry - float(intent.stop_loss))
+        reward_distance = abs(float(intent.take_profit) - signal_entry)
+        executable_entry = snapshot.ask if intent.side is Side.BUY else snapshot.bid
+        if (
+            not all(math.isfinite(value) for value in (
+                signal_entry, stop_distance, reward_distance, executable_entry
+            ))
+            or signal_entry <= 0 or stop_distance <= 0
+            or reward_distance <= 0 or executable_entry <= 0
+        ):
+            raise RiskRejected("The strategy signal contains invalid prices or risk distances.")
+
+        if intent.side is Side.BUY:
+            rebased_stop = executable_entry - stop_distance
+            rebased_target = executable_entry + reward_distance
+        else:
+            rebased_stop = executable_entry + stop_distance
+            rebased_target = executable_entry - reward_distance
+        proposed = TradeIntent(
+            intent.venue, intent.symbol, intent.market_type, intent.side,
+            executable_entry, rebased_stop, rebased_target, stop_distance,
+            intent.reason,
+            {**intent.metadata, "signal_candle_ms": candle_timestamp},
+        )
+        decision = await self.risk.evaluate(
+            proposed, account, snapshot, exposure, spread_slippage,
+            leverage=leverage, forex_spread_pips=spread_pips,
+            contract_multiplier=contract_multiplier,
+            current_open_positions=len(open_rows),
+        )
+        if not decision.approved or not decision.size:
+            await self.store.event(
+                "WARNING", "trade_veto", decision.reason, proposed.venue, proposed.symbol
+            )
+            return
+        if hasattr(connector, "estimate_slippage_pct"):
+            order_impact = await connector.estimate_slippage_pct(
+                proposed.symbol, proposed.side, decision.size.quantity
+            )
+            limit = self.risk.slippage_limit_pct(proposed.market_type.value)
+            if not math.isfinite(order_impact) or order_impact > limit:
+                reason = (
+                    f"Order-book impact {order_impact:.4%} exceeds "
+                    f"the hard {limit:.4%} limit."
+                )
+                await self.store.event(
+                    "WARNING", "market_impact_veto", reason,
+                    proposed.venue, proposed.symbol,
+                )
+                return
+
+        signal_key = (
+            f"{proposed.venue}:{proposed.symbol}:"
+            f"{proposed.side.value}:{candle_timestamp}"
+        )
+        approval_id = uuid.uuid4().hex[:12].upper()
+        timeout_seconds = max(
+            15, min(600, int(self.cfg["execution"].get("approval_timeout_seconds", 120)))
+        )
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
+        payload = {
+            "intent": {
+                "venue": proposed.venue,
+                "symbol": proposed.symbol,
+                "market_type": proposed.market_type.value,
+                "side": proposed.side.value,
+                "entry_price": proposed.entry_price,
+                "stop_loss": proposed.stop_loss,
+                "take_profit": proposed.take_profit,
+                "risk_distance": proposed.risk_distance,
+                "reason": proposed.reason,
+                "metadata": proposed.metadata,
+            },
+            "size": {
+                "quantity": decision.size.quantity,
+                "notional_usd": decision.size.notional_usd,
+                "risk_usd": decision.size.risk_usd,
+            },
+            "spec": {
+                "connector": spec["connector"],
+                "venue": spec["venue"],
+                "symbol": spec["symbol"],
+                "market_type": spec["market_type"].value,
+                "entry_tf": spec.get("entry_tf"),
+                "trend_tf": spec.get("trend_tf"),
+                "leverage": leverage,
+            },
+            "signal_key": signal_key,
+            "signal_candle_ms": candle_timestamp,
+            "reference_price": executable_entry,
+            "risk_reason": decision.reason,
+        }
+        created = await self.store.create_pending_approval(
+            approval_id, signal_key, expires_at.isoformat(), payload
+        )
+        if not created:
+            return
+
+        preview = (
+            "9N8 TRADE APPROVAL REQUIRED\n"
+            f"{proposed.side.value.upper()} {proposed.symbol}\n"
+            f"Venue: {proposed.venue} · mode: {self.mode.upper()}\n"
+            f"Reference entry: {proposed.entry_price:.10g}\n"
+            f"Estimated quantity: {decision.size.quantity:.8g}\n"
+            f"Notional: {decision.size.notional_usd:.2f} USD · "
+            f"planned stop risk: {decision.size.risk_usd:.2f} USD\n"
+            f"Stop loss: {proposed.stop_loss:.10g}\n"
+            f"Take profit: {proposed.take_profit:.10g}\n"
+            f"Strategy: {proposed.reason}\n"
+            f"Approval expires in {timeout_seconds}s. "
+            "The quote and risk limits are checked again after approval.\n"
+            "No order has been placed."
+        )
+        await self.store.event(
+            "INFO", "trade_approval_requested", preview,
+            proposed.venue, proposed.symbol,
+            {"approval_id": approval_id, "signal_key": signal_key},
+        )
+        if self.notifier:
+            send_approval = getattr(self.notifier, "send_approval", None)
+            if send_approval:
+                await send_approval(approval_id, preview)
+            else:
+                await self.notifier.send(
+                    preview + f"\nApproval ID: {approval_id}"
+                )
+
+    async def approve_pending(self, approval_id: str, approved_by: str) -> str:
         """Re-price and re-run all risk checks immediately before the confirmed order."""
         pending = await self.store.get_pending_approval(approval_id)
         if not pending:
