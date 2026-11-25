@@ -1307,9 +1307,12 @@ async function jupiterTriggerCreateDca(row: any, body: any): Promise<Response> {
   const inputAmount = String(body?.inputAmount ?? deposit.input_amount_raw);
   if (inputAmount !== String(deposit.input_amount_raw)) throw new Error("jupiter_trigger_deposit_amount_mismatch");
   const orderMetadata = deposit.order_metadata ?? {};
-  if (orderCount !== Number(orderMetadata.orderCount) || intervalSeconds !== Number(orderMetadata.intervalSeconds)) {
+  if (orderCount !== Number(orderMetadata.orderCount) ||
+      intervalSeconds !== Number(orderMetadata.intervalSeconds) ||
+      Number(orderMetadata.usdPerDcaRound) < 10) {
     throw new Error("jupiter_dca_parameters_mismatch");
   }
+
   let depositTx: VersionedTransaction;
   try { depositTx = VersionedTransaction.deserialize(base64ToBytes(depositSignedTx)); }
   catch { throw new Error("jupiter_trigger_deposit_signature_invalid"); }
@@ -1330,6 +1333,17 @@ async function jupiterTriggerCreateDca(row: any, body: any): Promise<Response> {
   if (!await crypto.subtle.verify("Ed25519", depositKey, depositSig, depositMessage)) {
     throw new Error("jupiter_trigger_deposit_signature_invalid");
   }
+
+  const claimed = await db(
+    "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(deposit.id) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.deposit_pending",
+    "PATCH",
+    { status: "creating", deposit_signature: base58Encode(depositSignature), updated_at: new Date().toISOString() },
+    "return=representation"
+  );
+  if (!Array.isArray(claimed) || claimed.length !== 1) {
+    throw new Error("jupiter_trigger_deposit_already_claimed");
+  }
   const requestBody = {
     depositRequestId,
     depositSignedTx,
@@ -1341,30 +1355,53 @@ async function jupiterTriggerCreateDca(row: any, body: any): Promise<Response> {
     intervalSeconds,
     orderType: "time_based",
   };
-  const result = await triggerAccess(wallet, accessToken, "/trigger/v2/orders/dca", "POST", requestBody);
-  const jupiterOrderId = String(result?.id ?? result?.orderId ?? "");
-  if (!jupiterOrderId) throw new Error("jupiter_trigger_dca_response_invalid");
-  await db(
-    "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(deposit.id) +
-      "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.deposit_pending",
-    "PATCH",
-    {
-      jupiter_order_id: jupiterOrderId,
-      order_count: orderCount,
-      interval_seconds: intervalSeconds,
-      deposit_signature: String(result.txSignature ?? ""),
-      status: "active",
-      order_metadata: { response: result, depositRequestId, orderType: "time_based" },
-      updated_at: new Date().toISOString(),
-    },
-    "return=minimal"
-  );
-  await audit(row.id, null, "jupiter_dca_created", "ok", {
-    jupiter_order_id: jupiterOrderId, wallet_connection_id: wallet.id,
-    order_count: orderCount, interval_seconds: intervalSeconds,
-  });
-  return response({ ok: true, orderId: jupiterOrderId, result, vaultAddress: deposit.vault_address });
+  try {
+    const result = await triggerAccess(wallet, accessToken, "/trigger/v2/orders/dca", "POST", requestBody);
+    const jupiterOrderId = String(result?.id ?? result?.orderId ?? "");
+    if (!jupiterOrderId) throw new Error("jupiter_trigger_dca_response_invalid");
+    await db(
+      "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(deposit.id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.creating",
+      "PATCH",
+      {
+        jupiter_order_id: jupiterOrderId,
+        order_count: orderCount,
+        interval_seconds: intervalSeconds,
+        status: "active",
+        order_metadata: {
+          response: result, depositRequestId, orderType: "time_based",
+          depositMessageHash: orderMetadata.depositMessageHash,
+          usdPerDcaRound: orderMetadata.usdPerDcaRound,
+        },
+        updated_at: new Date().toISOString(),
+      },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_dca_created", "ok", {
+      jupiter_order_id: jupiterOrderId, wallet_connection_id: wallet.id,
+      order_count: orderCount, interval_seconds: intervalSeconds,
+    });
+    return response({ ok: true, orderId: jupiterOrderId, result, vaultAddress: deposit.vault_address });
+  } catch {
+    // A lost response may occur after the provider accepted the signed deposit.
+    // Mark unknown and reconcile through DCA history rather than creating a duplicate.
+    await db(
+      "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(deposit.id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.creating",
+      "PATCH",
+      { status: "unknown", updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_dca_create_unknown", "warning", {
+      deposit_request_id: depositRequestId, wallet_connection_id: wallet.id,
+    });
+    return response({
+      ok: true, status: "unknown", depositRequestId,
+      message: "Jupiter's response is unknown. Check DCA history before attempting anything again. The deposit will not be retried.",
+    }, 202);
+  }
 }
+
 async function jupiterTriggerHistory(row: any, body: any): Promise<Response> {
   const address = clean(body?.address, 64);
   const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
