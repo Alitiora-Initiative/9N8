@@ -189,6 +189,10 @@ button:disabled{opacity:.55;cursor:wait}
           <button id="jupiterCreateDca" type="button" disabled>Create & deposit DCA</button>
           <p class="muted">Each scheduled round must meet Jupiter’s $10 minimum. Creation is locked until 9N8 certifies vault deposit integrity, delegated order controls and cancel/withdrawal recovery.</p>
         </div>
+        <div class="grid">
+          <div><label for="jupiterCancelOrderId">Active DCA order ID</label><input id="jupiterCancelOrderId" type="text" maxlength="128" placeholder="Paste order ID from history"></div>
+          <div><label>&nbsp;</label><button class="secondary" id="jupiterCancelDca" type="button" disabled>Cancel & withdraw remainder</button></div>
+        </div>
         <div class="status" id="jupiterDcaHistory" role="status"></div>
       </section>
       <div class="divider"></div>
