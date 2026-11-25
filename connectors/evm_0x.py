@@ -33,10 +33,11 @@ class EVM0xConnector(ExecutionConnector):
     venue = "0x-evm-dex"
 
     def __init__(self, rpc_url: str | None = None, chain_id: int | None = None,
-                 private_key: str | None = None):
+                 private_key: str | None = None, live_certified: bool = False):
         self.rpc_url = rpc_url or os.getenv("EVM_RPC_URL", "").strip()
         self.chain_id = chain_id or int(os.getenv("EVM_CHAIN_ID", "1"))
-        self.private_key = private_key or os.getenv("EVM_PRIVATE_KEY", "").strip()
+        self.live_certified = bool(live_certified)
+        self.private_key = (private_key or os.getenv("EVM_PRIVATE_KEY", "").strip()) if self._live_execution_authorized() else ""
         self.api_key = os.getenv("ZEROX_API_KEY", "").strip()
         self.w3: AsyncWeb3 | None = None
         self.account = None
@@ -44,9 +45,24 @@ class EVM0xConnector(ExecutionConnector):
         self.security = DexSecurityGate()
         self.venue = f"0x-chain-{self.chain_id}"
 
+    def _live_execution_authorized(self) -> bool:
+        return bool(
+            self.live_certified
+            and os.getenv("TRADING_MODE", "").strip().lower() == "live"
+            and os.getenv("LIVE_TRADING", "false").strip().lower() == "true"
+            and os.getenv("ALLOW_LIVE_TRADING", "false").strip().lower() == "true"
+            and os.getenv("LIVE_EXECUTION_CERTIFIED", "false").strip().lower() == "true"
+            and os.getenv("ALLOW_LIVE_DEX_EXECUTION", "false").strip().lower() == "true"
+            and os.getenv("LIVE_ACKNOWLEDGEMENT", "") == "I_UNDERSTAND_REAL_FUNDS_CAN_BE_LOST"
+        )
+
     async def connect(self) -> None:
         if not self.rpc_url:
             raise ConnectorUnavailable("EVM_RPC_URL is required.")
+        if not self._live_execution_authorized():
+            self.private_key = ""
+            self.account = None
+
         self.w3 = AsyncWeb3(AsyncHTTPProvider(self.rpc_url, request_kwargs={"timeout":15}))
         actual = int(await self.w3.eth.chain_id)
         if actual != self.chain_id:
@@ -150,6 +166,8 @@ class EVM0xConnector(ExecutionConnector):
         return tx_hash.hex()
 
     async def _swap(self, intent: TradeIntent, quantity: float, client_order_id: str) -> TradeReceipt:
+        if not self._live_execution_authorized():
+            raise RiskRejected("EVM live execution is locked by the connector-level certification gate.")
         if not self.w3 or not self.account:
             raise ConnectorUnavailable("EVM burner wallet is not configured.")
         safety = intent.metadata.get("token_safety")
