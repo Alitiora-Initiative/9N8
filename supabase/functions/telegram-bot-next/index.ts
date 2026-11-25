@@ -167,7 +167,7 @@ function mainKeyboard(): Obj {
     [{ text: "▶ Start / view live-market paper run", callback_data: "n8:paper_start_crypto" }],
     [{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }],
     [{ text: "Connect Binance Spot LIVE", web_app: { url: MINI_APP_URL } }],
-    [{ text: "Wallet watch / connect", web_app: { url: MINI_APP_URL } }],
+    [{ text: "Wallet watch / connect", web_app: { url: "https://9n8-secure-connect.vercel.app/connect?view=wallet" } }],
     [{ text: "📚 Services & features", callback_data: "n8:services" }],
     [{ text: "My Binance connection", callback_data: "n8:connections" }],
     [{ text: "Live status / risk", callback_data: "n8:live_status" }],
