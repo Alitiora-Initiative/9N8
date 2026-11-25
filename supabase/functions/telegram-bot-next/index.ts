@@ -1229,14 +1229,6 @@ async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response
     usdPerDcaRound = (Number(BigInt(inputAmount)) / 1e9 * solPrice) / orderCount;
     if (usdPerDcaRound < 10) throw new Error("jupiter_dca_round_below_minimum_usd");
   }
-  let depositTx: VersionedTransaction;
-  try { depositTx = VersionedTransaction.deserialize(base64ToBytes(String(body?.transaction ?? ""))); }
-  catch { throw new Error("jupiter_trigger_deposit_transaction_invalid"); }
-  if (depositTx.message.version !== 0 ||
-      (depositTx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address) {
-    throw new Error("jupiter_trigger_deposit_transaction_invalid");
-  }
-  const depositMessageHash = await sha256HexBytes(depositTx.message.serialize());
   const requestBody: Record<string, unknown> = {
     inputMint,
     outputMint,
@@ -1249,6 +1241,14 @@ async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response
   if (!result?.transaction || !result?.requestId || !result?.receiverAddress) {
     throw new Error("jupiter_trigger_deposit_craft_invalid");
   }
+  let depositTx: VersionedTransaction;
+  try { depositTx = VersionedTransaction.deserialize(base64ToBytes(String(result.transaction))); }
+  catch { throw new Error("jupiter_trigger_deposit_transaction_invalid"); }
+  if (depositTx.message.version !== 0 ||
+      (depositTx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address) {
+    throw new Error("jupiter_trigger_deposit_transaction_invalid");
+  }
+  const depositMessageHash = await sha256HexBytes(depositTx.message.serialize());
   const rows = await db("n8_jupiter_automation_orders", "POST", {
     user_id: row.id,
     wallet_connection_id: wallet.id,
