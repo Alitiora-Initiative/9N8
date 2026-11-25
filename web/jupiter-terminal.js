@@ -47,6 +47,14 @@ function base58Encode(bytes) {
   for (let i = 0; i < bytes.length && bytes[i] === 0; i++) output = "1" + output;
   return output || "1";
 }
+function solToLamports(value) {
+  const raw = String(value ?? "").trim();
+  if (!/^(?:0|[1-9]\\d*)(?:\\.\\d{1,9})?$/.test(raw)) throw new Error("Enter a valid SOL amount with at most 9 decimal places.");
+  const [whole, fraction = ""] = raw.split(".");
+  const units = BigInt(whole) * 1000000000n + BigInt((fraction + "000000000").slice(0, 9));
+  if (units <= 0n) throw new Error("SOL amount must be positive.");
+  return units;
+}
 function currentWallet() {
   return typeof window.n8GetSolanaWalletSession === "function"
     ? window.n8GetSolanaWalletSession()
@@ -331,14 +339,14 @@ $("jupiterCreateDca").addEventListener("click", async () => {
     return;
   }
   const mint = String($("jupiterDcaMint").value || "").trim();
-  const total = Number($("jupiterDcaTotal").value);
+  const totalText = String($("jupiterDcaTotal").value || "").trim();
   const count = Number($("jupiterDcaCount").value);
   const interval = Number($("jupiterDcaInterval").value);
-  if (!mint || !Number.isFinite(total) || total <= 0 || !Number.isInteger(count) || count < 2) {
+  let totalLamports;\n  try { totalLamports = solToLamports(totalText); } catch (error) { triggerStatus(error.message, "warning"); return; }\n  if (!mint || !Number.isInteger(count) || count < 2 || count > 1000 || !Number.isInteger(interval) || interval < 60) {
     triggerStatus("Enter a valid mint, total SOL and at least two DCA rounds.", "warning");
     return;
   }
-  const totalLamports = BigInt(Math.floor(total * 1e9)).toString();
+  if (totalLamports > 500000000n) { triggerStatus("The 9N8 DCA vault deposit limit is 0.50 SOL per rolling 24 hours.", "warning"); return; }\n  const totalLamportsRaw = totalLamports.toString();\n  const totalDisplay = Number(totalLamports) / 1e9;
   $("jupiterCreateDca").disabled = true;
   try {
     triggerStatus("Crafting a wallet-signed deposit. Review the Jupiter vault receiver and amount before signing…");
@@ -350,7 +358,7 @@ $("jupiterCreateDca").addEventListener("click", async () => {
       orderType: "dca",
       inputMint: SOL_MINT,
       outputMint: mint,
-      amount: totalLamports,
+      amount: totalLamportsRaw,\n      orderCount: count,\n      intervalSeconds: interval,
     });
     const tx = VersionedTransaction.deserialize(b64ToBytes(deposit.deposit.transaction));
     if (tx.message.version !== 0) throw new Error("Unsupported deposit transaction version.");
@@ -373,7 +381,7 @@ $("jupiterCreateDca").addEventListener("click", async () => {
       accessToken: token.accessToken,
       depositRequestId: deposit.deposit.requestId,
       depositSignedTx,
-      inputAmount: totalLamports,
+      inputAmount: totalLamportsRaw,
       orderCount: count,
       intervalSeconds: interval,
     });
