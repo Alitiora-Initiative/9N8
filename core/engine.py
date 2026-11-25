@@ -61,6 +61,26 @@ class TradingEngine:
     def _key(venue: str, symbol: str) -> str:
         return venue + ":" + symbol
 
+    async def _connect_provider(self, connector) -> None:
+        """Close partially initialized provider sessions when connect() fails."""
+        try:
+            await connector.connect()
+        except asyncio.CancelledError:
+            try:
+                await connector.close()
+            except Exception:
+                log.warning("Provider cleanup after cancellation failed.")
+            raise
+        except Exception:
+            try:
+                await connector.close()
+            except Exception as close_exc:
+                log.warning(
+                    "Provider cleanup after connection failure reported %s.",
+                    type(close_exc).__name__,
+                )
+            raise
+
     async def connect(self) -> None:
         if self.mode == "live" and not self.cfg["execution"].get("live_execution_certified", False):
             raise TradingError(
@@ -72,7 +92,7 @@ class TradingEngine:
             m = markets["crypto_spot"]
             c = CCXTConnector(self.settings, MarketType.CRYPTO_SPOT,
                               m.get("exchange"), sandbox=(self.mode == "testnet"))
-            await c.connect()
+            await self._connect_provider(c)
             key = c.venue + ":spot"
             self.connectors[key] = c
             for symbol in m.get("symbols", []):
@@ -89,7 +109,7 @@ class TradingEngine:
                 raise TradingError("Perpetuals are disabled by the execution safety setting.")
             c = CCXTConnector(self.settings, MarketType.CRYPTO_PERP,
                               m.get("exchange"), sandbox=(self.mode == "testnet"))
-            await c.connect()
+            await self._connect_provider(c)
             key = c.venue + ":perp"
             self.connectors[key] = c
             for symbol in m.get("symbols", []):
@@ -115,7 +135,7 @@ class TradingEngine:
                 env,
                 live_certified=bool(self.cfg["execution"].get("live_execution_certified", False)),
             )
-            await c.connect()
+            await self._connect_provider(c)
             self.connectors["oanda"] = c
             for symbol in o.get("instruments", []):
                 mt = MarketType.COMMODITY if symbol.startswith(
@@ -136,7 +156,7 @@ class TradingEngine:
                     "buy-and-sell transaction simulation and position reconciliation are integrated."
                 )
             c = SolanaJupiterConnector(cluster=s.get("cluster", "devnet"))
-            await c.connect()
+            await self._connect_provider(c)
             self.connectors["solana-dex"] = c
             for token in s.get("tokens", []):
                 self.specs.append({
@@ -154,7 +174,7 @@ class TradingEngine:
                     "verified buy/sell simulator and full position reconciliation are configured."
                 )
             c = EVM0xConnector()
-            await c.connect()
+            await self._connect_provider(c)
             self.connectors[c.venue] = c
             for token in e.get("tokens", []):
                 self.specs.append({
