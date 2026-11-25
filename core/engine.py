@@ -454,6 +454,7 @@ class TradingEngine:
                 "trend_tf": spec.get("trend_tf"),
                 "leverage": leverage,
             },
+            "mode": self.mode,
             "signal_key": signal_key,
             "signal_candle_ms": candle_timestamp,
             "reference_price": executable_entry,
