@@ -84,20 +84,21 @@ button:disabled{opacity:.55;cursor:wait}
   <section id="connectPage">
     <span class="pill">PRIVATE ACCOUNT & MARKET CONTROL</span>
     <h1>Trade with live market context.</h1>
-    <p>Connect Binance Spot or a wallet, then switch to the live-market simulator. The simulator uses real market data and virtual trades; it never touches your exchange balance.</p>
+    <p>Connect Binance Spot or OKX Spot, or link Trust Wallet, Phantom, MetaMask and other WalletConnect-compatible wallets. The simulator uses real market data and virtual trades; it never touches your exchange balance.</p>
     <div class="tabs" role="tablist">
-      <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Binance account</button>
+      <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Exchange accounts</button>
       <button class="tab" id="walletTab" role="tab" aria-selected="false" type="button">Wallet watch</button>
       <button class="tab" id="simulatorTab" role="tab" aria-selected="false" type="button">Live-market simulator</button>
     </div>
     <section class="card" id="exchangePanel">
-      <h2>Binance Spot LIVE connection</h2>
-      <p class="muted">Connect your real Binance Spot account using an API key and secret created in Binance. Credentials are validated on the 9N8 backend and stored encrypted in Supabase Vault. They are not saved in this browser.</p>
-      <div class="notice">Create a dedicated Spot-only API key. Enable Read and Spot Trading only. Disable withdrawals, internal transfers, universal transfers, margin, futures and options. Use IP restrictions when your deployment has a stable outbound IP. Never enter your seed phrase or wallet private key.</div>
+      <h2>Exchange account connections</h2>
+      <p class="muted">Connect Binance Spot or OKX Spot with API credentials created in your exchange account. Credentials are validated on the 9N8 backend and stored encrypted in Supabase Vault. They are not saved in this browser.</p>
+      <div class="notice">Create a dedicated Spot API key. For Binance enable Read + Spot Trading only; disable withdrawals, all transfers, margin, futures and options. For OKX enable Read + Trade only, leave Withdraw disabled, and do not grant funding transfers. OKX permission scopes are not exposed by the account-read API, so 9N8 records them as unverified until separately certified. Use IP restrictions when your deployment has a stable outbound IP. Never enter your seed phrase or wallet private key.</div>
       <form id="exchangeForm" autocomplete="off">
         <label for="provider">Exchange</label>
         <select id="provider" required>
           <option value="binance">Binance Spot · LIVE</option>
+          <option value="okx">OKX Spot · LIVE</option>
         </select>
         <label for="environment">Environment</label>
         <select id="environment" required><option value="live">Spot Mainnet · LIVE</option></select>
@@ -105,13 +106,17 @@ button:disabled{opacity:.55;cursor:wait}
           <div><label for="apiKey">API key</label><input id="apiKey" type="password" maxlength="512" autocomplete="off" required></div>
           <div><label for="apiSecret">API secret</label><input id="apiSecret" type="password" maxlength="1024" autocomplete="off" required></div>
         </div>
-        <button id="saveExchange" type="submit">🔐 Verify Binance LIVE key & save securely</button>
+        <div class="grid hidden" id="okxPassphraseFields">
+          <div><label for="okxPassphrase">OKX API passphrase</label><input id="okxPassphrase" type="password" maxlength="256" autocomplete="off"></div>
+          <div><label for="okxRegion">OKX account region</label><select id="okxRegion"><option value="global">Global · openapi.okx.com</option><option value="us">US / Australia · us.okx.com</option><option value="eea">European Economic Area · eea.okx.com</option></select></div>
+        </div>
+        <button id="saveExchange" type="submit">🔐 Verify exchange LIVE key & save securely</button>
         <div class="status" id="exchangeStatus" role="status"></div>
         <div class="divider"></div>
         <h3>Connected account balances</h3>
-        <p class="muted">Fetches balances from your private Binance Spot account using the stored key. API secrets are never returned to the Web App.</p>
-        <button class="secondary" id="loadBinanceBalance" type="button">↻ Load Binance Spot balances</button>
-        <div class="status" id="binanceBalance" role="status">Connect Binance to view balances.</div>
+        <p class="muted">Fetches balances from the selected exchange account using its stored API key. OKX trade, withdrawal and transfer permissions are not certified by this read-only check. API secrets are never returned to the Web App.</p>
+        <button class="secondary" id="loadBinanceBalance" type="button">↻ Refresh connected exchange balances</button>
+        <div class="status" id="binanceBalance" role="status">Connect Binance or OKX to view balances.</div>
         <div class="divider"></div>
         <h3>Live readiness assessment</h3>
         <p class="muted">Refreshes your Binance Spot balance, then checks the 30-day paper and connector gates. This is an assessment only; it does not enable live trading or submit an order.</p>
@@ -128,7 +133,7 @@ button:disabled{opacity:.55;cursor:wait}
       <div class="notice">Never enter a seed phrase, recovery phrase, private key, or wallet password. Only paste a public receiving address.</div>
       <div class="scanner-panel" id="walletSessionPanel">
         <span class="pill">WALLET SESSION</span>
-        <p class="muted">Connect to a real wallet session. Desktop users can scan the WalletConnect QR in their wallet; mobile users can open their wallet app or use its deep link. 9N8 will request one harmless ownership message before saving the address.</p>
+        <p class="muted">Connect MetaMask, Trust Wallet, Phantom or another WalletConnect-compatible wallet. 9N8 requests only a harmless ownership message before saving the wallet address; no transaction is requested.</p>
         <button id="connectWalletSession" type="button">Connect wallet session</button>
         <button class="secondary" id="verifyWalletSession" type="button" disabled>Verify wallet ownership</button>
         <button class="secondary" id="disconnectWalletSession" type="button" disabled>Disconnect and revoke link</button>
@@ -143,6 +148,7 @@ button:disabled{opacity:.55;cursor:wait}
         <select id="walletProvider">
           <option value="trust_wallet">Trust Wallet</option>
           <option value="phantom">Phantom</option>
+          <option value="metamask">MetaMask</option>
           <option value="walletconnect">WalletConnect address (watch-only)</option>
           <option value="manual">Other public address</option>
         </select>
@@ -311,45 +317,6 @@ button:disabled{opacity:.55;cursor:wait}
     if(!response.ok || payload.ok!==true) throw new Error(payload.message || payload.error || "Request rejected.");
     return payload;
   }
-  document.getElementById("exchangeForm").addEventListener("submit",async function(event){
-    event.preventDefault();
-    const status=document.getElementById("exchangeStatus");
-    if(!tg || !tg.initData){status.textContent="Open this form from your 9N8 Telegram private chat.";return;}
-    const button=document.getElementById("saveExchange");
-    button.disabled=true;status.textContent="Checking Binance Spot LIVE key permissions…";
-    const credentials={
-      apiKey:document.getElementById("apiKey").value.trim(),
-      apiSecret:document.getElementById("apiSecret").value.trim()
-    };
-    try{
-      const result=await apiPost({action:"connect_exchange",initData:tg.initData,provider:"binance",environment:"live",credentials});
-      status.textContent="Connected: "+result.label+". Read/Spot scopes accepted; encrypted credentials stored. Live orders are not enabled by connecting the account.";
-      window.n8ActiveBinanceConnectionId = result.connectionId || "";
-      this.reset();
-      document.getElementById("binanceBalance").textContent="Connection saved. Load balances to refresh your Spot account.";
-    }catch(error){status.textContent=error.message||"Binance connection failed.";}
-    finally{
-      credentials.apiKey="";credentials.apiSecret="";
-      document.getElementById("apiKey").value="";
-      document.getElementById("apiSecret").value="";
-      button.disabled=false;
-    }
-  });
-  document.getElementById("loadBinanceBalance").addEventListener("click",async()=>{
-    const button=document.getElementById("loadBinanceBalance");
-    const target=document.getElementById("binanceBalance");
-    if(!tg||!tg.initData){target.textContent="Open from your 9N8 Telegram private chat.";return;}
-    button.disabled=true;target.textContent="Loading private Binance Spot balances…";
-    try{
-      const result=await apiPost({action:"binance_account",initData:tg.initData});
-      window.n8ActiveBinanceConnectionId = result.connection?.id || "";
-      target.innerHTML=result.balances.length
-        ? result.balances.map(v=>"<div class='book-row'><b>"+String(v.asset).replace(/[&<>]/g,"")+"</b><span>Free "+Number(v.free).toLocaleString("en-US",{maximumFractionDigits:8})+" · Locked "+Number(v.locked).toLocaleString("en-US",{maximumFractionDigits:8})+"</span></div>").join("")
-        : "No non-zero Spot balances returned.";
-      if(result.quoteBalance) target.innerHTML += "<div class='book-row'><b>USDT quote balance</b><span>Free "+Number(result.quoteBalance.free).toFixed(4)+" · Risk-gate USD estimate $"+Number(result.quoteBalance.availableUsdApprox).toFixed(2)+"</span></div>";
-    }catch(error){target.textContent=error.message||"Could not fetch Binance balances.";}
-    finally{button.disabled=false;}
-  });
   const readinessButton=document.getElementById("assessLiveReadiness");
   const statusButton=document.getElementById("refreshLiveStatus");
   const readinessTarget=document.getElementById("liveReadinessStatus");
@@ -615,6 +582,7 @@ button:disabled{opacity:.55;cursor:wait}
   });
 })();
 </script>
+<script type="module" src="/connections.js"></script>
 <script type="module" src="/wallet-connect.js"></script>
 <script type="module" src="/market-simulator.js"></script>
 </body>
