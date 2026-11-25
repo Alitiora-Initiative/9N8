@@ -1,4 +1,5 @@
 import { isAddress as isEvmAddress, verifyMessage as verifyEvmMessage } from "npm:viem@2.58.4";
+import { validateOkxSpotRead, type OkxRegion } from "./okx-live.ts";
 import {
   binanceSignedRequest,
   buildSpotMarketOrder,
@@ -37,7 +38,7 @@ const CORS_HEADERS = {
 const enc = new TextEncoder();
 
 type Provider = "okx" | "binance" | "bybit";
-type Credentials = { apiKey: string; apiSecret: string; passphrase?: string };
+type Credentials = { apiKey: string; apiSecret: string; passphrase?: string; region?: OkxRegion };
 type Obj = Record<string, unknown>;
 
 function response(data: Obj, status = 200): Response {
@@ -315,6 +316,7 @@ async function validateExchange(provider: Provider, environment: string, c: Cred
   if (!c.apiKey || !c.apiSecret) throw new Error("api_key_and_secret_required");
   if (c.apiKey.length > 512 || c.apiSecret.length > 1024) throw new Error("credential_field_too_long");
   if (provider === "binance" && environment === "live") return await validateBinanceLive(c);
+  if (provider === "okx" && environment === "live") return await validateOkxSpotRead({ apiKey: c.apiKey, apiSecret: c.apiSecret, passphrase: c.passphrase ?? "", region: c.region ?? "global" });
   throw new Error("unsupported_provider_environment");
 }
 async function saveExchange(telegramId: number, provider: Provider, environment: string,
