@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from eth_account import Account
 from web3 import AsyncHTTPProvider, AsyncWeb3
 
 from connectors.base import ExecutionConnector
+from connectors.retry import RetryableReadError, retry_read
 from models import (
     AccountState, Candle, ConnectorUnavailable, MarketSnapshot, MarketType,
     OpenPosition, RiskRejected, Side, TradeIntent, TradeReceipt,
@@ -56,6 +58,7 @@ class EVM0xConnector(ExecutionConnector):
             and os.getenv("LIVE_ACKNOWLEDGEMENT", "") == "I_UNDERSTAND_REAL_FUNDS_CAN_BE_LOST"
         )
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def connect(self) -> None:
         if not self.rpc_url:
             raise ConnectorUnavailable("EVM_RPC_URL is required.")
@@ -63,7 +66,7 @@ class EVM0xConnector(ExecutionConnector):
             self.private_key = ""
             self.account = None
 
-        self.w3 = AsyncWeb3(AsyncHTTPProvider(self.rpc_url, request_kwargs={"timeout":15}))
+        self.w3 = AsyncWeb3(AsyncHTTPProvider(self.rpc_url, request_kwargs={"timeout":10}))
         actual = int(await self.w3.eth.chain_id)
         if actual != self.chain_id:
             raise ConnectorUnavailable(f"RPC chain ID {actual} differs from configured {self.chain_id}.")
@@ -83,6 +86,7 @@ class EVM0xConnector(ExecutionConnector):
             self.w3 = None
         await self.security.close()
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def _quote(self, params: dict) -> dict:
         if not self.http:
             raise ConnectorUnavailable("0x connector not connected.")
@@ -94,10 +98,13 @@ class EVM0xConnector(ExecutionConnector):
             headers={"0x-api-key":self.api_key,"0x-version":"v2"},
         ) as response:
             data = await response.json(content_type=None)
+            if response.status in {408, 425, 429, 500, 502, 503, 504}:
+                raise RetryableReadError(f"0x quote transient HTTP {response.status}.")
             if response.status >= 400:
                 raise ConnectorUnavailable(f"0x quote returned HTTP {response.status}.")
             return data
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_snapshot(self, token_address: str) -> MarketSnapshot:
         if not self.http:
             raise ConnectorUnavailable("0x connector not connected.")
@@ -105,6 +112,8 @@ class EVM0xConnector(ExecutionConnector):
             "https://api.dexscreener.com/latest/dex/tokens/" + token_address
         ) as response:
             data = await response.json(content_type=None)
+            if response.status in {408, 425, 429, 500, 502, 503, 504}:
+                raise RetryableReadError(f"DexScreener transient HTTP {response.status}.")
             if response.status >= 400:
                 raise ConnectorUnavailable("DexScreener market data unavailable.")
         chain_names = {1:"ethereum",56:"bsc",8453:"base"}
@@ -121,12 +130,14 @@ class EVM0xConnector(ExecutionConnector):
             sell_volume_5m=float((pair.get("txns") or {}).get("m5",{}).get("sells") or 0),
         )
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         raise ConnectorUnavailable(
             "EVM DEX OHLCV requires a verified pool-address/history provider. "
             "No synthetic candles are generated; configure a pool feed before enabling DEX strategies."
         )
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def _token_balance(self, token_address: str) -> tuple[float,float]:
         if not self.w3 or not self.account:
             raise ConnectorUnavailable("EVM burner wallet is not configured.")
@@ -135,6 +146,7 @@ class EVM0xConnector(ExecutionConnector):
         raw = int(await token.functions.balanceOf(self.account.address).call())
         return raw / (10 ** decimals), float(decimals)
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def get_balance(self) -> AccountState:
         if not self.w3 or not self.account:
             raise ConnectorUnavailable("EVM burner wallet is not configured.")
@@ -144,6 +156,7 @@ class EVM0xConnector(ExecutionConnector):
         balance, _ = await self._token_balance(stable)
         return AccountState(self.venue,balance,balance,balance,datetime.now(timezone.utc))
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def get_open_positions(self) -> list[OpenPosition]:
         # Token balances alone have no reliable cost basis; use the reconciled SQLite trade ledger.
         return []
@@ -159,7 +172,9 @@ class EVM0xConnector(ExecutionConnector):
         if "gasPrice" not in tx and "maxFeePerGas" not in tx:
             tx["gasPrice"] = await self.w3.eth.gas_price
         signed = self.account.sign_transaction(tx)
-        tx_hash = await self.w3.eth.send_raw_transaction(signed.raw_transaction)
+        tx_hash = await asyncio.wait_for(
+            self.w3.eth.send_raw_transaction(signed.raw_transaction), timeout=5.0
+        )
         receipt = await self.w3.eth.wait_for_transaction_receipt(tx_hash,timeout=90)
         if int(receipt.status) != 1:
             raise ConnectorUnavailable("EVM transaction reverted on-chain.")
