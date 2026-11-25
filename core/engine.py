@@ -280,7 +280,7 @@ class TradingEngine:
         open_rows = await self.store.positions()
         if any(row["position_key"] == key for row in open_rows):
             return
-        account = await self.paper.account(self.snapshots) if self.mode == "paper" else await connector.get_balance()
+        account = await self._portfolio_account()
         exposure = sum(float(row["quantity"]) * float(row["mark_price"]) for row in open_rows)
         spread_slippage = max(snapshot.spread_pct / 2, 0)
         leverage = float(spec.get("leverage", 1))
@@ -376,21 +376,29 @@ class TradingEngine:
             await self.store.update_idempotency(idempotency, "failed")
             raise
 
+    async def _portfolio_account(self) -> AccountState:
+        if self.mode == "paper":
+            return await self.paper.account(self.snapshots)
+        # Spot and perpetual clients for the same exchange often report the same
+        # unified account equity. Read each venue once to avoid double-counting.
+        unique = {}
+        for connector in self.connectors.values():
+            unique.setdefault(connector.venue, connector)
+        states = await asyncio.gather(
+            *(connector.get_balance() for connector in unique.values()),
+            return_exceptions=True,
+        )
+        valid = [state for state in states if isinstance(state, AccountState)]
+        if len(valid) != len(states) or not valid:
+            raise ConnectorUnavailable("A venue balance could not be verified; portfolio risk sizing is blocked.")
+        equity = sum(state.equity_usd for state in valid)
+        free = sum(state.free_usd for state in valid)
+        return AccountState("portfolio", equity, free, equity)
+
     async def _equity_loop(self) -> None:
         while not self.stop_event.is_set():
             try:
-                if self.mode == "paper":
-                    account = await self.paper.account(self.snapshots)
-                else:
-                    states = await asyncio.gather(
-                        *(c.get_balance() for c in self.connectors.values()),
-                        return_exceptions=True,
-                    )
-                    valid = [v for v in states if isinstance(v, AccountState)]
-                    if len(valid) != len(states):
-                        raise ConnectorUnavailable("At least one venue balance failed; portfolio equity cannot be trusted.")
-                    equity = sum(v.equity_usd for v in valid)
-                    account = AccountState("portfolio", equity, sum(v.free_usd for v in valid), equity)
+                account = await self._portfolio_account()
                 tripped = await self.risk.observe_equity(account)
                 if tripped and self.notifier:
                     await self.notifier.send("9N8 DAILY DRAWDOWN: emergency flatten requested; trading halted for 24 hours.")
