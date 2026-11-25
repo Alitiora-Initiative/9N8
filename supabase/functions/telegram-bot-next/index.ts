@@ -1252,7 +1252,6 @@ async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response
     amount: inputAmount,
     orderType,
   };
-  if (orderType === "price") requestBody.orderSubType = "single";
   const result = await triggerAccess(wallet, accessToken, "/trigger/v2/deposit/craft", "POST", requestBody);
   if (!result?.transaction || !result?.requestId || !result?.receiverAddress) {
     throw new Error("jupiter_trigger_deposit_craft_invalid");
