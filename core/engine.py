@@ -683,7 +683,7 @@ class TradingEngine:
                     )
                 if self.notifier:
                     try:
-                        await self.notifier.send("9N8 EXECUTION WARNING\\n" + reconciliation)
+                        await self.notifier.send("9N8 EXECUTION WARNING\n" + reconciliation)
                     except Exception:
                         log.error("Could not send execution reconciliation alert.")
                 raise TradingError(reconciliation) from exc
@@ -833,8 +833,8 @@ class TradingEngine:
                                 await self.store.set_control("kill_switch", "true")
                                 await self.risk.pause()
                                 message = (
-                                    "9N8 LIVE EXIT RECONCILIATION REQUIRED\\n"
-                                    f"{row['venue']} · {row['symbol']} · {exit_reason.upper()} threshold observed.\\n"
+                                    "9N8 LIVE EXIT RECONCILIATION REQUIRED\n"
+                                    f"{row['venue']} · {row['symbol']} · {exit_reason.upper()} threshold observed.\n"
                                     "The venue-side protective bracket was submitted with the entry. "
                                     "9N8 did not send a duplicate market close. Inspect the provider's "
                                     "open orders, fills and current position now; the bot remains paused "
