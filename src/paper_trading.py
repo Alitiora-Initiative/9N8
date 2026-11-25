@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -95,8 +96,20 @@ class PaperTradingEngine:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    @contextmanager
+    def _db(self):
+        connection = self._connect()
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _initialize(self) -> None:
-        with self._connect() as db:
+        with self._db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(
                 """
