@@ -284,6 +284,10 @@ class TradingEngine:
         exposure = sum(float(row["quantity"]) * float(row["mark_price"]) for row in open_rows)
         spread_slippage = max(snapshot.spread_pct / 2, 0)
         leverage = float(spec.get("leverage", 1))
+        contract_multiplier = (
+            connector.contract_multiplier(intent.symbol)
+            if hasattr(connector, "contract_multiplier") else 1.0
+        )
         spread_pips = self._forex_spread_pips(snapshot) if intent.market_type in {
             MarketType.FOREX, MarketType.COMMODITY
         } else None
@@ -298,6 +302,7 @@ class TradingEngine:
         decision = await self.risk.evaluate(
             intent, account, snapshot, exposure, spread_slippage,
             leverage=leverage, forex_spread_pips=spread_pips,
+            contract_multiplier=contract_multiplier,
             current_open_positions=len(open_rows),
         )
         if not decision.approved or not decision.size:
