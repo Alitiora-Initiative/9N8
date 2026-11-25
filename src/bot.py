@@ -696,13 +696,100 @@ async def weekly_report_monitor(application: Application) -> None:
         await asyncio.sleep(30)
 
 
+async def twelve_data_signal_monitor(application: Application) -> None:
+    """Scan the Twelve Data watchlist and alert registered users on signal changes."""
+    if not config.twelve_data_api_key:
+        logger.warning("Automatic Twelve Data alerts are disabled: no Twelve Data API key configured")
+        return
+
+    active_labels = {"BULLISH SETUP", "BEARISH SETUP"}
+    interval_seconds = config.signal_scan_interval_seconds
+    logger.info(
+        "Automatic Twelve Data signal monitor started; watchlist=%d; interval=%ds",
+        len(config.watchlist), interval_seconds,
+    )
+
+    while True:
+        try:
+            for symbol in config.watchlist:
+                try:
+                    candles = await market_data.time_series(
+                        symbol, config.timeframe, config.output_size
+                    )
+                    signal = analyse(symbol, candles)
+                    last_signals[symbol] = signal
+
+                    state_key = f"twelve_signal:{symbol}"
+                    previous = user_store.get_state(state_key, "")
+                    current_label = signal.label
+                    recipients = user_store.notification_users()
+
+                    # Do not mark the first result as seen until at least one user
+                    # has started the bot and can receive the alert.
+                    if current_label != previous and recipients:
+                        if current_label in active_labels:
+                            message = (
+                                "9N8 AUTOMATIC MARKET SIGNAL\\n"
+                                f"{current_label} — {signal.symbol}\\n"
+                                f"Timeframe: {config.timeframe}\\n"
+                                f"Last candle close: {signal.close}\\n"
+                                f"EMA 9: {signal.ema_fast:.5f} | EMA 21: {signal.ema_slow:.5f}\\n"
+                                f"RSI 14: {signal.rsi:.1f}\\n"
+                                f"Candle time: {signal.candle_time}\\n"
+                                f"Reason: {signal.explanation}\\n\\n"
+                                "This is a rule-based market observation, not a probability or guarantee. "
+                                "Check current prices and risk independently. No order was placed."
+                            )
+                        elif previous in active_labels and current_label == "NO CLEAR SETUP":
+                            message = (
+                                f"9N8 SETUP UPDATE — {signal.symbol}\\n"
+                                "The previous bullish/bearish conditions are no longer aligned.\\n"
+                                f"Latest close: {signal.close} | RSI 14: {signal.rsi:.1f}\\n"
+                                "This is an indicator update only; no order was placed."
+                            )
+                        else:
+                            message = ""
+
+                        if message:
+                            for user in recipients:
+                                try:
+                                    await application.bot.send_message(
+                                        chat_id=user["chat_id"], text=message
+                                    )
+                                except Exception as exc:
+                                    logger.warning(
+                                        "Signal notification could not be delivered (%s)",
+                                        type(exc).__name__,
+                                    )
+                        user_store.set_state(state_key, current_label)
+                    elif previous and current_label != previous and not recipients:
+                        # Keep prior state until a user with notifications enabled can receive it.
+                        logger.info("Signal changed for %s, but there are no opted-in notification recipients", symbol)
+
+                except (MarketDataError, ValueError) as exc:
+                    logger.warning("Automatic Twelve Data scan failed for %s: %s", symbol, exc)
+                await asyncio.sleep(0.5)
+
+            user_store.set_state(
+                "last_twelve_data_scan_at",
+                datetime.now(timezone.utc).isoformat(),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Automatic Twelve Data signal scan cycle failed")
+
+        await asyncio.sleep(interval_seconds)
+
+
 async def post_init(application: Application) -> None:
     application.bot_data["paper_monitor_task"] = asyncio.create_task(paper_stop_monitor(application), name="9n8-paper-monitor")
     application.bot_data["weekly_report_task"] = asyncio.create_task(weekly_report_monitor(application), name="9n8-weekly-reports")
+    application.bot_data["signal_monitor_task"] = asyncio.create_task(twelve_data_signal_monitor(application), name="9n8-twelve-data-signals")
 
 
 async def post_stop(application: Application) -> None:
-    for key in ("paper_monitor_task", "weekly_report_task"):
+    for key in ("paper_monitor_task", "weekly_report_task", "signal_monitor_task"):
         task = application.bot_data.pop(key, None)
         if task is not None:
             task.cancel()
