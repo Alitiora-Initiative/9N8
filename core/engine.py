@@ -62,6 +62,11 @@ class TradingEngine:
         return venue + ":" + symbol
 
     async def connect(self) -> None:
+        if self.mode == "live" and not self.cfg["execution"].get("live_execution_certified", False):
+            raise TradingError(
+                "Live execution is locked: this branch has not completed its 48-hour testnet soak, "
+                "native bracket reconciliation and connector security certification."
+            )
         markets = self.cfg["markets"]
         if markets["crypto_spot"].get("enabled"):
             m = markets["crypto_spot"]
