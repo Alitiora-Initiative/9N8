@@ -20,6 +20,10 @@ from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler, ContextTypes,
 )
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from .okx_provider import OKXClient, OKXError
 from .market_data import Candle
 from .strategy import analyse
