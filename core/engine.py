@@ -963,10 +963,10 @@ class TradingEngine:
                 raise
             except Exception as exc:
                 now = loop.time()
-                last_alert = self._position_alert_state.get(key, 0.0)
-                # A broken/stale quote is visible, but it must not flood the database
-                # or Telegram every one-second monitor tick.
-                if now - last_alert >= 300.0:
+                last_alert = self._position_alert_state.get(key)
+                # The first failure is always reported, even immediately after
+                # process startup. Subsequent alerts are capped at one per 5 minutes.
+                if last_alert is None or now - last_alert >= 300.0:
                     self._position_alert_state[key] = now
                     log.error(
                         "Position monitoring failed for %s (%s). Other positions continue.",
