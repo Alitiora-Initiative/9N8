@@ -100,6 +100,7 @@ class PaperTradingTests(unittest.TestCase):
         self.assertEqual(events[0]["reason"], "HARD_STOP_LOSS")
         self.assertFalse(engine.summary()["enabled"])
         self.assertGreaterEqual(engine.summary()["daily_drawdown_pct"], Decimal("1"))
+        engine.set_enabled(False)
         with self.assertRaises(PaperTradingError):
             engine.set_enabled(True)
 
