@@ -244,7 +244,7 @@ This section describes the current deployed Supabase candidate and the separate 
 
 Verified against the connected 9N8 Supabase project:
 
-- `telegram-bot-next` is ACTIVE at deployed version 34 when inspected; it is the multi-user Telegram/Mini App candidate, separate from the preserved legacy function.
+- `telegram-bot-next` is ACTIVE at deployed version 36 when inspected; it is the multi-user Telegram/Mini App candidate, separate from the preserved legacy function.
 - `n8-paper-worker` is ACTIVE at version 2, and a one-minute `pg_cron` job invokes it.
 - The database contained a running crypto paper session with recurring successful ticks. Recent worker rows reported 10 symbols scanned and 0 symbol failures; a tick with no signal intentionally creates no trade.
 - The deployed paper worker uses Binance public Spot market data and a virtual balance. It does not submit an exchange order.
@@ -256,6 +256,8 @@ Verified against the connected 9N8 Supabase project:
 - Binance/OKX account read actions in the secure Mini App. These reads do not activate order placement.
 - EVM and Solana wallet ownership proof through challenge/signature verification, plus public watch-only address linking.
 - Wallet-link/session revocation; these are address/ownership features, not wallet trading or signing automation.
+- Jupiter Swap V2 can generate a wallet-bound quote and unsigned transaction preview in the private Mini App, with a 55-second quote expiry, maximum 2% price impact, maximum 0.05 SOL-equivalent per request, 0.10 SOL-equivalent rolling 24-hour cap and one unresolved quote limit.
+- Jupiter signed execution remains locked because the active certification row is testing, with manual live execution and delegated automation both false. Jupiter Trigger DCA remains unavailable because it uses a Jupiter/Privy-managed vault deposit.
 - Paper crypto session lifecycle, Binance public one-minute candle/ticker/order-book reads, simulated visible-depth fills, virtual fees/slippage, persisted trades/positions/equity, pause/stop/resume controls and a one-minute scheduled worker.
 - Telegram webhook update claims with leases, duplicate suppression and retry handling.
 - Group setup and permission-checked manual moderator commands.
@@ -272,7 +274,7 @@ Verified against the connected 9N8 Supabase project:
 ### Not implemented or not certified
 
 - Live exchange order submission in the deployed Supabase candidate.
-- Automated wallet signing, swaps, token approvals, bridge operations or DEX order execution.
+- Uncertified Jupiter signed swap execution, automated wallet trading, token approvals, bridge operations, and Jupiter Trigger DCA/delegated custody. Quote previews work; execution remains locked.
 - Solana/EVM DEX entries in the Python engine; their data/security adapters are integration code only and the engine blocks entries.
 - Stock order submission, stock shorting/borrow handling, broker account reads, non-U.S. stock venue coverage, and a live stock connector.
 - Live Forex/CFD execution certification, live partial exits/trailing amendments, complete exchange-native bracket reconciliation and post-bracket position reconciliation.
@@ -281,7 +283,7 @@ Verified against the connected 9N8 Supabase project:
 
 ### Deployment and source-of-truth boundary
 
-- The deployed Supabase function and worker were retrieved and their active secret-free source was synchronized into `multi-asset-python`. The new GitHub exchange-revoke change is in the feature branch until its tests pass and it is deployed.
+- The deployed Supabase v36 Telegram function and worker were retrieved and their active secret-free source was synchronized into `multi-asset-python`. The branch adds fresh-initData protection for destructive Mini App actions, per-connection account reads, owner-scoped wallet/exchange revoke, and a keyless Jupiter quote path. These branch changes are pending CI/deployment at the time of this status snapshot.
 - The preserved legacy Telegram function and GitHub `main` branch have not been replaced.
 - Pull Request #5 is a draft; its contents are not merged or deployed automatically.
 - The Telegram webhook's current registration state has not been confirmed in this audit. A successful `/setup` registration/confirmation is required before claiming Telegram delivery is operational for the candidate.
