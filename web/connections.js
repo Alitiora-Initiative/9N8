@@ -41,6 +41,7 @@ $("exchangeForm").addEventListener("submit", async (event) => {
     window.n8ActiveExchangeProvider = provider;
     exchangeStatus.textContent = provider === "okx" ? "OKX read access validated and credentials saved in Vault. Trade, withdrawal and transfer scopes are not verified by this read-only check. Real orders remain locked." : "Binance Spot key validated. Read/Spot scopes accepted; withdrawals and transfers are disabled. Real orders remain locked.";
     $("exchangeForm").reset();
+    providerSelect.value = provider;
     syncExchangeFields();
     balanceTarget.textContent = "Connection saved. Refresh balances to read the connected exchange account.";
   } catch (error) { exchangeStatus.textContent = error.message || "Exchange connection failed."; }
