@@ -675,9 +675,19 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
 }
 async function handleMiniApp(body: any): Promise<Response> {
   try {
-    // Paper status is read-only and is polled while the Web App remains open.
-    // Other Mini App actions retain the strict 5-minute Telegram initData window.
-    const maxAge = body?.action === "paper_terminal" ? 24 * 60 * 60 : 300;
+    // Read-only account views, assessments and emergency pause remain usable while
+    // the private Mini App is open. Credential changes and all future trade approvals
+    // retain the strict five-minute Telegram initData window.
+    const longLivedReadActions = new Set([
+      "paper_terminal",
+      "live_connections",
+      "live_status",
+      "live_assess",
+      "live_pause",
+      "binance_account",
+      "wallet_revoke",
+    ]);
+    const maxAge = longLivedReadActions.has(String(body?.action ?? "")) ? 24 * 60 * 60 : 300;
     const user = await verifyInitData(String(body?.initData ?? ""), maxAge);
     const row = await userRow(user);
     if (body.action === "connect_exchange") {
