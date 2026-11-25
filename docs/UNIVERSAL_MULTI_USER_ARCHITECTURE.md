@@ -245,18 +245,18 @@ Implemented in the candidate:
 - backend-only RLS tables and Vault credential-storage/retrieval/revocation procedures;
 - atomic Telegram update claims with short retryable leases;
 - exchange-key validation for OKX Demo, Binance Spot Testnet and Bybit Demo;
-- Vercel-hosted Telegram Mini App pages for exchange setup, watch-only address entry, and webhook setup;
+- Vercel-hosted Telegram Mini App pages for exchange setup, watch-only address entry, webhook setup, and browser-side QR scanning of public wallet receive addresses (camera or image-file input);
 - watch-only EVM and Solana public-address records;
 - group-setup and manual moderator commands with administrator checks.
 
 Not yet implemented:
 - exchange balances, market information and open-order reads for each attached connection;
-- actual wallet connection sessions, balances or transactions;
+- actual WalletConnect/Phantom wallet sessions, wallet balances or transactions. The QR scanner only extracts public receive addresses for watch-only linking; WalletConnect pairing QR codes are deliberately rejected;
 - paper/demo trade execution, order reconciliation, strategies and scheduler jobs;
 - live trading (remains disabled);
 - full connection revoke/dashboard UI and comprehensive end-to-end test suite.
 
 Deployment state:
-- Supabase function `telegram-bot-next` is ACTIVE, but Telegram webhook registration is still pending the two shared Supabase Edge Function secrets.
+- Supabase function `telegram-bot-next` is ACTIVE. The shared Telegram bot token and webhook secret are now detected by the live function; Telegram webhook registration still needs a successful confirmation from the `/setup` page.
 - The stable legacy function and `main` branch have not been replaced or merged.
 - The universal code is isolated in branch `universal-multi-user`.
