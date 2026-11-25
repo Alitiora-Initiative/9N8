@@ -9,6 +9,7 @@ import ccxt.pro as ccxtpro
 
 from config import Settings
 from connectors.base import ExecutionConnector
+from connectors.retry import retry_read
 from models import (
     AccountState, Candle, ConnectorUnavailable, MarketSnapshot, MarketType,
     OpenPosition, Side, TradeIntent, TradeReceipt,
@@ -28,6 +29,7 @@ class CCXTConnector(ExecutionConnector):
         self.quote_currency = "USDT"
         self._symbols: set[str] = set()
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def connect(self) -> None:
         exchange_cls = getattr(ccxtpro, self.venue, None)
         if exchange_cls is None:
@@ -66,6 +68,7 @@ class CCXTConnector(ExecutionConnector):
             await self.exchange.close()
             self.exchange = None
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_snapshot(self, symbol: str) -> MarketSnapshot:
         ex = self._ex()
         book = await ex.fetch_order_book(symbol, 5)
@@ -77,6 +80,7 @@ class CCXTConnector(ExecutionConnector):
         return MarketSnapshot(self.venue,symbol,self.market_type,bid,ask,last,
                               volume_5m=float(ticker.get("baseVolume") or 0)/288)
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def watch_snapshot(self, symbol: str) -> MarketSnapshot:
         ex = self._ex()
         if ex.has.get("watchOrderBook"):
@@ -93,6 +97,7 @@ class CCXTConnector(ExecutionConnector):
                 log.exception("WebSocket feed failed for %s; falling back to REST snapshot.", symbol)
         return await self.fetch_snapshot(symbol)
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def estimate_slippage_pct(self, symbol: str, side: Side, quantity: float) -> float:
         """Estimate market impact by walking the actual order-book depth."""
         if quantity <= 0:
@@ -121,13 +126,16 @@ class CCXTConnector(ExecutionConnector):
         average = notional / filled
         return abs(average - best) / best
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         rows = await self._ex().fetch_ohlcv(symbol, timeframe, limit=limit)
         return [Candle(int(r[0]),float(r[1]),float(r[2]),float(r[3]),float(r[4]),float(r[5])) for r in rows]
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_recent_trades(self, symbol: str, limit: int = 100) -> list[dict[str, Any]]:
         return await self._ex().fetch_trades(symbol, limit=limit)
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def get_balance(self) -> AccountState:
         balance = await self._ex().fetch_balance()
         total = balance.get("total", {})
@@ -139,6 +147,7 @@ class CCXTConnector(ExecutionConnector):
             quote_free = float(balance.get("USDT", {}).get("free") or quote_free)
         return AccountState(self.venue,quote_total,quote_free,quote_total)
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def get_open_positions(self) -> list[OpenPosition]:
         if self.market_type is not MarketType.CRYPTO_PERP or not self._ex().has.get("fetchPositions"):
             return []
@@ -201,7 +210,10 @@ class CCXTConnector(ExecutionConnector):
             "stopLoss": {"triggerPrice": intent.stop_loss, "type": "market"},
             "takeProfit": {"triggerPrice": intent.take_profit, "type": "market"},
         }
-        order = await ex.create_order(intent.symbol,"market",side,quantity,None,params)
+        order = await asyncio.wait_for(
+            ex.create_order(intent.symbol,"market",side,quantity,None,params),
+            timeout=5.0,
+        )
         filled = float(order.get("filled") or 0)
         average = float(order.get("average") or order.get("price") or intent.entry_price)
         if filled <= 0:
@@ -227,7 +239,10 @@ class CCXTConnector(ExecutionConnector):
         amount = min(float(quantity or position.quantity),position.quantity)
         side = "sell" if position.side is Side.BUY else "buy"
         params = {"reduceOnly": True} if position.market_type is MarketType.CRYPTO_PERP else {}
-        order = await ex.create_order(position.symbol,"market",side,amount,None,params)
+        order = await asyncio.wait_for(
+            ex.create_order(position.symbol,"market",side,amount,None,params),
+            timeout=5.0,
+        )
         filled = float(order.get("filled") or 0)
         average = float(order.get("average") or order.get("price") or position.mark_price)
         return TradeReceipt(self.venue,position.symbol,Side(side),str(order["id"]),filled,average,
