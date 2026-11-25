@@ -1,0 +1,46 @@
+import pytest
+
+from connectors.paper_broker import PaperBroker
+from models import MarketSnapshot, MarketType, Side, TradeIntent
+
+
+def snapshot():
+    return MarketSnapshot("paper","BTC/USDT",MarketType.CRYPTO_SPOT,99.9,100.0,99.95)
+
+
+def intent(side: Side):
+    if side is Side.BUY:
+        return TradeIntent("paper","BTC/USDT",MarketType.CRYPTO_SPOT,side,100,98,106,2,"test",{})
+    return TradeIntent("paper","BTC/USDT",MarketType.CRYPTO_SPOT,side,100,102,94,2,"test",{})
+
+
+@pytest.mark.asyncio
+async def test_long_entry_and_exit_use_fees_and_slippage():
+    broker=PaperBroker(1000,fee_rate=0.001,slippage_bps=5)
+    buy=await broker.execute(intent(Side.BUY),1,snapshot(),"b1")
+    assert buy.average_price > snapshot().ask
+    assert buy.fee_usd > 0
+    account=await broker.account({"paper:BTC/USDT":snapshot()})
+    assert account.equity_usd < 1000
+    sell=await broker.execute(intent(Side.SELL),1,snapshot(),"s1")
+    assert sell.average_price < snapshot().bid
+    assert broker.positions == {}
+
+
+@pytest.mark.asyncio
+async def test_short_entry_and_cover_preserve_equity_accounting():
+    broker=PaperBroker(1000,fee_rate=0.001,slippage_bps=5)
+    await broker.execute(intent(Side.SELL),1,snapshot(),"short1")
+    account=await broker.account({"paper:BTC/USDT":snapshot()})
+    assert account.equity_usd < 1000
+    cover=await broker.execute(intent(Side.BUY),1,snapshot(),"cover1")
+    assert cover.fee_usd > 0
+    assert broker.positions == {}
+
+
+@pytest.mark.asyncio
+async def test_paper_broker_refuses_oversized_close():
+    broker=PaperBroker(1000)
+    await broker.execute(intent(Side.BUY),1,snapshot(),"b1")
+    with pytest.raises(ValueError):
+        await broker.execute(intent(Side.SELL),2,snapshot(),"s2")
