@@ -959,7 +959,7 @@ class TradingEngine:
             "entry_timestamp": row["opened_at"], "exit_timestamp": receipt.timestamp.isoformat(),
             "stop_loss": row["stop_loss"], "take_profit": row["take_profit"],
             "slippage_pct": receipt.slippage_pct,
-            "commission_usd": receipt.fee_usd + entry_fee_allocated,
+            "commission_usd": receipt.fee_usd,
             "realized_pnl_usd": realized,
             "metadata": {
                 "exit_reason": "partial_take_profit_1_5R",
@@ -1114,8 +1114,9 @@ class TradingEngine:
             "Engine: " + state,
             "Virtual equity: $" + format(account.equity_usd, ",.2f"),
             "Available paper cash: $" + format(account.free_usd, ",.2f"),
+            "Total paper PnL: " + format(account.equity_usd - self.paper.starting_equity, "+,.2f") + " USD",
             "Realized PnL today (UTC): " + format(realized, "+,.2f") + " USD",
-            "Open-position unrealized PnL: " + format(unrealized, "+,.2f") + " USD",
+            "Open-position unrealized PnL (gross): " + format(unrealized, "+,.2f") + " USD",
             "Open positions: " + str(len(positions)),
             "Daily equity drawdown: {:.2f}% / {:.2f}%".format(
                 drawdown, float(self.cfg["risk"].get("maximum_daily_drawdown_pct", 0.05)) * 100
