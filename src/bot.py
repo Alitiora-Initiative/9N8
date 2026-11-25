@@ -175,7 +175,7 @@ async def cmd_okx_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
     try:
-        _assert_execution_enabled() if TRADING_MODE == "live" else None
+        _assert_credentials()
         account = await asyncio.to_thread(okx.account_config)
         balance = await asyncio.to_thread(okx.balance)
         await update.effective_message.reply_text(
@@ -195,7 +195,7 @@ async def cmd_balance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not await owner_guard(update):
         return
     try:
-        _assert_execution_enabled()
+        _assert_credentials()
         data = await asyncio.to_thread(okx.balance)
         details = data.get("details") or []
         rows = []
@@ -320,10 +320,11 @@ async def cmd_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lot_step = str(instrument.get("lotSz", "0"))
         minimum = Decimal(str(instrument.get("minSz", "0")))
         size = Decimal(order["sz"])
-        if not _step_ok(size, lot_step):
-            raise ValueError(f"Size must follow the exchange lot step: {lot_step}.")
-        if size < minimum:
-            raise ValueError(f"Size is below the exchange minimum: {minimum}.")
+        if not (order["ordType"] == "market" and order["side"] == "buy"):
+            if not _step_ok(size, lot_step):
+                raise ValueError(f"Size must follow the exchange lot step: {lot_step}.")
+            if size < minimum:
+                raise ValueError(f"Size is below the exchange minimum: {minimum}.")
         if order["ordType"] == "limit":
             tick_step = str(instrument.get("tickSz", "0"))
             price = Decimal(order["px"])
@@ -378,7 +379,7 @@ async def cmd_open_orders(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not await owner_guard(update):
         return
     try:
-        _assert_execution_enabled()
+        _assert_credentials()
         inst_id = context.args[0].upper() if context.args else None
         orders = await asyncio.to_thread(okx.open_orders, inst_id)
         if not orders:
@@ -450,8 +451,9 @@ async def callback_order(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.edit_message_text("Unknown confirmation action.")
         return
     try:
-        _assert_execution_enabled()
+        _assert_credentials()
         if action["kind"] == "order":
+            _assert_execution_enabled()
             result = await asyncio.to_thread(okx.place_spot_order, action["order"])
             message = (
                 "OKX ORDER ACCEPTED\n"
