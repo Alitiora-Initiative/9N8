@@ -78,7 +78,7 @@ button:disabled{opacity:.55;cursor:wait}
     </section>
     <section class="card hidden" id="walletPanel">
       <h2>Wallet sessions and address watch</h2>
-      <p class="muted">Connect Phantom, Trust Wallet, MetaMask or another supported wallet through WalletConnect. The session is used for wallet identity and interactive signing requests; autonomous trading still needs a separate, explicitly granted permission.</p>
+      <p class="muted">Connect Phantom, Trust Wallet, MetaMask or another supported wallet through WalletConnect. 9N8 uses this connection to verify wallet ownership with a message signature only. This build does not request swap transactions, token approvals or background trade-signing permission.</p>
       <div class="notice">Never enter a seed phrase, recovery phrase, private key, or wallet password. Only paste a public receiving address.</div>
       <div class="scanner-panel" id="walletSessionPanel">
         <span class="pill">WALLET SESSION</span>
