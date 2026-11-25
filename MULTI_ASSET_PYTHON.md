@@ -18,6 +18,7 @@ This document applies to the **multi-asset-python feature branch**. It is a sepa
 ├── connectors/
 │   ├── __init__.py
 │   ├── base.py
+│   ├── alpaca.py
 │   ├── retry.py
 │   ├── ccxt_connector.py
 │   ├── oanda.py
@@ -45,6 +46,7 @@ This document applies to the **multi-asset-python feature branch**. It is a sepa
 │   ├── test_paper_broker.py
 │   ├── test_approval_store.py
 │   ├── test_retry.py
+│   ├── test_alpaca_connector.py
 │   ├── test_telegram_controller.py
 │   ├── test_engine_safety.py
 │   ├── test_engine_worker_isolation.py
@@ -59,11 +61,12 @@ This document applies to the **multi-asset-python feature branch**. It is a sepa
 | Area | Current implementation | Safety state |
 |---|---|---|
 | Crypto spot | CCXT Pro market data, order-book checks, market execution with attached SL/TP only when the exchange advertises support | Paper and exchange sandbox |
+| U.S. stocks and ETFs | Alpaca IEX/SIP latest bid/ask quotes and historical bars; virtual fills only, with quote-size limits | Paper only; no Alpaca order/account endpoints |
 | Crypto perpetuals | CCXT unified swap market, isolated margin request, leverage ceiling, contract-size-aware sizing | Disabled by default; configure testnet only |
 | Forex and gold | OANDA v20 REST pricing/candles/account/order APIs; stopLossOnFill and takeProfitOnFill | Practice by default |
 | Solana DEX | Solana RPC, Jupiter Price/Swap V2 connector, Birdeye OHLCV and GoPlus token-risk adapter | Data/integration path only; trading blocked |
 | EVM DEX | Web3, 0x Swap API v2, DexScreener and GoPlus adapter | Data/integration path only; trading blocked |
-| Strategy | H1 EMA 50/200 regime, M5 EMA 9/21 crossover, RSI, MACD histogram cross, ADX and ATR | Active for configured CEX/OANDA feeds |
+| Strategy | H1 EMA 50/200 regime, M5 EMA 9/21 crossover, RSI, MACD histogram cross, ADX and ATR | Active for configured CEX/OANDA/Alpaca paper feeds; stock signals are long-only |
 | Paper execution | Actual public/provider bid/ask, configurable adverse slippage and fees, atomic SQLite fill/cash/position ledger, entry-fee allocation, TP1, ATR trailing, hard stop and stagnation time stop | Available |
 | Telegram | /start, /menu, /status, /paper, /pending, /positions, /history, /pause, /resume and confirmed /panic; private numeric allowlist; approval-card recovery and polling reconnect | Available when configured |
 
@@ -85,7 +88,7 @@ Telegram is restricted to numeric IDs in TELEGRAM_ALLOWED_USER_IDS and private c
 
 ## Paper trading controls and lifecycle
 
-The Python paper engine uses live public exchange quotes/candles but virtual cash and simulated fills. The default starting equity is $10,000, the simulated fee is 0.10%, and adverse slippage is 5 basis points. It does not submit CEX, DEX, FX or withdrawal orders while `TRADING_MODE=paper` is active.
+The Python paper engine uses live provider quotes/candles but virtual cash and simulated fills. The default starting equity is $10,000, the simulated fee is 0.10%, and adverse slippage is 5 basis points. Crypto market data is public Bybit data by default. U.S. stock/ETF data is supplied by the read-only Alpaca connector when `markets.stocks.enabled=true`; stock quotes are checked against displayed best-bid/best-ask sizes before a virtual fill is accepted. Alpaca is configured with the IEX feed by default; SIP and delayed feeds depend on the Alpaca subscription. Stock orders are long-only in this release. No live stock orders, broker balance reads, stock shorting, DEX, or withdrawals are submitted by this connector.
 
 New strategy signals are still approval-based: an inline Telegram approval is required before even a paper entry is opened. Each proposal is stored in SQLite, expires after 120 seconds, and is re-priced/re-sized on approval. A rejected/expired proposal cannot execute. If Telegram delivery fails, the proposal remains stored and `/start` or `/pending` resends unexpired approval cards.
 
@@ -122,6 +125,7 @@ The risk sizing uses the stop distance and the venue's contract multiplier where
 
 ### Important limits that remain
 
+- **Stocks are U.S.-listed equities/ETFs and paper-only in this release.** The Alpaca connector reads latest quote and historical bar endpoints only; it does not read brokerage balances or submit/cancel orders. It uses the latest displayed bid/ask and rejects paper quantities larger than the visible size at the executable top-of-book. It does not model deeper order-book levels, short-sale borrow availability, corporate-action entitlements or global non-U.S. venues. Configure an Alpaca market-data feed covered by your subscription. 
 - **DEX execution is intentionally blocked by the trading engine.** The token-risk module rejects unknown mint/freeze authority, holder, liquidity-lock and tax data. However, a provider report is not proof that a real future sell will succeed. The required independent buy-and-sell transaction simulations, pool-specific checks, reliable chain-position reconciliation and live emergency-exit verification are not complete end-to-end.
 - **Jito bundle / MEV protection is not integrated.** Jupiter Swap V2 is used by the standalone connector code, but live Solana DEX orders are not enabled. A Jito bundle is not a guarantee of landing or protection from every sandwich.
 - **EVM DEX pool OHLCV and durable token-position reconciliation are not implemented.** The EVM connector refuses candle requests rather than inventing price history.
@@ -146,12 +150,15 @@ Copy-Item .env.example .env
 
 Open .env in Notepad. Keep the trading mode as paper first. Never commit .env, paste credentials into Telegram, or add private keys/API tokens to GitHub.
 
+For Alpaca stock data, add your Alpaca API key and secret to `.env` as `ALPACA_API_KEY` and `ALPACA_API_SECRET`. Keep `ALPACA_DATA_FEED=iex` unless your account is entitled to a different feed. In `config.json`, set `markets.stocks.enabled=true` and choose U.S. stock/ETF symbols such as `AAPL`, `MSFT` or `SPY`. Stocks are rejected outside `TRADING_MODE=paper`; this connector has no broker-order code. The default stock quote-age gate is 60 seconds.
+
 ## First run — paper mode
 
 The defaults are:
 - TRADING_MODE=paper
 - LIVE_TRADING=false
 - Bybit public spot market data for BTC/USDT, ETH/USDT and SOL/USDT
+- U.S. stock data disabled by default; enable `markets.stocks.enabled` and configure Alpaca market-data credentials to add it
 - $10,000 virtual starting equity
 - 0.10% simulated fee and 5 bps adverse slippage
 
@@ -176,10 +183,11 @@ Do not put real funds or main-wallet keys into the test.
 1. Create a **dedicated Bybit testnet** API key with only the required trading/read scopes. Never enable withdrawals or transfers. Set TRADING_MODE=testnet, LIVE_TRADING=false, CEX_API_KEY and CEX_API_SECRET in .env.
 2. Leave config.json crypto_spot.enabled=true. The connector sets the exchange sandbox mode when the run mode is testnet.
 3. For perpetual testing only, set crypto_perpetuals.enabled=true, execution.allow_perpetuals=true, margin_mode="isolated" and leverage=1. Use a testnet key/account. Do not enable leverage greater than 3x.
-4. For FX/gold practice testing, set markets.oanda.enabled=true, add the exact OANDA practice instruments your account supports, set OANDA_ENVIRONMENT=practice, OANDA_ACCOUNT_ID and OANDA_API_TOKEN.
-5. Keep Solana on Devnet for RPC/wallet-data checks only. Jupiter's Swap API route used by this connector is a mainnet liquidity/execution path; this project does not claim that Jupiter swaps execute on Devnet.
-6. Run continuously for 48 hours with small sandbox/demo balances. Record WebSocket reconnects, API rate-limit errors, order rejections, bracket attachment results, order/fill reconciliation, stop/target trigger behavior, SQLite state after restarts, daily PnL and Telegram delivery.
-7. Test /pause, /status and /panic on the sandbox account. A panic test should end with no open orders or positions. Check the provider dashboard; do not rely only on a Telegram success message.
+4. For U.S. stocks/ETFs, stay in `TRADING_MODE=paper`, set `markets.stocks.enabled=true`, configure `ALPACA_API_KEY`, `ALPACA_API_SECRET`, and `ALPACA_DATA_FEED=iex`, and inspect latest quote timestamps and displayed bid/ask sizes during regular market hours.
+5. For FX/gold practice testing, set markets.oanda.enabled=true, add the exact OANDA practice instruments your account supports, set OANDA_ENVIRONMENT=practice, OANDA_ACCOUNT_ID and OANDA_API_TOKEN.
+6. Keep Solana on Devnet for RPC/wallet-data checks only. Jupiter's Swap API route used by this connector is a mainnet liquidity/execution path; this project does not claim that Jupiter swaps execute on Devnet.
+7. Run continuously for 48 hours with small sandbox/demo balances. Record WebSocket reconnects, API rate-limit errors, order rejections, bracket attachment results, order/fill reconciliation, stop/target trigger behavior, SQLite state after restarts, daily PnL and Telegram delivery.
+8. Test /pause, /status and /panic on the sandbox account. A panic test should end with no open orders or positions. Check the provider dashboard; do not rely only on a Telegram success message.
 
 ## Live mode stays locked
 
