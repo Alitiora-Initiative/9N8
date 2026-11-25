@@ -302,6 +302,15 @@ class TradingEngine:
         if not decision.approved or not decision.size:
             await self.store.event("WARNING", "trade_veto", decision.reason, intent.venue, intent.symbol)
             return
+        if hasattr(connector, "estimate_slippage_pct"):
+            order_impact = await connector.estimate_slippage_pct(
+                intent.symbol, intent.side, decision.size.quantity
+            )
+            limit = self.risk.slippage_limit_pct(intent.market_type.value)
+            if not math.isfinite(order_impact) or order_impact > limit:
+                reason = f"Order-book impact {order_impact:.4%} exceeds the hard {limit:.4%} limit."
+                await self.store.event("WARNING", "market_impact_veto", reason, intent.venue, intent.symbol)
+                return
 
         material = f"{intent.venue}|{intent.symbol}|{intent.side.value}|{candle_timestamp}"
         client_id = hashlib.sha256(material.encode()).hexdigest()[:32]
