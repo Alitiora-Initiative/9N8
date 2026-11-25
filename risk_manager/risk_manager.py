@@ -56,6 +56,8 @@ class RiskManager:
             raise RiskRejected(reason)
         if await self.store.get_control("kill_switch", "false") == "true":
             raise RiskRejected("Kill switch is active.")
+        if await self.store.get_control("equity_monitor_failed", "false") == "true":
+            raise RiskRejected("Portfolio equity monitor has failed; entries remain blocked.")
 
     def _bounded(self, name: str, hard_max: float) -> float:
         return min(max(float(self.risk_cfg.get(name, hard_max)), 0.0), hard_max)
