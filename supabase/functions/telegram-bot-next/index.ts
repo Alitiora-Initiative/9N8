@@ -758,6 +758,25 @@ async function handleMiniApp(body: any): Promise<Response> {
     const maxAge = longLivedReadActions.has(String(body?.action ?? "")) ? 24 * 60 * 60 : 300;
     const user = await verifyInitData(String(body?.initData ?? ""), maxAge);
     const row = await userRow(user);
+    if (body.action === "exchange_revoke") {
+      const connectionId = clean(body?.connectionId, 64);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(connectionId)) {
+        return response({ ok: false, message: "Select a valid exchange connection." }, 400);
+      }
+      const revoked = await db("rpc/n8_revoke_exchange_connection", "POST", {
+        p_telegram_user_id: Number(user.id),
+        p_connection_id: connectionId,
+      });
+      if (revoked !== true) {
+        return response({ ok: false, message: "No active exchange connection matched your Telegram account." }, 404);
+      }
+      await audit(row.id, null, "exchange_connection_revoked", "ok", { connection_id: connectionId });
+      return response({
+        ok: true,
+        connectionId,
+        message: "Exchange connection revoked. Its stored API secret was deleted from Supabase Vault.",
+      });
+    }
     if (body.action === "connect_exchange") {
       const provider = String(body.provider) as Provider;
       const environment = String(body.environment);
@@ -874,12 +893,15 @@ async function handleMiniApp(body: any): Promise<Response> {
   }
 }
 async function listConnections(userId: string): Promise<string> {
-  const rows = await db("n8_exchange_connections?select=provider,environment,label,status&user_id=eq." +
+  const rows = await db("n8_exchange_connections?select=id,provider,environment,label,status&user_id=eq." +
     encodeURIComponent(userId) + "&status=neq.revoked&order=created_at.desc");
   if (!Array.isArray(rows) || rows.length === 0) return "No exchange accounts connected yet. Use /connect to link Binance Spot or OKX Spot.";
   return "YOUR EXCHANGE CONNECTIONS\n\n" + rows.map((v: any) =>
-    String(v.provider).toUpperCase() + " · " + v.environment + "\n" + String(v.label ?? "Account") + " · " + v.status
-  ).join("\n\n");
+    String(v.provider).toUpperCase() + " · " + v.environment + "\n" +
+    String(v.label ?? "Account") + " · " + v.status + "\n" +
+    "Connection ID: " + String(v.id)
+  ).join("\n\n") +
+    "\n\nTo disconnect one, send /disconnect CONNECTION_ID. This revokes and deletes its stored API secret.";
 }
 async function listWallets(userId: string): Promise<string> {
   const rows = await db("n8_wallet_connections?select=provider,network,public_address,status,connection_type,execution_mode,auto_trade_enabled&user_id=eq." +
@@ -1485,6 +1507,7 @@ async function handleMessage(update: any) {
       "/status — inspect account and system state\n" +
       "/connect — connect Binance Spot Live or wallet\n" +
       "/connections — list your exchange connections\n" +
+      "/disconnect CONNECTION_ID — revoke your own exchange API key\n" +
       "/wallets — list your verified wallets\n" +
       "/migrate — assess live eligibility (does not enable live trading)\n" +
       "/live — live lock and risk status\n" +
@@ -1583,6 +1606,24 @@ async function handleMessage(update: any) {
   }
   if (command === "/connections") {
     await send(chatId, await listConnections(row.id));
+    return;
+  }
+  if (command === "/disconnect") {
+    const connectionId = clean(args[0], 64);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(connectionId)) {
+      await send(chatId, "Usage: /disconnect CONNECTION_ID. Send /connections to list your own connection IDs.");
+      return;
+    }
+    const revoked = await db("rpc/n8_revoke_exchange_connection", "POST", {
+      p_telegram_user_id: Number(actor.id),
+      p_connection_id: connectionId,
+    });
+    if (revoked !== true) {
+      await send(chatId, "No active exchange connection with that ID belongs to your Telegram account.");
+      return;
+    }
+    await audit(row.id, chatId, "exchange_connection_revoked", "ok", { connection_id: connectionId });
+    await send(chatId, "Exchange connection revoked. Its stored API secret was deleted from Supabase Vault.");
     return;
   }
   if (command === "/wallets") {
@@ -1714,7 +1755,7 @@ async function mainHandler(req: Request): Promise<Response> {
   if (body?.action === "register_webhook") return await registerWebhook(body);
   // Mini App traffic is authenticated with Telegram-signed initData.
   if (body?.action === "connect_exchange" || body?.action === "watch_wallet" ||
-      ["wallet_challenge", "wallet_verify", "wallet_revoke", "live_connections", "live_status", "live_assess", "live_pause",
+      ["wallet_challenge", "wallet_verify", "wallet_revoke", "exchange_revoke", "live_connections", "live_status", "live_assess", "live_pause",
        "paper_terminal", "paper_start", "binance_account", "okx_account"].includes(String(body?.action))) {
     return await handleMiniApp(body);
   }
