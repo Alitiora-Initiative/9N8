@@ -112,6 +112,14 @@ button:disabled{opacity:.55;cursor:wait}
         <p class="muted">Fetches balances from your private Binance Spot account using the stored key. API secrets are never returned to the Web App.</p>
         <button class="secondary" id="loadBinanceBalance" type="button">↻ Load Binance Spot balances</button>
         <div class="status" id="binanceBalance" role="status">Connect Binance to view balances.</div>
+        <div class="divider"></div>
+        <h3>Live readiness assessment</h3>
+        <p class="muted">Refreshes your Binance Spot balance, then checks the 30-day paper and connector gates. This is an assessment only; it does not enable live trading or submit an order.</p>
+        <div class="grid">
+          <button id="assessLiveReadiness" type="button">🔎 Run 30-day readiness check</button>
+          <button id="refreshLiveStatus" class="secondary" type="button">↻ Refresh live status</button>
+        </div>
+        <div class="status" id="liveReadinessStatus" role="status" style="white-space:pre-wrap">Connect Binance and run the assessment to see the current requirements.</div>
       </form>
     </section>
     <section class="card hidden" id="walletPanel">
@@ -316,6 +324,7 @@ button:disabled{opacity:.55;cursor:wait}
     try{
       const result=await apiPost({action:"connect_exchange",initData:tg.initData,provider:"binance",environment:"live",credentials});
       status.textContent="Connected: "+result.label+". Read/Spot scopes accepted; encrypted credentials stored. Live orders are not enabled by connecting the account.";
+      window.n8ActiveBinanceConnectionId = result.connectionId || "";
       this.reset();
       document.getElementById("binanceBalance").textContent="Connection saved. Load balances to refresh your Spot account.";
     }catch(error){status.textContent=error.message||"Binance connection failed.";}
@@ -333,12 +342,81 @@ button:disabled{opacity:.55;cursor:wait}
     button.disabled=true;target.textContent="Loading private Binance Spot balances…";
     try{
       const result=await apiPost({action:"binance_account",initData:tg.initData});
+      window.n8ActiveBinanceConnectionId = result.connection?.id || "";
       target.innerHTML=result.balances.length
         ? result.balances.map(v=>"<div class='book-row'><b>"+String(v.asset).replace(/[&<>]/g,"")+"</b><span>Free "+Number(v.free).toLocaleString("en-US",{maximumFractionDigits:8})+" · Locked "+Number(v.locked).toLocaleString("en-US",{maximumFractionDigits:8})+"</span></div>").join("")
         : "No non-zero Spot balances returned.";
+      if(result.quoteBalance) target.innerHTML += "<div class='book-row'><b>USDT quote balance</b><span>Free "+Number(result.quoteBalance.free).toFixed(4)+" · Risk-gate USD estimate $"+Number(result.quoteBalance.availableUsdApprox).toFixed(2)+"</span></div>";
     }catch(error){target.textContent=error.message||"Could not fetch Binance balances.";}
     finally{button.disabled=false;}
   });
+  const readinessButton=document.getElementById("assessLiveReadiness");
+  const statusButton=document.getElementById("refreshLiveStatus");
+  const readinessTarget=document.getElementById("liveReadinessStatus");
+  function showReadinessAssessment(assessment,nextStep){
+    const reasons=Array.isArray(assessment?.reasons)?assessment.reasons:[];
+    const paper=assessment?.paper||{};
+    const account=assessment?.account||{};
+    const lines=[
+      "Eligibility: "+String(assessment?.status||"unknown").replaceAll("_"," ").toUpperCase(),
+      "Paper window: "+String(paper.elapsedDays??"—")+" / "+String(paper.requiredDays??30)+" days",
+      "Closed paper exits: "+String(paper.completedTrades??0),
+      "Enabled strategies: "+String(paper.enabledStrategies??0)+" · Passing: "+String(paper.strategiesPassing??0),
+      "Open virtual positions: "+String(paper.openPositions??"—"),
+      "Available Binance USDT: "+(account.availableQuoteUsd==null?"not checked":"$"+Number(account.availableQuoteUsd).toFixed(2)),
+      "Minimum required: $"+Number(account.minimumBalanceUsd??10).toFixed(2),
+      "",
+      reasons.length?"Blocking requirements:":"No eligibility blockers were returned."
+    ];
+    if(reasons.length) reasons.forEach((reason,index)=>lines.push((index+1)+". "+String(reason)));
+    if(nextStep)lines.push("",String(nextStep));
+    lines.push("Live order execution: LOCKED · This screen does not place orders.");
+    readinessTarget.textContent=lines.join("\n");
+  }
+  readinessButton.addEventListener("click",async()=>{
+    if(!tg||!tg.initData){readinessTarget.textContent="Open this screen from your 9N8 Telegram private chat.";return;}
+    readinessButton.disabled=true;statusButton.disabled=true;
+    readinessTarget.textContent="Refreshing Binance Spot account permissions and USDT balance…";
+    try{
+      const account=await apiPost({action:"binance_account",initData:tg.initData});
+      window.n8ActiveBinanceConnectionId=account.connection?.id||"";
+      if(!window.n8ActiveBinanceConnectionId)throw new Error("Connect your Binance Spot LIVE account first.");
+      readinessTarget.textContent="Binance balance refreshed. Running the 30-day live-eligibility assessment…";
+      const result=await apiPost({
+        action:"live_assess",
+        initData:tg.initData,
+        accountType:"exchange",
+        marketType:"crypto",
+        connectionId:window.n8ActiveBinanceConnectionId,
+        windowDays:30
+      });
+      showReadinessAssessment(result.assessment||{},result.nextStep||"");
+    }catch(error){readinessTarget.textContent=error.message||"The readiness assessment failed.";}
+    finally{readinessButton.disabled=false;statusButton.disabled=false;}
+  });
+  statusButton.addEventListener("click",async()=>{
+    if(!tg||!tg.initData){readinessTarget.textContent="Open this screen from your 9N8 Telegram private chat.";return;}
+    readinessButton.disabled=true;statusButton.disabled=true;
+    readinessTarget.textContent="Refreshing current live status…";
+    try{
+      const result=await apiPost({action:"live_status",initData:tg.initData});
+      const live=result.status||{};
+      const latest=Array.isArray(live.migrations)?live.migrations[0]:null;
+      readinessTarget.textContent=[
+        "Live trading: "+(live.liveTradingEnabled?"ENABLED":"LOCKED"),
+        "Owner approval: "+(live.ownerApprovalRequired?"REQUIRED":"NOT REQUIRED"),
+        "Emergency kill switch: "+(live.killSwitch?"ACTIVE":"OFF"),
+        "Minimum live balance: $"+Number(live.minimumLiveBalanceUsd??10).toFixed(2),
+        "Maximum order: $"+Number(live.maxOrderUsd??10).toFixed(2),
+        "Daily notional cap: $"+Number(live.maxDailyNotionalUsd??25).toFixed(2),
+        "Connector release: "+String(live.releaseState||"not activated"),
+        latest?"Latest assessment: "+String(latest.status)+" · "+String(latest.market_type):"No assessment recorded yet.",
+        "Real order submission: NOT AVAILABLE IN THIS RELEASE."
+      ].join("\n");
+    }catch(error){readinessTarget.textContent=error.message||"Live status could not be refreshed.";}
+    finally{readinessButton.disabled=false;statusButton.disabled=false;}
+  });
+
   // Wallet QR scanning: scan locally, extract only a public address, and require
   // the user to review and submit it. No QR contents are uploaded or logged.
   const qrPanel=document.getElementById("qrScannerPanel");
