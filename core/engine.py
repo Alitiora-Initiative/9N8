@@ -924,7 +924,6 @@ class TradingEngine:
                 "TP1 partial close", {},
             )
             receipt = await self.paper.execute(intent, amount, snapshot, "tp1-" + uuid.uuid4().hex)
-            await self.store.set_control("paper_cash", str(self.paper.cash))
         else:
             p = OpenPosition(
                 row["venue"], row["symbol"], MarketType(row["market_type"]), Side(row["side"]),
@@ -952,7 +951,7 @@ class TradingEngine:
         if self.mode == "paper":
             metadata["paper_fees_paid"] = entry_fee_remaining
         row["metadata"] = metadata
-        await self.store.record_trade({
+        trade_record = {
             "client_order_id": "partial:" + receipt.order_id, "venue": receipt.venue,
             "symbol": receipt.symbol, "market_type": row["market_type"],
             "side": receipt.side.value, "status": "partial_closed", "mode": self.mode,
@@ -969,9 +968,15 @@ class TradingEngine:
                 "entry_fee_allocated_usd": entry_fee_allocated,
                 "exit_fee_usd": receipt.fee_usd,
             },
-        })
+        }
         row["realized_pnl_usd"] = float(row.get("realized_pnl_usd", 0)) + realized
         row["quantity"] = float(row["quantity"]) - amount
+        if self.mode == "paper":
+            await self.store.persist_paper_fill(
+                trade_record, self.paper.cash, position=row
+            )
+        else:
+            await self.store.record_trade(trade_record)
         await self.store.event(
             "INFO", "partial_take_profit",
             "50% closed at 1.5R; partial fill and realized PnL saved.",
@@ -996,7 +1001,6 @@ class TradingEngine:
                 p.stop_loss, p.take_profit, abs(p.mark_price-p.stop_loss), reason, {},
             )
             receipt = await self.paper.execute(intent, p.quantity, snapshot, "exit-" + uuid.uuid4().hex)
-            await self.store.set_control("paper_cash", str(self.paper.cash))
         else:
             receipt = await connector.close_position(p)
         direction = 1 if p.side is Side.BUY else -1
@@ -1011,7 +1015,7 @@ class TradingEngine:
                 metadata.get("entry_fee_remaining", metadata.get("entry_fee_paid", 0.0)) or 0.0
             )
         pnl = gross_pnl - receipt.fee_usd - entry_fee_allocated
-        await self.store.record_trade({
+        trade_record = {
             "client_order_id": "exit:" + receipt.order_id, "venue": receipt.venue,
             "symbol": receipt.symbol, "market_type": row["market_type"],
             "side": receipt.side.value, "status": "closed", "mode": self.mode,
@@ -1028,8 +1032,15 @@ class TradingEngine:
                 "entry_fee_allocated_usd": entry_fee_allocated,
                 "exit_fee_usd": receipt.fee_usd,
             },
-        })
-        await self.store.remove_position(row["position_key"])
+        }
+        if self.mode == "paper":
+            await self.store.persist_paper_fill(
+                trade_record, self.paper.cash,
+                remove_position_key=row["position_key"],
+            )
+        else:
+            await self.store.record_trade(trade_record)
+            await self.store.remove_position(row["position_key"])
         message = f"9N8 EXIT {receipt.symbol} · {reason}\nRealized PnL: {pnl:+.4f} USD"
         await self.store.event("INFO", "trade_exit", message, receipt.venue, receipt.symbol, {"pnl": pnl})
         if self.notifier:
