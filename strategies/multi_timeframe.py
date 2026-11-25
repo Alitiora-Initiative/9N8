@@ -20,8 +20,8 @@ class MultiTimeframeStrategy:
         a = adx(trend, int(sc["adx_period"]))
         volatility = atr(entry, int(sc["atr_period"]))
         strength = rsi(entry_closes, int(sc["rsi_period"]))
-        m_line, m_prev_delta = macd(entry_closes)
-        if None in (ema50[-1], ema200[-1], a, volatility, strength, m_line, m_prev_delta):
+        macd_now, macd_previous = macd(entry_closes)
+        if None in (ema50[-1], ema200[-1], a, volatility, strength, macd_now, macd_previous):
             return None
         if a < float(sc["minimum_adx"]) or volatility <= 0:
             return None
@@ -37,13 +37,13 @@ class MultiTimeframeStrategy:
         distance = volatility * float(sc["atr_stop_multiple"])
         r_multiple = float(sc["take_profit_r_multiple"])
 
-        if long_regime and crossed_up and float(sc["rsi_long_min"]) <= strength <= float(sc["rsi_long_max"]) and m_line > 0:
+        if long_regime and crossed_up and float(sc["rsi_long_min"]) <= strength <= float(sc["rsi_long_max"]) and macd_previous <= 0 < macd_now:
             return TradeIntent(
                 venue,symbol,market_type,Side.BUY,price,price-distance,price+distance*r_multiple,
                 distance,"H1 EMA trend aligned; M5 EMA crossover, RSI and MACD confirmed",
                 {"adx":a,"atr":volatility,"rsi":strength,"strategy":"multi_timeframe_v1"},
             )
-        if short_regime and crossed_down and float(sc["rsi_short_min"]) <= strength <= float(sc["rsi_short_max"]) and m_line < 0:
+        if short_regime and crossed_down and float(sc["rsi_short_min"]) <= strength <= float(sc["rsi_short_max"]) and macd_previous >= 0 > macd_now:
             if market_type in {MarketType.CRYPTO_SPOT, MarketType.SOLANA_DEX, MarketType.EVM_DEX}:
                 return None
             return TradeIntent(
