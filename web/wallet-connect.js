@@ -18,6 +18,7 @@ let currentProviderState = null;
 let appKitReady = false;
 let connectionBusy = false;
 let injectedSession = null;
+let verifiedWalletSession = null;
 
 const evmNetworks = [mainnet, base, bsc];
 const networkById = {
@@ -264,6 +265,13 @@ verifyButton?.addEventListener("click", async () => {
       signature = bytesToBase64(signatureBytes);
     }
     const result = await post({ action: "wallet_verify", challengeId: challenge.challengeId, signature, walletName, connectionType });
+    verifiedWalletSession = {
+      walletConnectionId: result.connectionId, address, chainId, namespace,
+      network: result.network, provider, walletName, connectionType,
+    };
+    window.dispatchEvent(new CustomEvent("n8-wallet-session", {
+      detail: { walletConnectionId: result.connectionId, address, chainId, namespace, network: result.network, walletName },
+    }));
     disconnectButton.disabled = false;
     setStatus("Verified and linked: " + result.address + " · " + result.network + ". Execution remains approval-only; no transaction permission was granted.", "success");
     const status = document.getElementById("walletStatus");
@@ -289,6 +297,7 @@ disconnectButton?.addEventListener("click", async () => {
     if (modal) { try { await modal.adapter?.connectionControllerClient?.disconnect?.(); } catch (_) {} }
     if (injectedSession?.provider?.disconnect) { try { await injectedSession.provider.disconnect(); } catch (_) {} }
     injectedSession = null;
+    verifiedWalletSession = null;
     currentAddress = "";
     verifyButton.disabled = true;
     disconnectButton.disabled = true;
@@ -307,4 +316,20 @@ networkSelect?.addEventListener("change", () => {
   }
 });
 
+window.n8GetSolanaWalletSession = () => {
+  if (!verifiedWalletSession || verifiedWalletSession.namespace !== "solana" || verifiedWalletSession.chainId !== "mainnet-beta") return null;
+  if (networkSelect?.value !== "solana:mainnet-beta") return null;
+  const liveAddress = injectedSession?.namespace === "solana"
+    ? injectedSession.address
+    : String(modal?.getAddress?.() || currentProviderState?.address || "");
+  const provider = injectedSession?.namespace === "solana"
+    ? injectedSession.provider
+    : (modal?.getProviders?.() || {}).solana;
+  if (liveAddress !== verifiedWalletSession.address || !provider || typeof provider.signTransaction !== "function") return null;
+  return {
+    ...verifiedWalletSession,
+    provider,
+    signTransaction: (transaction) => provider.signTransaction(transaction),
+  };
+};
 initialize();
