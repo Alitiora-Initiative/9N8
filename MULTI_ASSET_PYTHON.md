@@ -18,6 +18,7 @@ This document applies to the **multi-asset-python feature branch**. It is a sepa
 ├── connectors/
 │   ├── __init__.py
 │   ├── base.py
+│   ├── retry.py
 │   ├── ccxt_connector.py
 │   ├── oanda.py
 │   ├── paper_broker.py
@@ -42,6 +43,11 @@ This document applies to the **multi-asset-python feature branch**. It is a sepa
 │   ├── __init__.py
 │   ├── test_indicators.py
 │   ├── test_paper_broker.py
+│   ├── test_approval_store.py
+│   ├── test_retry.py
+│   ├── test_telegram_controller.py
+│   ├── test_engine_safety.py
+│   ├── test_engine_worker_isolation.py
 │   └── test_risk_manager.py
 └── .github/
     └── workflows/
@@ -58,8 +64,8 @@ This document applies to the **multi-asset-python feature branch**. It is a sepa
 | Solana DEX | Solana RPC, Jupiter Price/Swap V2 connector, Birdeye OHLCV and GoPlus token-risk adapter | Data/integration path only; trading blocked |
 | EVM DEX | Web3, 0x Swap API v2, DexScreener and GoPlus adapter | Data/integration path only; trading blocked |
 | Strategy | H1 EMA 50/200 regime, M5 EMA 9/21 crossover, RSI, MACD histogram cross, ADX and ATR | Active for configured CEX/OANDA feeds |
-| Paper execution | Actual public/provider bid/ask, configurable adverse slippage and fees, SQLite position/trade ledger | Available |
-| Telegram | /status, /pause, /panic, restricted to numeric allowlisted user IDs | Available when configured |
+| Paper execution | Actual public/provider bid/ask, configurable adverse slippage and fees, atomic SQLite fill/cash/position ledger, entry-fee allocation, TP1, ATR trailing, hard stop and stagnation time stop | Available |
+| Telegram | /start, /menu, /status, /paper, /pending, /positions, /history, /pause, /resume and confirmed /panic; private numeric allowlist; approval-card recovery and polling reconnect | Available when configured |
 
 MT5 is not included; the chosen FX connector is OANDA v20. OANDA uses REST polling in this build, not its streaming endpoint. Configure any additional OANDA instrument names only after confirming that your account exposes them.
 
@@ -76,6 +82,37 @@ Every scanner-generated entry is a stored proposal, not an order. The owner rece
 If a live/testnet provider submission starts but the response cannot be reconciled, 9N8 marks the approval RECONCILIATION_REQUIRED, pauses entries, sets the kill switch and sends an urgent alert. It never automatically retries an uncertain order. Check the provider's order/fill/transaction history and balances manually before taking further action.
 
 Telegram is restricted to numeric IDs in TELEGRAM_ALLOWED_USER_IDS and private chats. /start and /menu open the button dashboard; /pending, /positions, /history, /pause, /resume and /status are also available. /panic asks for a second confirmation before the emergency flatten routine.
+
+## Paper trading controls and lifecycle
+
+The Python paper engine uses live public exchange quotes/candles but virtual cash and simulated fills. The default starting equity is $10,000, the simulated fee is 0.10%, and adverse slippage is 5 basis points. It does not submit CEX, DEX, FX or withdrawal orders while `TRADING_MODE=paper` is active.
+
+New strategy signals are still approval-based: an inline Telegram approval is required before even a paper entry is opened. Each proposal is stored in SQLite, expires after 120 seconds, and is re-priced/re-sized on approval. A rejected/expired proposal cannot execute. If Telegram delivery fails, the proposal remains stored and `/start` or `/pending` resends unexpired approval cards.
+
+Paper fills, cash-balance changes and position changes are saved in one SQLite transaction. A database write failure reloads the in-memory paper broker from the last durable snapshot and pauses new entries. Startup recovery reconciles interrupted paper approvals from the stored virtual position/trade ledger; uncertain external provider submissions instead force `RECONCILIATION_REQUIRED`.
+
+Paper exits are simulated only: hard stop and take-profit thresholds, a 50% TP1 at 1.5R, break-even protection, ATR trailing on the remainder, and a configurable time-based stagnation exit. Entry fees are allocated proportionally on partial exits and included in net realized PnL. The position watcher isolates failures per position so one bad/stale quote does not stop checks for other open positions. Repeated worker alerts are throttled.
+
+A paper `/panic` only closes simulated positions. It never calls the exchange's `cancel_all_orders`. The engine and Telegram controller remain online after panic, while the kill switch keeps new entries blocked.
+
+## Telegram setup and troubleshooting
+
+1. Create or select the bot with `@BotFather` and put its token in `.env` as `TELEGRAM_BOT_TOKEN`. Do not post the token in a chat, issue, log or repository.
+2. Get the numeric owner ID from a Telegram user-info bot and put it in `.env` as `TELEGRAM_ALLOWED_USER_IDS`. Multiple authorized owners may be comma-separated, for example `123456789,987654321`; names/usernames are not accepted.
+3. Start 9N8 with `python main.py`, then open the bot's **private chat** in Telegram and send `/start`. Telegram bots cannot initiate a private conversation before the user starts it.
+4. The dashboard contains Status, Paper account, Positions, Pending approvals, Pause, Resume and Emergency flatten. Typed commands are also available:
+   - `/start` or `/menu` — dashboard and resend unexpired approvals
+   - `/status` — engine mode, account/position summary and risk state
+   - `/paper` — virtual account, total PnL, fees, slippage and daily drawdown
+   - `/pending` — resend unexpired Approve/Deny cards
+   - `/positions` and `/history` — open positions and recent trades
+   - `/pause` and `/resume` — stop or resume new proposals (risk locks cannot be bypassed)
+   - `/panic` — show a second confirmation before emergency flatten
+5. An empty allowlist disables the Telegram controller. Invalid bot tokens disable it safely. Network/server errors retry with backoff. Unavailable market providers do not prevent Telegram from starting; provider connections retry while the control plane remains online.
+
+**One Telegram token can have only one update receiver at a time.** This Python controller uses long polling. Do not run it using a token that is simultaneously attached to the existing Supabase/Edge Function webhook or another long-polling process. The Python controller checks for an active webhook and refuses to delete it. Stop the other receiver or use a separate bot token, then restart 9N8.
+
+If an approval card is not visible, first send `/start`, then `/pending`. If the bot reports a webhook/polling conflict, resolve the duplicate update receiver before expecting commands or approval buttons to work. If market feeds are down, `/status` and `/paper` remain available while provider retries continue.
 
 ## Hard-coded risk vetoes
 
