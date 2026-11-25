@@ -1,4 +1,7 @@
+import { isAddress as isEvmAddress, verifyMessage as verifyEvmMessage } from "npm:viem@2.58.4";
+
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
+const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
 const HOOK_SECRET = (Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "").trim();
 const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") ?? "").trim().replace(/\/+$/, "");
 const SUPABASE_SERVICE_KEY = (() => {
@@ -242,6 +245,175 @@ function walletAddressValid(namespace: string, address: string): boolean {
   if (namespace === "solana") return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
   return false;
 }
+function decodeBase58(value: string): Uint8Array {
+  const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  let number = 0n;
+  for (const char of value) {
+    const digit = alphabet.indexOf(char);
+    if (digit < 0) throw new Error("wallet_address_invalid");
+    number = number * 58n + BigInt(digit);
+  }
+  const bytes: number[] = [];
+  while (number > 0n) {
+    bytes.unshift(Number(number & 255n));
+    number >>= 8n;
+  }
+  for (let i = 0; i < value.length && value[i] === "1"; i++) bytes.unshift(0);
+  return new Uint8Array(bytes);
+}
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+async function verifyWalletProof(challenge: any, signature: string): Promise<boolean> {
+  if (challenge.chain_namespace === "eip155") {
+    if (!isEvmAddress(challenge.public_address) || !/^0x[0-9a-fA-F]{130}$/.test(signature)) return false;
+    return await verifyEvmMessage({
+      address: challenge.public_address as any,
+      message: challenge.message,
+      signature: signature as any,
+    });
+  }
+  if (challenge.chain_namespace === "solana") {
+    const publicKey = decodeBase58(String(challenge.public_address));
+    const proof = decodeBase64(signature);
+    if (publicKey.length !== 32 || proof.length !== 64) return false;
+    const key = await crypto.subtle.importKey("raw", publicKey, { name: "Ed25519" }, false, ["verify"]);
+    return await crypto.subtle.verify("Ed25519", key, proof, enc.encode(String(challenge.message)));
+  }
+  return false;
+}
+async function createWalletChallenge(user: any, body: any): Promise<Response> {
+  const namespace = String(body?.namespace ?? "");
+  const address = clean(body?.address, 128);
+  const provider = String(body?.provider ?? "walletconnect");
+  const connectionType = String(body?.connectionType ?? "walletconnect_session");
+  const allowedProviders = ["walletconnect", "phantom", "trust_wallet", "metamask"];
+  const allowedConnectionTypes = ["walletconnect_session", "injected_session"];
+  const evmNetworks: Record<string, string> = {
+    "1": "Ethereum Mainnet",
+    "8453": "Base Mainnet",
+    "56": "BNB Smart Chain",
+  };
+  const chainId = clean(body?.chainId, 64);
+  const network = namespace === "solana"
+    ? (chainId === "mainnet-beta" ? "Solana Mainnet" : "")
+    : evmNetworks[chainId] ?? "";
+  if (!allowedProviders.includes(provider) || !allowedConnectionTypes.includes(connectionType) ||
+      !walletAddressValid(namespace, address) || !network) {
+    return response({ ok: false, message: "Choose a supported EVM or Solana mainnet account and connect it through the wallet modal." }, 400);
+  }
+  const row = await userRow(user);
+  const nonce = hex(crypto.getRandomValues(new Uint8Array(32)));
+  const issuedAt = new Date();
+  const expiresAt = new Date(issuedAt.getTime() + 5 * 60 * 1000);
+  const message = [
+    "9N8 WALLET OWNERSHIP VERIFICATION",
+    "Application: 9N8 Trading Intelligence",
+    "Origin: https://9n8-secure-connect.vercel.app",
+    "Telegram account: " + String(user.id),
+    "Wallet address: " + address,
+    "Network: " + namespace + ":" + chainId,
+    "Purpose: Prove control of this public wallet address.",
+    "Nonce: " + nonce,
+    "Issued at: " + issuedAt.toISOString(),
+    "Expires at: " + expiresAt.toISOString(),
+    "",
+    "IMPORTANT: This signature verifies address ownership only. It does not authorize a trade, transfer, token approval, or any other transaction.",
+  ].join("\n");
+  await db("n8_wallet_challenges", "POST", {
+    user_id: row.id, provider, chain_namespace: namespace, chain_id: chainId,
+    network, public_address: address, nonce, message, expires_at: expiresAt.toISOString(),
+  }, "return=minimal");
+  await audit(row.id, null, "wallet_challenge_created", "ok", { provider, namespace, chain_id: chainId });
+  return response({ ok: true, challengeId: nonce, message, expiresAt: expiresAt.toISOString(), network });
+}
+async function verifyAndSaveWallet(user: any, body: any): Promise<Response> {
+  const row = await userRow(user);
+  const challengeId = clean(body?.challengeId, 64);
+  const signature = clean(body?.signature, 1024);
+  if (!/^[a-f0-9]{64}$/.test(challengeId) || !signature) {
+    return response({ ok: false, message: "Wallet proof is incomplete. Reconnect and try again." }, 400);
+  }
+  const now = new Date().toISOString();
+  const challenges = await db(
+    "n8_wallet_challenges?select=*&user_id=eq." + encodeURIComponent(row.id) +
+      "&nonce=eq." + encodeURIComponent(challengeId) +
+      "&used_at=is.null&expires_at=gt." + encodeURIComponent(now) + "&limit=1"
+  );
+  const challenge = Array.isArray(challenges) ? challenges[0] : null;
+  if (!challenge) return response({ ok: false, message: "Wallet challenge expired or already used. Start the connection again." }, 400);
+  let valid = false;
+  try { valid = await verifyWalletProof(challenge, signature); } catch { valid = false; }
+  if (!valid) {
+    await audit(row.id, null, "wallet_signature_invalid", "rejected", { namespace: challenge.chain_namespace });
+    return response({ ok: false, message: "The wallet did not sign the verification message. No wallet was linked." }, 400);
+  }
+  const consumed = await db(
+    "n8_wallet_challenges?id=eq." + encodeURIComponent(challenge.id) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&used_at=is.null&expires_at=gt." + encodeURIComponent(now),
+    "PATCH", { used_at: now }, "return=representation"
+  );
+  if (!Array.isArray(consumed) || consumed.length !== 1) {
+    return response({ ok: false, message: "This wallet challenge has already been used. Reconnect and try again." }, 409);
+  }
+  const walletName = clean(body?.walletName, 60) || "WalletConnect";
+  const provider = ["phantom", "trust_wallet", "metamask"].includes(challenge.provider)
+    ? challenge.provider : "walletconnect";
+  const connectionType = clean(body?.connectionType, 40);
+  const saved = await db(
+    "n8_wallet_connections?on_conflict=user_id,chain_namespace,network,public_address",
+    "POST",
+    {
+      user_id: row.id, provider, chain_namespace: challenge.chain_namespace, chain_id: challenge.chain_id,
+      network: challenge.network, public_address: challenge.public_address,
+      label: walletName + " · verified wallet session",
+      status: "verified",
+      connection_type: ["walletconnect_session", "injected_session"].includes(connectionType)
+        ? connectionType : "walletconnect_session",
+      last_connected_at: now, disconnected_at: null,
+    },
+    "resolution=merge-duplicates,return=representation"
+  );
+  const walletRow = Array.isArray(saved) ? saved[0] : null;
+  if (!walletRow?.id) throw new Error("wallet_storage_failed");
+  await audit(row.id, null, "wallet_session_verified", "ok", {
+    provider, namespace: challenge.chain_namespace, network: challenge.network,
+    wallet_connection_id: walletRow.id,
+  });
+  return response({
+    ok: true, connectionId: walletRow.id, address: mask(String(challenge.public_address)),
+    network: challenge.network, walletName, status: "verified",
+    executionMode: walletRow.execution_mode ?? "approval",
+    autoTradingEnabled: walletRow.auto_trade_enabled === true,
+  });
+}
+async function revokeWalletSession(user: any, body: any): Promise<Response> {
+  const row = await userRow(user);
+  const namespace = String(body?.namespace ?? "");
+  const address = clean(body?.address, 128);
+  const chainId = clean(body?.chainId, 64);
+  const network = clean(body?.network, 80);
+  if (!walletAddressValid(namespace, address) || !chainId || !network) {
+    return response({ ok: false, message: "Select a valid linked wallet before disconnecting." }, 400);
+  }
+  const changed = await db(
+    "n8_wallet_connections?user_id=eq." + encodeURIComponent(row.id) +
+      "&chain_namespace=eq." + encodeURIComponent(namespace) +
+      "&chain_id=eq." + encodeURIComponent(chainId) +
+      "&network=eq." + encodeURIComponent(network) +
+      "&public_address=eq." + encodeURIComponent(address) + "&status=neq.revoked",
+    "PATCH", { status: "revoked", disconnected_at: new Date().toISOString(), auto_trade_enabled: false },
+    "return=representation"
+  );
+  if (!Array.isArray(changed) || changed.length === 0) {
+    return response({ ok: false, message: "No active linked wallet matched this account and address." }, 404);
+  }
+  await audit(row.id, null, "wallet_session_revoked", "ok", { namespace, network });
+  return response({ ok: true, message: "Wallet link revoked. No future 9N8 wallet requests will be sent for this record." });
+}
 function mask(address: string): string {
   return address.length > 14 ? address.slice(0, 6) + "..." + address.slice(-5) : address;
 }
@@ -344,6 +516,9 @@ async function handleMiniApp(body: any): Promise<Response> {
       await audit(row.id, null, "wallet_address_added", "ok", { provider, namespace, network });
       return response({ ok: true, address: mask(address) });
     }
+    if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
+    if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
+    if (body.action === "wallet_revoke") return await revokeWalletSession(user, body);
     throw new Error("unsupported_action");
   } catch (error) {
     const code = error instanceof Error ? error.message : "request_failed";
@@ -374,11 +549,13 @@ async function listConnections(userId: string): Promise<string> {
   ).join("\n\n");
 }
 async function listWallets(userId: string): Promise<string> {
-  const rows = await db("n8_wallet_connections?select=provider,network,public_address,status&user_id=eq." +
+  const rows = await db("n8_wallet_connections?select=provider,network,public_address,status,connection_type,execution_mode,auto_trade_enabled&user_id=eq." +
     encodeURIComponent(userId) + "&status=neq.revoked&order=created_at.desc");
   if (!Array.isArray(rows) || rows.length === 0) return "No wallet addresses linked. Use /connect to add a public watch-only address.";
   return "YOUR WATCH-ONLY ADDRESSES\n\n" + rows.map((v: any) =>
-    String(v.provider).replace("_", " ") + " · " + v.network + "\n" + mask(String(v.public_address)) + " · " + v.status
+    String(v.provider).replace("_", " ") + " · " + v.network + "\n" + mask(String(v.public_address)) + " · " + v.status +
+    " · " + (v.connection_type === "walletconnect_session" ? "wallet session" : "address link") +
+    " · execution: " + String(v.execution_mode ?? "approval")
   ).join("\n\n");
 }
 
@@ -607,6 +784,15 @@ async function mainHandler(req: Request): Promise<Response> {
   if (req.method === "GET" && url.searchParams.get("view") === "connect") return Response.redirect(MINI_APP_URL, 302);
   if (req.method === "GET" && url.searchParams.get("view") === "setup") return Response.redirect(SETUP_PAGE_URL, 302);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
+  if (req.method === "GET" && url.searchParams.get("view") === "wallet-config") {
+    return response({
+      ok: true,
+      walletConnectConfigured: Boolean(REOWN_PROJECT_ID),
+      reownProjectId: REOWN_PROJECT_ID || null,
+      supportedNamespaces: ["eip155", "solana"],
+      liveWalletExecution: false,
+    });
+  }
   if (req.method === "GET" && url.searchParams.get("view") === "setup") return setupHtml();
   if (req.method === "GET") return response({
     ok: true, service: "9N8 universal candidate", state: "staging", environment: "demo-testnet-only",
@@ -614,6 +800,7 @@ async function mainHandler(req: Request): Promise<Response> {
       telegramTokenConfigured: Boolean(TOKEN),
       webhookSecretConfigured: Boolean(HOOK_SECRET),
       databaseAdminConfigured: Boolean(SUPABASE_SERVICE_KEY),
+      walletConnectConfigured: Boolean(REOWN_PROJECT_ID),
     },
   });
   if (req.method !== "POST") return response({ ok: false, error: "method_not_allowed" }, 405);
@@ -623,7 +810,10 @@ async function mainHandler(req: Request): Promise<Response> {
   // Webhook setup is protected by the secret already stored in Supabase.
   if (body?.action === "register_webhook") return await registerWebhook(body);
   // Mini App traffic is authenticated with Telegram-signed initData.
-  if (body?.action === "connect_exchange" || body?.action === "watch_wallet") return await handleMiniApp(body);
+  if (body?.action === "connect_exchange" || body?.action === "watch_wallet" ||
+      ["wallet_challenge", "wallet_verify", "wallet_revoke"].includes(String(body?.action))) {
+    return await handleMiniApp(body);
+  }
 
   if (!TOKEN || !HOOK_SECRET) return response({ ok: false, error: "telegram_secrets_not_configured" }, 503);
   const supplied = req.headers.get("x-telegram-bot-api-secret-token") ?? "";
