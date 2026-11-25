@@ -156,10 +156,29 @@ DO $block$
 DECLARE
   r record;
   v_strategy_id uuid;
+  v_config jsonb := jsonb_build_object(
+    'engine', 'ema9-ema21-cross-v1',
+    'timeframe', '1m',
+    'entry', 'EMA9 crosses above EMA21; RSI14 between 48 and 72; close above EMA21; positive volume',
+    'exit', 'EMA9 crosses below EMA21 or 2% stop-loss or 4% take-profit',
+    'risk', jsonb_build_object('feeRate', 0.001, 'maxPositionUsd', 50, 'maxOpenPositions', 3),
+    'marketData', 'Binance public Spot candles and order-book depth',
+    'evaluation', 'Closed virtual paper trades; fees and visible-depth slippage included'
+  );
 BEGIN
   FOR r IN SELECT DISTINCT user_id FROM public.n8_paper_sessions WHERE status IN ('running','completed')
   LOOP
-    v_strategy_id := public.n8_ensure_default_paper_strategy(r.user_id);
+    INSERT INTO public.n8_strategy_versions(
+      user_id, name, version, market_type, config, checksum, enabled
+    )
+    VALUES (
+      r.user_id, 'EMA9-EMA21 + RSI14 (Binance Spot Paper)', 1, 'crypto',
+      v_config, md5(v_config::text), true
+    )
+    ON CONFLICT (user_id, name, version)
+    DO UPDATE SET enabled = true
+    RETURNING id INTO v_strategy_id;
+
     UPDATE public.n8_paper_sessions
     SET config = config || jsonb_build_object('strategy_version_id', v_strategy_id),
         updated_at = now()
