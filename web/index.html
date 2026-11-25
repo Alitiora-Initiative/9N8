@@ -77,9 +77,21 @@ button:disabled{opacity:.55;cursor:wait}
       </form>
     </section>
     <section class="card hidden" id="walletPanel">
-      <h2>Wallet address watch</h2>
-      <p class="muted">Add a public address for future read-only portfolio monitoring. This does not connect to your wallet or approve transactions.</p>
+      <h2>Wallet sessions and address watch</h2>
+      <p class="muted">Connect Phantom, Trust Wallet, MetaMask or another supported wallet through WalletConnect. The session is used for wallet identity and interactive signing requests; autonomous trading still needs a separate, explicitly granted permission.</p>
       <div class="notice">Never enter a seed phrase, recovery phrase, private key, or wallet password. Only paste a public receiving address.</div>
+      <div class="scanner-panel" id="walletSessionPanel">
+        <span class="pill">WALLET SESSION</span>
+        <p class="muted">Connect to a real wallet session. Desktop users can scan the WalletConnect QR in their wallet; mobile users can open their wallet app or use its deep link. 9N8 will request one harmless ownership message before saving the address.</p>
+        <button id="connectWalletSession" type="button">Connect wallet session</button>
+        <button class="secondary" id="verifyWalletSession" type="button" disabled>Verify wallet ownership</button>
+        <button class="secondary" id="disconnectWalletSession" type="button" disabled>Disconnect and revoke link</button>
+        <div class="status" id="walletSessionStatus" role="status">Checking wallet connection settings…</div>
+        <p class="muted">The verification signature does not authorize a swap, transfer, token approval or trade. Wallet transaction approvals remain separate.</p>
+      </div>
+      <div class="divider"></div>
+      <h3>Optional watch-only address</h3>
+      <p class="muted">You can still add a public receive address by scanning its QR code. That creates a watch-only link, not a wallet session.</p>
       <form id="walletForm" autocomplete="off">
         <label for="walletProvider">Wallet</label>
         <select id="walletProvider">
@@ -403,5 +415,6 @@ button:disabled{opacity:.55;cursor:wait}
   });
 })();
 </script>
+<script type="module" src="/wallet-connect.js"></script>
 </body>
 </html>
