@@ -81,7 +81,16 @@ class OKXClient:
                     "OKX credentials are not configured. Set OKX_API_KEY, "
                     "OKX_API_SECRET and OKX_API_PASSPHRASE in your private .env file."
                 )
-            timestamp = utc_timestamp()
+            # Use OKX server time to avoid error 50102 when the local PC clock drifts.
+            server_time = self._request("GET", "/api/v5/public/time")
+            server_rows = server_time.get("data") or []
+            try:
+                timestamp = datetime.fromtimestamp(
+                    int(server_rows[0]["ts"]) / 1000,
+                    tz=timezone.utc,
+                ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+            except (IndexError, KeyError, TypeError, ValueError) as exc:
+                raise OKXError("Could not synchronize the request timestamp with OKX.") from exc
             headers.update({
                 "OK-ACCESS-KEY": self.api_key,
                 "OK-ACCESS-SIGN": sign_request(
