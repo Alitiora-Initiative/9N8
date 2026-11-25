@@ -112,16 +112,19 @@ def _fmt(value: object, places: int = 8) -> str:
 def _mode_label() -> str:
     return "DEMO — simulated funds" if TRADING_MODE == "demo" else "LIVE — real funds"
 
-def _assert_execution_enabled() -> None:
-    if TRADING_MODE == "live" and not LIVE_ENABLED:
-        raise OKXError(
-            "Live orders are locked. To deliberately enable them, set "
-            "OKX_TRADING_MODE=live and OKX_LIVE_TRADING_ENABLED=true in your private .env, then restart."
-        )
+def _assert_credentials() -> None:
     if not okx.credentials_configured:
         raise OKXError(
             "OKX API credentials are missing. Add OKX_API_KEY, OKX_API_SECRET and "
             "OKX_API_PASSPHRASE to your private .env file. Never send them in Telegram."
+        )
+
+def _assert_execution_enabled() -> None:
+    _assert_credentials()
+    if TRADING_MODE == "live" and not LIVE_ENABLED:
+        raise OKXError(
+            "Live orders are locked. To deliberately enable them, set "
+            "OKX_TRADING_MODE=live and OKX_LIVE_TRADING_ENABLED=true in your private .env, then restart."
         )
 
 def _verify_safe_key() -> dict:
