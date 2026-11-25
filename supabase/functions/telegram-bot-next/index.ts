@@ -37,7 +37,7 @@ const CORS_HEADERS = {
 };
 const enc = new TextEncoder();
 
-type Provider = "okx" | "binance" | "bybit";
+type Provider = "okx" | "binance";
 type Credentials = { apiKey: string; apiSecret: string; passphrase?: string; region?: OkxRegion };
 type Obj = Record<string, unknown>;
 
