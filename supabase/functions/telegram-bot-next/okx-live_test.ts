@@ -82,12 +82,7 @@ Deno.test("OKX adapter signs and sends the allowed balance-read request", async 
 });
 
 Deno.test("OKX validation identifies read access without claiming unverified trade/withdraw scopes", async () => {
-  const credentials: OkxCredentials = {
-    apiKey: "test-api-key",
-    apiSecret: "test-api-secret",
-    passphrase: "test-passphrase",
-    region: "us",
-  };
+  const credentials: OkxCredentials = { apiKey: "test-api-key", apiSecret: "test-api-secret", passphrase: "test-passphrase", region: "us" };
   const urls: string[] = [];
   const fetcher = async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -95,48 +90,10 @@ Deno.test("OKX validation identifies read access without claiming unverified tra
     const data = url.endsWith("/api/v5/account/config")
       ? { code: "0", data: [{ acctLv: "2" }] }
       : { code: "0", data: [{ totalEq: "25", details: [{ ccy: "USDT", availBal: "15", frozenBal: "0", eq: "15" }] }] };
-    return new Response(JSON.stringify(data), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(JSON.stringify(data), { status: 200, headers: { "content-type": "application/json" } });
   };
-  const result = await validateOkxSpotReadWithFetcher(credentials, fetcher);
-  if (urls.length !== 2 || !urls.every(url => url.startsWith("https://us.okx.com/"))) {
-    throw new Error("wrong_regional_api_host_or_validation_call_count");
-  }
-  if (result.permissions.read !== true ||
-      result.permissions.spotTrade !== "not_verified" ||
-      result.permissions.withdraw !== "not_verified") {
-    throw new Error("okx_scope_claimed_without_evidence");
-  }
-});
-
-// Test-only composition through the public request helper keeps all network calls mocked.
-async function validateOkxSpotReadWithFetcher(
-  credentials: OkxCredentials,
-  fetcher: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
-) {
-  const config = await okxSignedRead<any>(
-    credentials,
-    "/api/v5/account/config",
-    fetcher,
-    "2026-11-25T18:00:00.000Z",
-  );
-  const balance = await okxSignedRead<any>(
-    credentials,
-    "/api/v5/account/balance",
-    fetcher,
-    "2026-11-25T18:00:00.000Z",
-  );
-  const accountLevel = String(config.data[0].acctLv ?? "unknown");
-  const details = balance.data[0].details ?? [];
-  return {
-    accountLevel,
-    permissions: {
-      read: true,
-      spotTrade: "not_verified",
-      withdraw: "not_verified",
-    },
-    balances: details,
-  };
+  const result = await validateOkxSpotRead(credentials, fetcher, "2026-11-25T18:00:00.000Z");
+  if (urls.length !== 2 || !urls.every(url => url.startsWith("https://us.okx.com/"))) throw new Error("wrong_regional_api_host_or_validation_call_count");
+  if (result.permissions.read !== true || result.permissions.spotTrade !== "not_verified" || result.permissions.withdraw !== "not_verified") throw new Error("okx_scope_claimed_without_evidence");
+  if (result.quoteBalance.free !== 15 || result.region !== "us") throw new Error("okx_account_data_not_normalized");
 });
