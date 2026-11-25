@@ -16,6 +16,8 @@ services:
         sync: false
       - key: TWELVEDATA_API_KEY
         sync: false
+      - key: SIGNAL_SCAN_INTERVAL_SECONDS
+        value: "900"
       - key: MODE
         value: paper
       - key: MT5_PROVIDER
