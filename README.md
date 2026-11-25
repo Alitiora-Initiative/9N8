@@ -83,7 +83,8 @@ For the first test, use a DEMO API key and keep `OKX_TRADING_MODE=demo`. OKX dem
 ### 6. Secure the API key
 
 - Give the key **Read** and **Trade** permission only if you need order placement.
-- Keep **Withdraw** permission OFF.
+- Keep **Withdraw** permission OFF. 9N8 also checks the permission list and refuses to stage an order if OKX reports Withdraw permission.
+- Important: OKX's current API docs describe the Trade permission as allowing orders, cancellations and funding transfers. This app does not call transfer endpoints, but the Trade key itself may have capabilities beyond this bot. Keep the key dedicated to 9N8 and IP-restrict it where possible.
 - Bind the key to your IP address if you have a stable IP.
 - Never put the key in a Telegram message or a GitHub secret for this local setup.
 - Use a separate API key for this bot and revoke it from OKX if the laptop or local `.env` file is compromised.
