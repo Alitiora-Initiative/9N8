@@ -98,4 +98,5 @@ def macd(values: Sequence[float], fast: int = 12, slow: int = 26, signal: int = 
     sig = ema(line, signal)
     if not sig or sig[-1] is None or sig[-2] is None:
         return None, None
-    return line[-1], line[-2] - sig[-2]
+    # Current and previous histogram values; their sign crossing is the MACD trigger.
+    return line[-1] - sig[-1], line[-2] - sig[-2]
