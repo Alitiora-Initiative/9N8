@@ -116,3 +116,41 @@ async def test_restart_recovers_interrupted_execution_and_locks_entries(tmp_path
         assert await store.recover_interrupted_approvals() == 0
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_position_metadata_round_trips_through_store(tmp_path):
+    store = TradeStore(tmp_path / "position-metadata.sqlite3")
+    await store.open()
+    try:
+        position = {
+            "position_key": "okx:BTC/USDT",
+            "venue": "okx",
+            "symbol": "BTC/USDT",
+            "market_type": "crypto_spot",
+            "side": "buy",
+            "quantity": 0.01,
+            "entry_price": 50000.0,
+            "mark_price": 50100.0,
+            "stop_loss": 49000.0,
+            "take_profit": 53000.0,
+            "metadata": {
+                "order_id": "paper-order-1",
+                "entry_fee_paid": 0.5,
+                "entry_fee_remaining": 0.25,
+                "paper_fees_paid": 0.25,
+            },
+            "opened_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await store.upsert_position(position)
+        row = (await store.positions())[0]
+        assert row["metadata"]["order_id"] == "paper-order-1"
+        assert row["metadata"]["entry_fee_remaining"] == pytest.approx(0.25)
+        # Re-saving a row read from storage must not erase metadata_json.
+        row["mark_price"] = 50200.0
+        await store.upsert_position(row)
+        again = (await store.positions())[0]
+        assert again["metadata"]["paper_fees_paid"] == pytest.approx(0.25)
+    finally:
+        await store.close()
