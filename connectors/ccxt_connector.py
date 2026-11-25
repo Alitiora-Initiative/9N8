@@ -153,6 +153,12 @@ class CCXTConnector(ExecutionConnector):
                 float(row.get("unrealizedPnl") or 0),0,metadata={"raw":row}))
         return result
 
+    def contract_multiplier(self, symbol: str) -> float:
+        market = self._ex().market(symbol)
+        if market.get("contract"):
+            return float(market.get("contractSize") or 1.0)
+        return 1.0
+
     async def set_isolated_leverage(self, symbol: str, leverage: int) -> None:
         ex = self._ex()
         if not ex.has.get("setMarginMode") or not ex.has.get("setLeverage"):
