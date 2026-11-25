@@ -20,7 +20,7 @@ jobs:
           import base64, io, pathlib, zipfile
           root = pathlib.Path('.').resolve()
           bootstrap = pathlib.Path('.bootstrap')
-          parts = sorted(bootstrap.glob('bundle-part-*'))
+          parts = sorted(bootstrap.glob('bundle-data-*'))
           if not parts or not (bootstrap / 'bundle.ready').exists():
               raise SystemExit('Bundle incomplete')
           raw = base64.b64decode(b''.join(part.read_bytes() for part in parts), validate=True)
