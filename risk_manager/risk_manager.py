@@ -119,6 +119,7 @@ class RiskManager:
         if notional <= 0:
             return RiskDecision(False, "No risk budget or portfolio exposure remains.")
         quantity = notional / (intent.entry_price * contract_multiplier)
+        actual_risk_usd = quantity * intent.risk_distance * contract_multiplier
         if quantity <= 0:
             return RiskDecision(False, "Calculated quantity is below zero.")
         if market in {"solana_dex", "evm_dex"} and not intent.metadata.get("security_approved", False):
@@ -127,7 +128,7 @@ class RiskManager:
             return RiskDecision(False, "DEX entry requires successful pre-trade buy and sell simulations.")
         if market in {"crypto_perpetual", "crypto_perp"} and leverage > 1 and not intent.metadata.get("isolated_margin_confirmed", False):
             return RiskDecision(False, "Isolated margin was not confirmed by the venue.")
-        return RiskDecision(True, "Risk checks passed.", TradeSize(quantity, notional, risk_budget))
+        return RiskDecision(True, "Risk checks passed.", TradeSize(quantity, notional, actual_risk_usd))
 
     async def observe_equity(self, account: AccountState) -> bool:
         """Persist a UTC-day equity anchor and trip the 24-hour kill switch at 5% DD."""
