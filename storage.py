@@ -394,8 +394,9 @@ class TradeStore:
     async def recover_interrupted_approvals(self) -> int:
         """Recover interrupted paper approvals and lock uncertain external submissions.
 
-        A paper fill is considered committed only when the position row containing
-        its approval ID and the virtual cash balance were persisted atomically.
+        A paper fill is considered committed when its atomic fill transaction
+        remains in the durable trade ledger, whether its position is still open or
+        was closed before restart.
         A non-paper PROCESSING approval is conservatively locked for reconciliation.
         """
         now = datetime.now(timezone.utc).isoformat()
@@ -430,6 +431,17 @@ class TradeStore:
                         if isinstance(metadata, dict) and metadata.get("approval_id") == approval_id:
                             durable_fill = True
                             break
+
+                    # A paper position may have been fully closed before the
+                    # process restarted. The durable entry trade remains the
+                    # source of truth even when no open position row survives.
+                    if not durable_fill:
+                        trade_cur = await db.execute(
+                            "SELECT 1 FROM trades WHERE client_order_id=? AND mode='paper' LIMIT 1",
+                            (signal_key,),
+                        )
+                        durable_fill = await trade_cur.fetchone() is not None
+
                     status = "APPROVED" if durable_fill else "FAILED"
                     result = (
                         "Paper fill and virtual cash were durably committed before restart."
