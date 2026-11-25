@@ -12,7 +12,14 @@ const SUPABASE_SERVICE_KEY = (() => {
   }
 })();
 const FUNCTION_URL = SUPABASE_URL + "/functions/v1/telegram-bot-next";
-const MINI_APP_URL = FUNCTION_URL + "?view=connect";
+const MINI_APP_URL = "https://9n8-secure-connect.vercel.app/connect";
+const SETUP_PAGE_URL = "https://9n8-secure-connect.vercel.app/setup";
+const CORS_HEADERS = {
+  "access-control-allow-origin": "https://9n8-secure-connect.vercel.app",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+  "vary": "Origin",
+};
 const enc = new TextEncoder();
 
 type Provider = "okx" | "binance" | "bybit";
@@ -22,7 +29,7 @@ type Obj = Record<string, unknown>;
 function response(data: Obj, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    headers: { ...CORS_HEADERS, "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
 }
 function clean(value: unknown, max = 100): string {
@@ -597,7 +604,9 @@ async function registerWebhook(body: any): Promise<Response> {
 
 async function mainHandler(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  if (req.method === "GET" && url.searchParams.get("view") === "connect") return connectHtml();
+  if (req.method === "GET" && url.searchParams.get("view") === "connect") return Response.redirect(MINI_APP_URL, 302);
+  if (req.method === "GET" && url.searchParams.get("view") === "setup") return Response.redirect(SETUP_PAGE_URL, 302);
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
   if (req.method === "GET" && url.searchParams.get("view") === "setup") return setupHtml();
   if (req.method === "GET") return response({
     ok: true, service: "9N8 universal candidate", state: "staging", environment: "demo-testnet-only",
