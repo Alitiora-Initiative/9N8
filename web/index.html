@@ -218,6 +218,98 @@ button:disabled{opacity:.55;cursor:wait}
     if(!response.ok || payload.ok!==true) throw new Error(payload.message || payload.error || "Request rejected.");
     return payload;
   }
+  const htmlEscape=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+  const displayAmount=value=>Number.isFinite(Number(value))?Number(value).toLocaleString("en-US",{maximumFractionDigits:8}):"—";
+  function showConnectionMessage(id,message){const node=document.getElementById(id);if(node)node.textContent=message;}
+  async function refreshConnections(){
+    if(!tg || !tg.initData){
+      showConnectionMessage("exchangeConnections","Open this page from your Telegram private chat to load your connections.");
+      showConnectionMessage("walletConnections","Open this page from your Telegram private chat to load your wallet links.");
+      return;
+    }
+    const exchangeList=document.getElementById("exchangeConnections");
+    const walletList=document.getElementById("walletConnections");
+    if(exchangeList)exchangeList.textContent="Loading your exchange connections…";
+    if(walletList)walletList.textContent="Loading your wallet links…";
+    try{
+      const result=await apiPost({action:"live_connections",initData:tg.initData});
+      const exchanges=Array.isArray(result.exchanges)?result.exchanges:[];
+      const wallets=Array.isArray(result.wallets)?result.wallets:[];
+      if(exchangeList){
+        exchangeList.innerHTML=exchanges.length?exchanges.map(connection=>{
+          const id=htmlEscape(connection.id);
+          const provider=htmlEscape(String(connection.provider||"").toLowerCase());
+          return '<article class="connection-item">'+
+            '<b>'+htmlEscape(connection.label||String(connection.provider||"").toUpperCase())+'</b>'+
+            '<div class="connection-meta">'+htmlEscape(String(connection.environment||"").toUpperCase())+' · '+htmlEscape(connection.status||"active")+'</div>'+
+            '<div class="connection-id">ID · '+id+'</div>'+
+            '<div class="connection-actions">'+
+              '<button type="button" class="secondary" data-account-provider="'+provider+'" data-connection-id="'+id+'">Refresh balances</button>'+
+              '<button type="button" class="danger" data-revoke-exchange="'+id+'">Disconnect 9N8</button>'+
+            '</div>'+
+            '<div class="account-snapshot" id="account-'+id+'">Balance snapshot not refreshed in this session.</div>'+
+          '</article>';
+        }).join(""):'<p class="muted">No active exchange connections are saved to this Telegram account.</p>';
+      }
+      if(walletList){
+        walletList.innerHTML=wallets.length?wallets.map(wallet=>{
+          const id=htmlEscape(wallet.id);
+          return '<article class="connection-item">'+
+            '<b>'+htmlEscape(String(wallet.provider||"wallet").replaceAll("_"," ").toUpperCase())+'</b>'+
+            '<div class="connection-meta">'+htmlEscape(wallet.network||"")+' · '+htmlEscape(wallet.status||"")+' · '+htmlEscape(wallet.connection_type||"address link")+'</div>'+
+            '<div class="connection-id">'+htmlEscape(wallet.public_address||"")+'</div>'+
+            '<div class="connection-actions"><button type="button" class="danger" data-revoke-wallet="'+id+'">Revoke 9N8 link</button></div>'+
+          '</article>';
+        }).join(""):'<p class="muted">No linked wallet records are saved to this Telegram account.</p>';
+      }
+      exchangeList?.querySelectorAll("[data-account-provider]").forEach(button=>button.addEventListener("click",()=>refreshAccount(button.dataset.accountProvider,button.dataset.connectionId)));
+      exchangeList?.querySelectorAll("[data-revoke-exchange]").forEach(button=>button.addEventListener("click",()=>revokeExchange(button.dataset.revokeExchange)));
+      walletList?.querySelectorAll("[data-revoke-wallet]").forEach(button=>button.addEventListener("click",()=>revokeWallet(button.dataset.revokeWallet)));
+    }catch(error){
+      if(exchangeList)exchangeList.textContent="Could not load exchange connections: "+(error.message||"Request failed.");
+      if(walletList)walletList.textContent="Could not load linked wallets: "+(error.message||"Request failed.");
+    }
+  }
+  async function refreshAccount(provider,connectionId){
+    const box=document.getElementById("account-"+connectionId);
+    if(!box)return;
+    box.textContent="Refreshing account balances from the exchange…";
+    const action=provider==="binance"?"binance_account":provider==="okx"?"okx_account":"";
+    if(!action){box.textContent="Unsupported account provider.";return;}
+    try{
+      const result=await apiPost({action,connectionId,initData:tg.initData});
+      const lines=["Checked at "+new Date(result.updatedAt||Date.now()).toLocaleString()];
+      const quote=result.quoteBalance||{};
+      if(quote.asset)lines.push(quote.asset+" available · "+displayAmount(quote.free)+" · locked "+displayAmount(quote.locked));
+      if(result.accountEquityUsdApprox!=null)lines.push("Account equity (approx. USD) · "+displayAmount(result.accountEquityUsdApprox));
+      if(Array.isArray(result.balances)){
+        lines.push("Balances:");
+        for(const balance of result.balances.slice(0,20)){
+          lines.push(String(balance.asset||"") +" · free "+displayAmount(balance.free)+" · locked "+displayAmount(balance.locked));
+        }
+      }
+      if(result.liveOrdersEnabled===false)lines.push("9N8 order execution · LOCKED");
+      box.textContent=lines.join("\n");
+    }catch(error){box.textContent="Balance refresh failed: "+(error.message||"Exchange request failed.");}
+  }
+  async function revokeExchange(connectionId){
+    if(!window.confirm("Disconnect this exchange from 9N8? This deletes the stored API secret from 9N8 Vault. It does NOT revoke the API key at Binance/OKX; delete that key separately in the exchange's security settings."))return;
+    try{
+      const result=await apiPost({action:"exchange_revoke",connectionId,initData:tg.initData});
+      showConnectionMessage("exchangeStatus",result.message||"Exchange connection removed from 9N8.");
+      await refreshConnections();
+    }catch(error){showConnectionMessage("exchangeStatus","Disconnect failed: "+(error.message||"Request failed."));}
+  }
+  async function revokeWallet(connectionId){
+    if(!window.confirm("Remove this wallet link from 9N8? This removes only the 9N8 record; it does not change your wallet app or the blockchain."))return;
+    try{
+      const result=await apiPost({action:"wallet_revoke",connectionId,initData:tg.initData});
+      showConnectionMessage("walletStatus",result.message||"Wallet link removed from 9N8.");
+      await refreshConnections();
+    }catch(error){showConnectionMessage("walletStatus","Wallet removal failed: "+(error.message||"Request failed."));}
+  }
+  document.getElementById("refreshConnections").addEventListener("click",refreshConnections);
+  document.getElementById("refreshWallets").addEventListener("click",refreshConnections);
   document.getElementById("exchangeForm").addEventListener("submit",async function(event){
     event.preventDefault();
     if(!tg || !tg.initData){document.getElementById("exchangeStatus").textContent="Open this page using the Connect button in your 9N8 Telegram private chat.";return;}
@@ -247,6 +339,7 @@ button:disabled{opacity:.55;cursor:wait}
   });
   // Wallet QR scanning: scan locally, extract only a public address, and require
   // the user to review and submit it. No QR contents are uploaded or logged.
+  if(!isSetup && tg?.initData)refreshConnections();
   const qrPanel=document.getElementById("qrScannerPanel");
   const qrReader=document.getElementById("qrReader");
   const qrImageInput=document.getElementById("qrImageInput");
