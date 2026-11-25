@@ -23,6 +23,7 @@ class MarketType(StrEnum):
     EVM_DEX = "evm_dex"
     FOREX = "forex"
     COMMODITY = "commodity"
+    STOCK = "stock"
 
 
 class RunMode(StrEnum):
@@ -54,6 +55,8 @@ class MarketSnapshot:
     buy_volume_5m: float | None = None
     sell_volume_5m: float | None = None
     quote_volume_24h_usd: float | None = None
+    bid_size: float | None = None
+    ask_size: float | None = None
 
     @property
     def spread_pct(self) -> float:
