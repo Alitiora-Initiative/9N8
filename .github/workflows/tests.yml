@@ -54,5 +54,7 @@ jobs:
         run: deno test supabase/functions/n8-paper-worker/paper-engine_test.ts
       - name: Run Binance live connector safety tests
         run: deno test supabase/functions/telegram-bot-next/binance-live_test.ts
+      - name: Run OKX Spot read connector safety tests
+        run: deno test supabase/functions/telegram-bot-next/okx-live_test.ts
       - name: Type-check Supabase edge functions
         run: deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts
