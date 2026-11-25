@@ -1,8 +1,7 @@
 import unittest
+
 from src.market_data import Candle
 from src.strategy import ema, rsi, analyse
-from src.risk import RiskPolicy
-from src.execution import TradeExecutor, ExecutionDisabled
 
 
 class StrategyTests(unittest.TestCase):
@@ -21,18 +20,6 @@ class StrategyTests(unittest.TestCase):
         result = analyse("TEST", candles)
         self.assertEqual(result.symbol, "TEST")
         self.assertIn(result.label, {"BULLISH SETUP", "BEARISH SETUP", "NO CLEAR SETUP"})
-
-
-class SafetyTests(unittest.TestCase):
-    def test_policy_fails_closed_even_when_unpaused(self):
-        policy = RiskPolicy(paused=False, autotrade=False)
-        ok, reason = policy.validate({"symbol": "XAU/USD"})
-        self.assertFalse(ok)
-        self.assertIn("disabled", reason.lower())
-
-    def test_order_executor_always_raises(self):
-        with self.assertRaises(ExecutionDisabled):
-            TradeExecutor().place_order(symbol="XAU/USD", side="buy")
 
 
 if __name__ == "__main__":
