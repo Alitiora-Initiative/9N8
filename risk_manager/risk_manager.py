@@ -56,6 +56,11 @@ class RiskManager:
         paused, reason = await self.is_paused()
         if paused:
             raise RiskRejected(reason)
+        if await self.store.get_control("execution_reconciliation_required", "false") == "true":
+            raise RiskRejected(
+                "An execution outcome requires manual provider reconciliation. "
+                "Do not resume until orders, fills and balances have been inspected."
+            )
         if await self.store.get_control("kill_switch", "false") == "true":
             raise RiskRejected("Kill switch is active.")
         if await self.store.get_control("equity_monitor_failed", "false") == "true":
@@ -193,6 +198,11 @@ class RiskManager:
         await self.store.event("WARNING", "operator_pause", "New entries paused.")
 
     async def resume(self) -> None:
+        if await self.store.get_control("execution_reconciliation_required", "false") == "true":
+            raise RiskRejected(
+                "Cannot resume: a provider execution outcome requires manual reconciliation. "
+                "Verify exchange orders, fills and wallet balances first."
+            )
         paused, reason = await self.is_paused()
         if await self.store.get_control("kill_switch", "false") == "true" and await self.store.get_control("halt_until", ""):
             raise RiskRejected("Cannot resume before the mandatory 24-hour drawdown halt expires.")
