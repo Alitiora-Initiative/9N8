@@ -489,27 +489,41 @@ async function verifyAndSaveWallet(user: any, body: any): Promise<Response> {
 }
 async function revokeWalletSession(user: any, body: any): Promise<Response> {
   const row = await userRow(user);
-  const namespace = String(body?.namespace ?? "");
-  const address = clean(body?.address, 128);
-  const chainId = clean(body?.chainId, 64);
-  const network = clean(body?.network, 80);
-  if (!walletAddressValid(namespace, address) || !chainId || !network) {
-    return response({ ok: false, message: "Select a valid linked wallet before disconnecting." }, 400);
+  const connectionId = body?.connectionId ? clean(body.connectionId, 64) : "";
+  const now = new Date().toISOString();
+  let filter = "";
+  let auditMetadata: Obj = {};
+  if (connectionId) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(connectionId)) {
+      return response({ ok: false, message: "Select a valid wallet connection." }, 400);
+    }
+    filter = "id=eq." + encodeURIComponent(connectionId);
+    auditMetadata = { connection_id: connectionId };
+  } else {
+    const namespace = String(body?.namespace ?? "");
+    const address = clean(body?.address, 128);
+    const chainId = clean(body?.chainId, 64);
+    const network = clean(body?.network, 80);
+    if (!walletAddressValid(namespace, address) || !chainId || !network) {
+      return response({ ok: false, message: "Select a valid linked wallet before disconnecting." }, 400);
+    }
+    filter = "chain_namespace=eq." + encodeURIComponent(namespace) +
+      "&chain_id=eq." + encodeURIComponent(chainId) +
+      "&network=eq." + encodeURIComponent(network) +
+      "&public_address=eq." + encodeURIComponent(address);
+    auditMetadata = { namespace, network };
   }
   const changed = await db(
     "n8_wallet_connections?user_id=eq." + encodeURIComponent(row.id) +
-      "&chain_namespace=eq." + encodeURIComponent(namespace) +
-      "&chain_id=eq." + encodeURIComponent(chainId) +
-      "&network=eq." + encodeURIComponent(network) +
-      "&public_address=eq." + encodeURIComponent(address) + "&status=neq.revoked",
-    "PATCH", { status: "revoked", disconnected_at: new Date().toISOString(), auto_trade_enabled: false },
+      "&" + filter + "&status=neq.revoked",
+    "PATCH", { status: "revoked", disconnected_at: now, auto_trade_enabled: false },
     "return=representation"
   );
   if (!Array.isArray(changed) || changed.length === 0) {
-    return response({ ok: false, message: "No active linked wallet matched this account and address." }, 404);
+    return response({ ok: false, message: "No active linked wallet matched this Telegram account." }, 404);
   }
-  await audit(row.id, null, "wallet_session_revoked", "ok", { namespace, network });
-  return response({ ok: true, message: "Wallet link revoked. No future 9N8 wallet requests will be sent for this record." });
+  await audit(row.id, null, "wallet_session_revoked", "ok", auditMetadata);
+  return response({ ok: true, message: "9N8 wallet link revoked. This removes the 9N8 record; it does not revoke or delete anything inside the wallet application." });
 }
 function mask(address: string): string {
   return address.length > 14 ? address.slice(0, 6) + "..." + address.slice(-5) : address;
@@ -600,10 +614,12 @@ async function paperTerminalData(userId: string): Promise<Obj> {
     trades: Array.isArray(trades) ? trades : [],
   };
 }
-async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
+async function liveBinanceAccount(user: any, userId: string, connectionId = ""): Promise<Obj> {
   const rows = await db(
     "n8_exchange_connections?select=id,label,account_hint,permissions,last_validated_at&user_id=eq." +
-      encodeURIComponent(userId) + "&provider=eq.binance&environment=eq.live&status=eq.active&order=created_at.desc&limit=1"
+      encodeURIComponent(userId) + "&provider=eq.binance&environment=eq.live&status=eq.active" +
+      (connectionId ? "&id=eq." + encodeURIComponent(connectionId) : "") +
+      "&order=created_at.desc&limit=1"
   );
   const connection = Array.isArray(rows) ? rows[0] : null;
   if (!connection?.id) throw new Error("binance_live_connection_missing");
@@ -675,10 +691,12 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     updatedAt: observedAt,
   };
 }
-async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
+async function liveOkxAccount(user: any, userId: string, connectionId = ""): Promise<Obj> {
   const rows = await db(
     "n8_exchange_connections?select=id,label,account_hint,permissions,last_validated_at&user_id=eq." +
-      encodeURIComponent(userId) + "&provider=eq.okx&environment=eq.live&status=eq.active&order=created_at.desc&limit=1"
+      encodeURIComponent(userId) + "&provider=eq.okx&environment=eq.live&status=eq.active" +
+      (connectionId ? "&id=eq." + encodeURIComponent(connectionId) : "") +
+      "&order=created_at.desc&limit=1"
   );
   const connection = Array.isArray(rows) ? rows[0] : null;
   if (!connection?.id) throw new Error("okx_live_connection_missing");
@@ -824,10 +842,15 @@ async function handleMiniApp(body: any): Promise<Response> {
       const started = await startCryptoPaper(row.id, Number(user.id));
       return response({ ok: started.ok, message: started.message });
     }
-    if (body.action === "binance_account") {
-      return response({ ok: true, ...(await liveBinanceAccount(user, row.id)) });
-    }    if (body.action === "okx_account") {
-      return response({ ok: true, ...(await liveOkxAccount(user, row.id)) });
+    if (body.action === "binance_account" || body.action === "okx_account") {
+      const connectionId = body?.connectionId ? clean(body.connectionId, 64) : "";
+      if (connectionId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(connectionId)) {
+        return response({ ok: false, message: "Select a valid exchange connection." }, 400);
+      }
+      const account = body.action === "binance_account"
+        ? await liveBinanceAccount(user, row.id, connectionId)
+        : await liveOkxAccount(user, row.id, connectionId);
+      return response({ ok: true, ...account });
     }
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
@@ -838,7 +861,7 @@ async function handleMiniApp(body: any): Promise<Response> {
           encodeURIComponent(row.id) + "&status=eq.active&order=created_at.desc"
       );
       const walletRows = await db(
-        "n8_wallet_connections?select=id,provider,network,public_address,status,connection_type&user_id=eq." +
+        "n8_wallet_connections?select=id,provider,chain_namespace,chain_id,network,public_address,status,connection_type&user_id=eq." +
           encodeURIComponent(row.id) + "&status=in.(verified,watch_only)&order=created_at.desc"
       );
       return response({
