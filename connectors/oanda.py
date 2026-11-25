@@ -77,6 +77,11 @@ class OandaConnector(ExecutionConnector):
     async def get_balance(self) -> AccountState:
         data=await self._request("GET",f"/v3/accounts/{self.account_id}/summary")
         account=data["account"]
+        if str(account.get("currency", "")).upper() != "USD":
+            raise ConnectorUnavailable(
+                "OANDA risk sizing currently requires a USD-denominated account; "
+                "account-currency conversion is not enabled."
+            )
         return AccountState(self.venue,float(account["NAV"]),float(account["marginAvailable"]),
                             float(account["balance"]))
 
