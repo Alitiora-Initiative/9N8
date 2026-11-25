@@ -48,6 +48,7 @@ class Config:
     )
     timeframe: str = os.getenv("TIMEFRAME", "15min").strip()
     output_size: int = _int_env("OUTPUT_SIZE", 80, 40, 500)
+    signal_scan_interval_seconds: int = _int_env("SIGNAL_SCAN_INTERVAL_SECONDS", 900, 60, 86400)
 
     # Provider: "metaapi" for cloud/mobile access; "desktop" for local Windows MT5.
     mt5_provider: str = os.getenv("MT5_PROVIDER", "metaapi").strip().lower()
