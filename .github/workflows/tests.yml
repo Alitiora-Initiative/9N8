@@ -33,8 +33,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
       - name: Install web dependencies
         working-directory: web
         run: npm install --no-audit --no-fund
@@ -56,5 +54,7 @@ jobs:
         run: deno test supabase/functions/telegram-bot-next/binance-live_test.ts
       - name: Run OKX Spot read connector safety tests
         run: deno test supabase/functions/telegram-bot-next/okx-live_test.ts
+      - name: Run Jupiter Swap V2 safety tests
+        run: deno test supabase/functions/telegram-bot-next/jupiter-live_test.ts
       - name: Type-check Supabase edge functions
         run: deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts
