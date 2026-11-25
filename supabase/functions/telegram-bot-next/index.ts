@@ -1367,7 +1367,6 @@ async function jupiterTriggerCreateDca(row: any, body: any): Promise<Response> {
     inputAmount,
     orderCount,
     intervalSeconds,
-    orderType: "time_based",
   };
   try {
     const result = await triggerAccess(wallet, accessToken, "/trigger/v2/orders/dca", "POST", requestBody);
