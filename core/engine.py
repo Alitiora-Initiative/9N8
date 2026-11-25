@@ -6,7 +6,7 @@ import logging
 import math
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from config import Settings
@@ -345,7 +345,7 @@ class TradingEngine:
             15,
             min(600, int(self.cfg["execution"].get("approval_timeout_seconds", 120))),
         )
-        expires_at = datetime.now(timezone.utc) + __import__("datetime").timedelta(seconds=timeout_seconds)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
         payload = {
             "intent": {
                 "venue": proposed.venue,
@@ -564,7 +564,10 @@ class TradingEngine:
                 {"order_id": receipt.order_id, "tx_hash": receipt.tx_hash, "approval_id": approval_id},
             )
             if self.notifier:
-                await self.notifier.send(message)
+                try:
+                    await self.notifier.send(message)
+                except Exception as notify_exc:
+                    log.warning("Trade fill notification failed (%s).", type(notify_exc).__name__)
             return message
         except Exception as exc:
             await self.store.decide_pending_approval(
