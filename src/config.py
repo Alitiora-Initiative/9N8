@@ -40,8 +40,8 @@ def _float_env(name: str, default: float, minimum: float, maximum: float) -> flo
 @dataclass(frozen=True)
 class Config:
     telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    owner_id: int = _int_env("TELEGRAM_OWNER_ID", 0, 0, 2**63 - 1)
-    twelve_data_api_key: str = os.getenv("TWELVEDATA_API_KEY", "").strip()
+    owner_id: int = _int_env("TELEGRAM_OWNER_ID", _int_env("TELEGRAM_CHAT_ID", 0, 0, 2**63 - 1), 0, 2**63 - 1)
+    twelve_data_api_key: str = (os.getenv("TWELVEDATA_API_KEY", "").strip() or os.getenv("TWELVE_DATA_API_KEY", "").strip())
     mode: str = os.getenv("MODE", "paper").strip().lower()
     watchlist_raw: str = os.getenv(
         "WATCHLIST", "XAU/USD,EUR/USD,GBP/USD,USD/JPY,XAG/USD"
