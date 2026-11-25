@@ -154,3 +154,109 @@ async def test_position_metadata_round_trips_through_store(tmp_path):
         assert again["metadata"]["paper_fees_paid"] == pytest.approx(0.25)
     finally:
         await store.close()
+
+
+@pytest.mark.asyncio
+async def test_paper_fill_atomically_saves_cash_trade_and_position(tmp_path):
+    store = TradeStore(tmp_path / "paper-atomic.sqlite3")
+    await store.open()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        trade = {
+            "client_order_id": "paper-entry-1",
+            "venue": "bybit",
+            "symbol": "BTC/USDT",
+            "market_type": "crypto_spot",
+            "side": "buy",
+            "status": "open",
+            "mode": "paper",
+            "quantity": 0.001,
+            "average_price": 50000.0,
+            "entry_timestamp": now,
+            "stop_loss": 49000.0,
+            "take_profit": 53000.0,
+            "commission_usd": 0.05,
+            "metadata": {"paper": True},
+        }
+        position = {
+            "position_key": "bybit:BTC/USDT",
+            "venue": "bybit",
+            "symbol": "BTC/USDT",
+            "market_type": "crypto_spot",
+            "side": "buy",
+            "quantity": 0.001,
+            "entry_price": 50000.0,
+            "mark_price": 50000.0,
+            "stop_loss": 49000.0,
+            "take_profit": 53000.0,
+            "metadata": {"paper_fees_paid": 0.05},
+            "opened_at": now,
+            "updated_at": now,
+        }
+        await store.persist_paper_fill(trade, 949.95, position=position)
+        assert await store.get_control("paper_cash") == "949.95"
+        assert len(await store.positions()) == 1
+        assert (await store.positions())[0]["metadata"]["paper_fees_paid"] == 0.05
+        assert (await store.query_trades(10))[0]["client_order_id"] == "paper-entry-1"
+
+        close = dict(trade)
+        close.update({
+            "client_order_id": "paper-exit-1",
+            "side": "sell",
+            "status": "closed",
+            "quantity": 0.001,
+            "average_price": 51000.0,
+            "exit_timestamp": datetime.now(timezone.utc).isoformat(),
+            "realized_pnl_usd": 0.9,
+        })
+        await store.persist_paper_fill(
+            close, 1000.9, remove_position_key="bybit:BTC/USDT"
+        )
+        assert await store.get_control("paper_cash") == "1000.9"
+        assert await store.positions() == []
+        assert len(await store.query_trades(10)) == 2
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_paper_fill_transaction_rolls_back_on_invalid_position_metadata(tmp_path):
+    store = TradeStore(tmp_path / "paper-rollback.sqlite3")
+    await store.open()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        trade = {
+            "client_order_id": "paper-rollback",
+            "venue": "bybit",
+            "symbol": "BTC/USDT",
+            "market_type": "crypto_spot",
+            "side": "buy",
+            "status": "open",
+            "mode": "paper",
+            "quantity": 0.001,
+            "average_price": 50000.0,
+            "entry_timestamp": now,
+            "metadata": {},
+        }
+        position = {
+            "position_key": "bybit:BTC/USDT",
+            "venue": "bybit",
+            "symbol": "BTC/USDT",
+            "market_type": "crypto_spot",
+            "side": "buy",
+            "quantity": 0.001,
+            "entry_price": 50000.0,
+            "mark_price": 50000.0,
+            "stop_loss": 49000.0,
+            "take_profit": 53000.0,
+            "metadata": {"not_json": object()},
+            "opened_at": now,
+            "updated_at": now,
+        }
+        with pytest.raises(TypeError):
+            await store.persist_paper_fill(trade, 949.95, position=position)
+        assert await store.query_trades(10) == []
+        assert await store.positions() == []
+        assert await store.get_control("paper_cash", "missing") == "missing"
+    finally:
+        await store.close()
