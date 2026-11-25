@@ -10,6 +10,7 @@ from urllib.parse import quote
 import aiohttp
 
 from connectors.base import ExecutionConnector
+from connectors.retry import RetryableReadError, retry_read
 from models import AccountState, Candle, ConnectorUnavailable, MarketSnapshot, MarketType, OpenPosition, Side, TradeIntent, TradeReceipt
 
 log = logging.getLogger(__name__)
@@ -47,12 +48,21 @@ class OandaConnector(ExecutionConnector):
     async def _request(self, method: str, path: str, *, params: dict | None = None, body: dict | None = None) -> dict:
         if not self.session:
             raise ConnectorUnavailable("OANDA connector is not connected.")
-        async with self.session.request(method,self.base+path,params=params,json=body) as response:
+        is_write = method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+        timeout = aiohttp.ClientTimeout(total=5 if is_write else 10, connect=3 if is_write else 5)
+        async with self.session.request(
+            method, self.base + path, params=params, json=body, timeout=timeout
+        ) as response:
             payload = await response.json(content_type=None)
+            if response.status in {408, 425, 429, 500, 502, 503, 504}:
+                raise RetryableReadError(f"OANDA transient HTTP {response.status}.")
             if response.status >= 400:
-                raise ConnectorUnavailable(f"OANDA HTTP {response.status}: {payload.get('errorMessage','request failed')}")
+                raise ConnectorUnavailable(
+                    f"OANDA HTTP {response.status}: {payload.get('errorMessage', 'request failed')}"
+                )
             return payload
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_snapshot(self, symbol: str) -> MarketSnapshot:
         data=await self._request("GET",f"/v3/accounts/{self.account_id}/pricing",params={"instruments":symbol})
         prices=data.get("prices",[])
@@ -62,6 +72,7 @@ class OandaConnector(ExecutionConnector):
         bid=float(p["bids"][0]["price"]); ask=float(p["asks"][0]["price"])
         return MarketSnapshot(self.venue,symbol,MarketType.FOREX,bid,ask,(bid+ask)/2)
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         granularity = {"1h":"H1","5m":"M5","15m":"M15","1d":"D"}.get(timeframe,timeframe)
         data=await self._request("GET",f"/v3/instruments/{quote(symbol,safe='')}/candles",
@@ -74,6 +85,7 @@ class OandaConnector(ExecutionConnector):
                                  float(m["o"]),float(m["h"]),float(m["l"]),float(m["c"]),float(c.get("volume",0))))
         return result
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def get_balance(self) -> AccountState:
         data=await self._request("GET",f"/v3/accounts/{self.account_id}/summary")
         account=data["account"]
@@ -85,6 +97,7 @@ class OandaConnector(ExecutionConnector):
         return AccountState(self.venue,float(account["NAV"]),float(account["marginAvailable"]),
                             float(account["balance"]))
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def get_open_positions(self) -> list[OpenPosition]:
         data=await self._request("GET",f"/v3/accounts/{self.account_id}/openTrades")
         result=[]
