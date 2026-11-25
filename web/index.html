@@ -40,41 +40,59 @@ button:disabled{opacity:.55;cursor:wait}
 .footer{font-size:12px;color:#7f93ab;text-align:center;margin:28px 0}
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #315344;border-radius:999px;padding:5px 9px;color:#9de6c1;font-size:11px;font-weight:700}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-@media(max-width:520px){body{padding:16px 12px 36px}.card{padding:16px}.grid{grid-template-columns:1fr}.tag{font-size:10px}}
+.connection-list{border-top:1px solid #34465f;margin-top:20px;padding-top:16px}
+.connection-list-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.connection-list-head h3{font-size:15px;margin:0}
+.compact-button{width:auto;padding:8px 12px;margin:0;font-size:12px}
+.connection-items{display:grid;gap:10px;margin:12px 0}
+.connection-item{padding:14px;border:1px solid #324861;border-radius:12px;background:#0b1524;overflow-wrap:anywhere}
+.connection-item b{color:#edf2f7}
+.connection-meta{font-size:12px;color:#9eb0c6;margin:5px 0;line-height:1.5}
+.connection-id{font:11px ui-monospace,monospace;color:#8193a9;overflow-wrap:anywhere}
+.connection-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.connection-actions button{margin:0;padding:10px 12px;font-size:12px}
+.connection-actions .danger{background:#45242a;border:1px solid #83414c;color:#ffd8dc}
+.account-snapshot{border-top:1px solid #2c3f56;margin-top:10px;padding-top:10px;font-size:12px;color:#b7c7d9;white-space:pre-wrap;line-height:1.5}
+@media(max-width:520px){body{padding:16px 12px 36px}.card{padding:16px}.grid{grid-template-columns:1fr}.tag{font-size:10px}.connection-actions{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <main>
-  <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">SECURE · DEMO FIRST</div></div>
+  <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">SECURE · ACCOUNT ACCESS</div></div>
   <section id="connectPage">
     <span class="pill">PRIVATE ACCOUNT CONNECTIONS</span>
     <h1>Connect your accounts.</h1>
-    <p>Connect exchange demo accounts and add public wallet addresses from your Telegram private chat. Your personal connections are never available to group members.</p>
+    <p>Connect your own Binance Spot or OKX account for secure account reads, or link an EVM/Solana wallet. All connections are private to your Telegram account. 9N8's automated paper trading stays virtual; this connection page does not place real orders.</p>
     <div class="tabs" role="tablist">
       <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Exchange</button>
       <button class="tab" id="walletTab" role="tab" aria-selected="false" type="button">Wallet watch</button>
     </div>
     <section class="card" id="exchangePanel">
       <h2>Exchange connection</h2>
-      <p class="muted">Use an API key you create yourself on the exchange. Select demo or testnet only. We verify access before encrypting and saving the credentials.</p>
-      <div class="notice">Never enable withdrawals. Do not use a live-trading API key here. This version only validates account access and does not place trades.</div>
+      <p class="muted">Use a dedicated API key you create in your own exchange account. 9N8 validates private account access and encrypts the credential in Supabase Vault. It does not submit orders.</p>
+      <div class="notice">Use Binance Spot with read + Spot permissions only, or an OKX read-only key. Disable withdrawals, internal transfers, futures, margin and options. OKX read-only account access is supported; 9N8 does not execute trades from these keys. For complete key safety, restrict by IP where your exchange supports it.</div>
       <form id="exchangeForm" autocomplete="off">
         <label for="provider">Exchange</label>
         <select id="provider" required>
-          <option value="okx">OKX Demo Trading</option>
-          <option value="binance">Binance Spot Testnet</option>
-          <option value="bybit">Bybit Demo Trading</option>
+          <option value="okx">OKX Spot account access</option>
+          <option value="binance">Binance Spot account access</option>
         </select>
         <label for="environment">Environment</label>
-        <select id="environment" required><option value="demo">Demo Trading</option></select>
+        <select id="environment" required><option value="live">Live exchange account · read/access only</option></select>
         <div class="grid">
           <div><label for="apiKey">API key</label><input id="apiKey" type="password" maxlength="512" autocomplete="off" required></div>
           <div><label for="apiSecret">API secret</label><input id="apiSecret" type="password" maxlength="1024" autocomplete="off" required></div>
         </div>
         <div id="passphraseWrap"><label for="passphrase">OKX API passphrase</label><input id="passphrase" type="password" maxlength="256" autocomplete="off" required></div>
+        <div id="okxRegionWrap"><label for="okxRegion">OKX account region</label><select id="okxRegion"><option value="global">Global</option><option value="us">United States</option><option value="eea">EEA</option></select></div>
         <button id="saveExchange" type="submit">Verify and save securely</button>
         <div class="status" id="exchangeStatus" role="status"></div>
       </form>
+      <section class="connection-list">
+        <div class="connection-list-head"><h3>Your exchange connections</h3><button class="secondary compact-button" id="refreshConnections" type="button">Refresh</button></div>
+        <div id="exchangeConnections" class="connection-items"><p class="muted">Open this page from your Telegram private chat to load your connections.</p></div>
+        <p class="muted">Disconnecting here deletes the stored 9N8 Vault secret. It does not delete the API key at Binance or OKX; revoke that key in the exchange's security settings too.</p>
+      </section>
     </section>
     <section class="card hidden" id="walletPanel">
       <h2>Wallet sessions and address watch</h2>
@@ -123,6 +141,11 @@ button:disabled{opacity:.55;cursor:wait}
         <button id="saveWallet" type="submit">Save watch-only address</button>
         <div class="status" id="walletStatus" role="status"></div>
       </form>
+      <section class="connection-list">
+        <div class="connection-list-head"><h3>Your linked wallets</h3><button class="secondary compact-button" id="refreshWallets" type="button">Refresh</button></div>
+        <div id="walletConnections" class="connection-items"><p class="muted">Open this page from your Telegram private chat to load your wallet links.</p></div>
+        <p class="muted">Removing a link removes it from 9N8. It does not disable or delete the wallet inside Phantom, Trust Wallet or MetaMask.</p>
+      </section>
     </section>
   </section>
   <section id="setupPage" class="hidden">
@@ -140,7 +163,7 @@ button:disabled{opacity:.55;cursor:wait}
     </div>
     <p class="muted">The page sends the secret over HTTPS to 9N8 for the Telegram setWebhook call. It does not save it in browser storage.</p>
   </section>
-  <div class="footer">9N8 · Independent accounts · Demo/testnet only · No withdrawals · No seed phrases</div>
+  <div class="footer">9N8 · Private account access · Virtual paper automation · No wallet keys · No withdrawals</div>
 </main>
 <script>
 (function(){
@@ -169,15 +192,17 @@ button:disabled{opacity:.55;cursor:wait}
   const env=document.getElementById("environment");
   const passphraseWrap=document.getElementById("passphraseWrap");
   const passphrase=document.getElementById("passphrase");
+  const okxRegionWrap=document.getElementById("okxRegionWrap");
   function refreshProvider(){
     const v=provider.value;
     env.innerHTML="";
     const option=document.createElement("option");
-    option.value=v==="binance"?"testnet":"demo";
-    option.textContent=v==="binance"?"Spot Testnet":"Demo Trading";
+    option.value="live";
+    option.textContent="Live exchange account · read/access only";
     env.appendChild(option);
     passphraseWrap.classList.toggle("hidden",v!=="okx");
     passphrase.required=v==="okx";
+    okxRegionWrap.classList.toggle("hidden",v!=="okx");
   }
   provider.addEventListener("change",refreshProvider);
   refreshProvider();
@@ -198,16 +223,19 @@ button:disabled{opacity:.55;cursor:wait}
     if(!tg || !tg.initData){document.getElementById("exchangeStatus").textContent="Open this page using the Connect button in your 9N8 Telegram private chat.";return;}
     const button=document.getElementById("saveExchange");
     const status=document.getElementById("exchangeStatus");
-    button.disabled=true;status.textContent="Checking the selected demo/testnet account…";
+    button.disabled=true;status.textContent="Validating your live account access; no order will be sent…";
     const credentials={
       apiKey:document.getElementById("apiKey").value.trim(),
       apiSecret:document.getElementById("apiSecret").value.trim()
     };
-    if(provider.value==="okx")credentials.passphrase=passphrase.value;
+    if(provider.value==="okx"){
+      credentials.passphrase=passphrase.value;
+      credentials.region=document.getElementById("okxRegion").value;
+    }
     try{
       const result=await apiPost({action:"connect_exchange",initData:tg.initData,provider:provider.value,environment:env.value,credentials});
-      status.textContent="Connected: "+result.label+". Credentials encrypted and saved; they will not be displayed again.";
-      this.reset();refreshProvider();
+      status.textContent="Connected: "+result.label+". Credential stored securely. This connection does not enable real order placement.";
+      this.reset();refreshProvider();await refreshConnections();
     }catch(error){status.textContent=error.message||"Connection failed.";}
     finally{
       credentials.apiKey="";credentials.apiSecret="";credentials.passphrase="";
