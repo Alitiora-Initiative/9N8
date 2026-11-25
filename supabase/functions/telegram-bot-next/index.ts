@@ -125,7 +125,7 @@ async function verifyInitData(raw: string): Promise<any> {
   const entries = Array.from(p.entries()).filter(([key]) => key !== "hash");
   entries.sort(([a], [b]) => a.localeCompare(b));
   const check = entries.map(([key, value]) => key + "=" + value).join("\n");
-  const derived = await mac(enc.encode("WebAppData"), TOKEN);
+  const derived = await mac(enc.encode(TOKEN), "WebAppData");
   const calculated = hex(await mac(derived, check));
   if (!same(calculated, supplied)) throw new Error("telegram_auth_invalid");
   let user: any;
@@ -337,7 +337,7 @@ async function handleMiniApp(body: any): Promise<Response> {
           !walletAddressValid(namespace, address) || !network || !chainId) {
         throw new Error("wallet_address_or_network_invalid");
       }
-      await db("n8_wallet_connections", "POST", {
+      await db("n8_wallet_connections?on_conflict=user_id,chain_namespace,network,public_address", "POST", {
         user_id: row.id, provider, chain_namespace: namespace, chain_id: chainId,
         network, public_address: address, status: "watch_only",
       }, "resolution=merge-duplicates,return=minimal");
