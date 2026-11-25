@@ -1,4 +1,10 @@
 import { isAddress as isEvmAddress, verifyMessage as verifyEvmMessage } from "npm:viem@2.58.4";
+import { PublicKey, VersionedTransaction } from "npm:@solana/web3.js@1.98.4";
+import {
+  assertSolanaOrder, base58Encode, base64ToBytes, decimalToRaw,
+  jupiterApi, MAX_SWAP_SOL_LAMPORTS, DAILY_SWAP_SOL_LAMPORTS,
+  priceImpactFraction, rawToDecimal, sha256HexBytes, SOL_MINT, SWAP_QUOTE_TTL_SECONDS,
+} from "./jupiter-live.ts";
 import { validateOkxSpotRead, type OkxRegion } from "./okx-live.ts";
 import {
   binanceSignedRequest,
@@ -13,6 +19,8 @@ import {
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
+const JUPITER_API_KEY = (Deno.env.get("JUPITER_API_KEY") ?? "").trim();
+const SOLANA_RPC_URL = (Deno.env.get("SOLANA_RPC_URL") ?? "https://api.mainnet-beta.solana.com").trim();
 const HOOK_SECRET = (Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "").trim();
 const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") ?? "").trim().replace(/\/+$/, "");
 const SUPABASE_SERVICE_KEY = (() => {
@@ -523,7 +531,7 @@ async function revokeWalletSession(user: any, body: any): Promise<Response> {
     return response({ ok: false, message: "No active linked wallet matched this Telegram account." }, 404);
   }
   await audit(row.id, null, "wallet_session_revoked", "ok", auditMetadata);
-  return response({ ok: true, message: "9N8 wallet link revoked. This removes the 9N8 record; it does not revoke or delete anything inside the wallet application." });
+  return response({ ok: true, message: "9N8 wallet link revoked. This only removes the 9N8 record; it does not change the wallet application or blockchain." });
 }
 function mask(address: string): string {
   return address.length > 14 ? address.slice(0, 6) + "..." + address.slice(-5) : address;
@@ -758,20 +766,831 @@ async function liveOkxAccount(user: any, userId: string, connectionId = ""): Pro
     liveOrdersEnabled: false,
   };
 }
+
+async function verifiedSolanaWallet(userId: string, walletConnectionId: string, address: string) {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address) || !walletConnectionId) {
+    throw new Error("verified_solana_wallet_required");
+  }
+  const rows = await db(
+    "n8_wallet_connections?select=id,user_id,provider,chain_namespace,chain_id,network,public_address,status,verified_at,connection_type&id=eq." +
+      encodeURIComponent(walletConnectionId) + "&user_id=eq." + encodeURIComponent(userId) +
+      "&chain_namespace=eq.solana&chain_id=eq.mainnet-beta&network=eq.Solana%20Mainnet&status=eq.verified&limit=1"
+  );
+  const wallet = Array.isArray(rows) ? rows[0] : null;
+  if (!wallet || wallet.public_address !== address || !wallet.verified_at ||
+      !["phantom", "trust_wallet", "walletconnect"].includes(String(wallet.provider)) ||
+      !["walletconnect_session", "injected_session"].includes(String(wallet.connection_type))) {
+    throw new Error("verified_solana_wallet_required");
+  }
+  return wallet;
+}
+
+async function solanaMintDecimals(mint: string): Promise<number> {
+  let publicKey: PublicKey;
+  try { publicKey = new PublicKey(mint); } catch { throw new Error("solana_mint_invalid"); }
+  const canonical = publicKey.toBase58();
+  if (canonical !== mint) throw new Error("solana_mint_invalid");
+  if (canonical === SOL_MINT) return 9;
+  const rpc = await fetch(SOLANA_RPC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "getTokenSupply",
+      params: [canonical, { commitment: "confirmed" }],
+    }),
+    cache: "no-store",
+    credentials: "omit",
+  });
+  const payload = await rpc.json().catch(() => ({}));
+  const decimals = Number(payload?.result?.value?.decimals);
+  const supply = BigInt(String(payload?.result?.value?.amount ?? "0"));
+  if (!rpc.ok || payload?.error || !Number.isInteger(decimals) ||
+      decimals < 0 || decimals > 18 || supply <= 0n) {
+    throw new Error("solana_mint_not_found_or_not_a_token");
+  }
+  return decimals;
+}
+
+async function rpcSignatureStatus(signature: string): Promise<any> {
+  const rpc = await fetch(SOLANA_RPC_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0", id: 1, method: "getSignatureStatuses",
+      params: [[signature], { searchTransactionHistory: true }],
+    }),
+    cache: "no-store",
+    credentials: "omit",
+  });
+  const payload = await rpc.json().catch(() => ({}));
+  if (!rpc.ok || payload?.error) throw new Error("solana_status_unavailable");
+  return payload?.result?.value?.[0] ?? null;
+}
+
+async function createJupiterSwapOrder(user: any, row: any, body: any): Promise<Response> {
+  requireJupiterApiKey();
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const side = String(body?.side ?? "").toLowerCase();
+  if (!["buy", "sell"].includes(side)) throw new Error("swap_side_invalid");
+  const tokenMint = clean(body?.tokenMint, 64);
+  if (!tokenMint || tokenMint === SOL_MINT) throw new Error("swap_token_mint_invalid");
+
+  const tokenDecimals = await solanaMintDecimals(tokenMint);
+  const inputMint = side === "buy" ? SOL_MINT : tokenMint;
+  const outputMint = side === "buy" ? tokenMint : SOL_MINT;
+  const inputDecimals = side === "buy" ? 9 : tokenDecimals;
+  const outputDecimals = side === "buy" ? tokenDecimals : 9;
+  const amountRaw = decimalToRaw(String(body?.amount ?? ""), inputDecimals);
+  const query = new URLSearchParams({
+    inputMint,
+    outputMint,
+    amount: amountRaw.toString(),
+    taker: wallet.public_address,
+  });
+  const order = await jupiterApi<any>("/swap/v2/order?" + query.toString(), {
+    apiKey: JUPITER_API_KEY || undefined,
+  });
+  assertSolanaOrder(order, wallet.public_address);
+  const impact = priceImpactFraction(order.priceImpactPct ?? 0);
+  let tx: VersionedTransaction;
+  try {
+    tx = VersionedTransaction.deserialize(base64ToBytes(String(order.transaction)));
+  } catch {
+    throw new Error("jupiter_transaction_decode_failed");
+  }
+  if (tx.message.version !== 0) throw new Error("jupiter_transaction_version_unsupported");
+  const payer = tx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "";
+  if (payer !== wallet.public_address) throw new Error("jupiter_transaction_fee_payer_mismatch");
+
+  // Keep a conservative per-order and rolling 24-hour SOL-equivalent cap until
+  // the connector's certification process has completed.
+  const solEquivalent = side === "buy" ? amountRaw : BigInt(String(order.outAmount));
+  if (solEquivalent > MAX_SWAP_SOL_LAMPORTS) throw new Error("swap_per_order_cap_exceeded");
+  const history = await db(
+    "n8_jupiter_swaps?select=sol_lamports_equivalent,status,expires_at,created_at&user_id=eq." +
+      encodeURIComponent(row.id) + "&created_at=gte." +
+      encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) +
+      "&order=created_at.desc&limit=25"
+  );
+  const prior = Array.isArray(history) ? history : [];
+  if (prior.some((item: any) =>
+    ["executing", "unknown"].includes(String(item.status)) ||
+    (item.status === "quote_ready" && new Date(item.expires_at).getTime() > Date.now())
+  )) throw new Error("swap_previous_request_unresolved");
+  const dailyTotal = prior
+    .filter((item: any) => ["success", "executing", "unknown"].includes(String(item.status)))
+    .reduce((sum: bigint, item: any) => sum + BigInt(String(item.sol_lamports_equivalent ?? "0")), 0n);
+  if (dailyTotal + solEquivalent > DAILY_SWAP_SOL_LAMPORTS) throw new Error("swap_daily_cap_exceeded");
+
+  const messageHash = await sha256HexBytes(tx.message.serialize());
+  const expiresAt = new Date(Date.now() + SWAP_QUOTE_TTL_SECONDS * 1000).toISOString();
+  const stored = await db("n8_jupiter_swaps", "POST", {
+    user_id: row.id,
+    wallet_connection_id: wallet.id,
+    request_id: String(order.requestId),
+    input_mint: inputMint,
+    output_mint: outputMint,
+    input_amount_raw: String(order.inAmount),
+    output_amount_raw: String(order.outAmount),
+    minimum_output_raw: String(order.otherAmountThreshold),
+    input_decimals: inputDecimals,
+    output_decimals: outputDecimals,
+    router: String(order.router ?? "unknown"),
+    price_impact_pct: impact,
+    sol_lamports_equivalent: solEquivalent.toString(),
+    transaction_message_sha256: messageHash,
+    status: "quote_ready",
+    expires_at: expiresAt,
+    quote_metadata: {
+      mode: order.mode ?? "ultra",
+      feeBps: order.feeBps ?? null,
+      feeMint: order.feeMint ?? null,
+      lastValidBlockHeight: order.lastValidBlockHeight ?? null,
+      expireAt: order.expireAt ?? null,
+    },
+  }, "return=representation");
+  const saved = Array.isArray(stored) ? stored[0] : null;
+  if (!saved?.id) throw new Error("jupiter_quote_storage_failed");
+  await audit(row.id, null, "jupiter_swap_quote_created", "ok", {
+    side, order_id: saved.id, request_id: order.requestId, router: order.router, price_impact_pct: impact,
+  });
+  return response({
+    ok: true,
+    orderId: saved.id,
+    requestId: order.requestId,
+    side,
+    tokenMint,
+    inputMint,
+    outputMint,
+    inputAmount: rawToDecimal(String(order.inAmount), inputDecimals),
+    outputAmount: rawToDecimal(String(order.outAmount), outputDecimals),
+    minimumOutput: rawToDecimal(String(order.otherAmountThreshold), outputDecimals),
+    inputAmountRaw: String(order.inAmount),
+    outputAmountRaw: String(order.outAmount),
+    outputDecimals,
+    router: order.router,
+    priceImpactPct: impact,
+    feeBps: order.feeBps ?? null,
+    expiresAt,
+    transaction: order.transaction,
+    transactionVersion: 0,
+    lastValidBlockHeight: order.lastValidBlockHeight ?? null,
+    liveExecutionCertification: "locked_until_passed",
+  });
+}
+
+async function executeJupiterSwap(user: any, row: any, body: any): Promise<Response> {
+  const orderId = clean(body?.orderId, 64);
+  const requestId = clean(body?.requestId, 128);
+  const signedTransaction = clean(body?.signedTransaction, 120000);
+  if (!orderId || !requestId || !signedTransaction) throw new Error("swap_signed_payload_missing");
+
+  const rows = await db(
+    "n8_jupiter_swaps?select=*&id=eq." + encodeURIComponent(orderId) +
+      "&request_id=eq." + encodeURIComponent(requestId) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&limit=1"
+  );
+  const saved = Array.isArray(rows) ? rows[0] : null;
+  if (!saved) throw new Error("swap_quote_not_found");
+  if (saved.status !== "quote_ready") throw new Error("swap_request_already_claimed_or_final");
+  if (new Date(saved.expires_at).getTime() <= Date.now()) {
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.quote_ready",
+      "PATCH", { status: "expired", updated_at: new Date().toISOString() }, "return=minimal"
+    );
+    throw new Error("swap_quote_expired");
+  }
+
+  const certificationRows = await db(
+    "n8_jupiter_connector_certification?select=status,live_manual_wallet_execution_enabled&provider=eq.jupiter_swap_v2&limit=1"
+  );
+  const certification = Array.isArray(certificationRows) ? certificationRows[0] : null;
+  if (!certification || certification.status !== "passed" ||
+      certification.live_manual_wallet_execution_enabled !== true) {
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) + "&user_id=eq." + encodeURIComponent(row.id),
+      "PATCH", { status: "failed", result_payload: { error: "jupiter_execution_certification_locked" }, updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    throw new Error("jupiter_execution_certification_locked");
+  }
+  const walletRows = await db(
+    "n8_wallet_connections?select=id,public_address,status,chain_namespace,chain_id,network,verified_at&id=eq." +
+      encodeURIComponent(String(saved.wallet_connection_id)) + "&user_id=eq." +
+      encodeURIComponent(row.id) + "&status=eq.verified&limit=1"
+  );
+  const wallet = Array.isArray(walletRows) ? walletRows[0] : null;
+  if (!wallet || !wallet.verified_at || wallet.chain_namespace !== "solana" ||
+      wallet.chain_id !== "mainnet-beta") throw new Error("verified_solana_wallet_required");
+
+  let tx: VersionedTransaction;
+  try { tx = VersionedTransaction.deserialize(base64ToBytes(signedTransaction)); }
+  catch { throw new Error("swap_signed_transaction_invalid"); }
+  if (tx.message.version !== 0) throw new Error("jupiter_transaction_version_unsupported");
+  const payer = tx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "";
+  if (payer !== wallet.public_address) throw new Error("swap_signed_transaction_owner_mismatch");
+  const messageBytes = tx.message.serialize();
+  const messageHash = await sha256HexBytes(messageBytes);
+  if (messageHash !== saved.transaction_message_sha256) throw new Error("swap_signed_transaction_changed");
+  const signature = tx.signatures?.[0];
+  if (!signature || signature.length !== 64 || signature.every((v: number) => v === 0)) {
+    throw new Error("wallet_transaction_signature_missing");
+  }
+  const publicKeyData = new Uint8Array(new PublicKey(wallet.public_address).toBytes()).buffer;
+  const signatureData = new Uint8Array(signature).buffer;
+  const messageData = new Uint8Array(messageBytes).buffer;
+  const publicKey = await crypto.subtle.importKey("raw", publicKeyData, { name: "Ed25519" }, false, ["verify"]);
+  if (!await crypto.subtle.verify("Ed25519", publicKey, signatureData, messageData)) {
+    throw new Error("wallet_transaction_signature_invalid");
+  }
+
+  const encodedSignature = base58Encode(signature);
+  const now = new Date().toISOString();
+  const claimed = await db(
+    "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) +
+      "&user_id=eq." + encodeURIComponent(row.id) +
+      "&request_id=eq." + encodeURIComponent(requestId) +
+      "&status=eq.quote_ready&expires_at=gt." + encodeURIComponent(now),
+    "PATCH",
+    { status: "executing", owner_signed_at: now, signature: encodedSignature, updated_at: now },
+    "return=representation"
+  );
+  if (!Array.isArray(claimed) || claimed.length !== 1) {
+    throw new Error("swap_request_already_claimed_or_final");
+  }
+
+  // Certification is deliberately checked after the owner signature is verified,
+  // and before any transaction is handed to Jupiter for submission.
+
+  try {
+    const execution = await jupiterApi<any>("/swap/v2/execute", {
+      method: "POST",
+      apiKey: JUPITER_API_KEY || undefined,
+      body: {
+        signedTransaction,
+        requestId,
+        ...(saved.quote_metadata?.lastValidBlockHeight
+          ? { lastValidBlockHeight: Number(saved.quote_metadata.lastValidBlockHeight) }
+          : {}),
+      },
+    });
+    const state = execution.status === "Success" && Number(execution.code ?? 0) === 0
+      ? "success"
+      : execution.status === "Failed" ? "failed" : "unknown";
+    const actualSignature = String(execution.signature || encodedSignature);
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) + "&user_id=eq." + encodeURIComponent(row.id),
+      "PATCH",
+      { status: state, signature: actualSignature, result_payload: execution, updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_swap_execute_" + state,
+      state === "success" ? "ok" : "warning",
+      { order_id: orderId, signature: actualSignature, router: saved.router }
+    );
+    return response({
+      ok: true, status: state, signature: actualSignature, result: execution,
+      explorerUrl: "https://solscan.io/tx/" + actualSignature,
+    });
+  } catch {
+    // The transaction has been signed and atomically claimed: never blindly resubmit it.
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) + "&user_id=eq." + encodeURIComponent(row.id),
+      "PATCH",
+      { status: "unknown", signature: encodedSignature, result_payload: { error: "execute_outcome_unknown" }, updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_swap_execute_unknown", "warning", { order_id: orderId, signature: encodedSignature });
+    return response({
+      ok: true, status: "unknown", signature: encodedSignature,
+      explorerUrl: "https://solscan.io/tx/" + encodedSignature,
+      message: "The result is unknown. 9N8 will check Solana for this signature; do not retry this swap.",
+    }, 202);
+  }
+}
+
+async function getJupiterLiveConfig(row: any): Promise<Response> {
+  const cert = await jupiterTriggerCertification();
+  return response({
+    ok: true,
+    manualWalletExecutionEnabled: cert?.status === "passed" && cert?.live_manual_wallet_execution_enabled === true,
+    delegatedAutomationEnabled: cert?.status === "passed" && cert?.delegated_automation_enabled === true,
+    certificationStatus: cert?.status ?? "missing",
+    jupiterApiConfigured: Boolean(JUPITER_API_KEY),
+    triggerApiConfigured: Boolean(JUPITER_API_KEY),
+    maxSwapSol: "0.05",
+    dailySwapSol: "0.10",
+    maxPriceImpactPct: 2,
+  });
+}
+async function getJupiterSwapStatus(user: any, row: any, body: any): Promise<Response> {
+  const orderId = clean(body?.orderId, 64);
+  const rows = await db(
+    "n8_jupiter_swaps?select=id,status,signature,input_mint,output_mint,input_amount_raw,output_amount_raw,input_decimals,output_decimals,router,price_impact_pct,expires_at,created_at,result_payload&user_id=eq." +
+      encodeURIComponent(row.id) + "&id=eq." + encodeURIComponent(orderId) + "&limit=1"
+  );
+  const order = Array.isArray(rows) ? rows[0] : null;
+  if (!order) throw new Error("swap_quote_not_found");
+  let status = String(order.status);
+  if (["executing", "unknown"].includes(status) && order.signature) {
+    try {
+      const observed = await rpcSignatureStatus(String(order.signature));
+      if (observed?.err) status = "failed";
+      else if (observed?.confirmationStatus === "confirmed" ||
+          observed?.confirmationStatus === "finalized") status = "success";
+      if (status !== order.status) {
+        await db(
+          "n8_jupiter_swaps?id=eq." + encodeURIComponent(order.id) +
+            "&user_id=eq." + encodeURIComponent(row.id),
+          "PATCH", { status, updated_at: new Date().toISOString() }, "return=minimal"
+        );
+      }
+    } catch {
+      // Preserve the unknown state: a failed status lookup is not proof that the tx failed.
+    }
+  }
+  if (status === "quote_ready" && new Date(order.expires_at).getTime() <= Date.now()) {
+    status = "expired";
+    await db(
+      "n8_jupiter_swaps?id=eq." + encodeURIComponent(order.id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.quote_ready",
+      "PATCH", { status, updated_at: new Date().toISOString() }, "return=minimal"
+    );
+  }
+  return response({
+    ok: true, order: { ...order, status },
+    explorerUrl: order.signature ? "https://solscan.io/tx/" + order.signature : null,
+  });
+}
+
+
+async function jupiterTriggerCertification() {
+  const rows = await db(
+    "n8_jupiter_connector_certification?select=status,delegated_automation_enabled,live_manual_wallet_execution_enabled&provider=eq.jupiter_swap_v2&limit=1"
+  );
+  return Array.isArray(rows) ? rows[0] ?? null : null;
+}
+function requireJupiterApiKey() {
+  if (!JUPITER_API_KEY) throw new Error("jupiter_api_key_not_configured");
+}
+async function triggerAccess(wallet: any, accessToken: string, path: string, method: "GET" | "POST" = "GET", body?: unknown) {
+  requireJupiterApiKey();
+  if (!accessToken || accessToken.length > 4096) throw new Error("jupiter_trigger_auth_required");
+  return await jupiterApi<any>(path, {
+    method,
+    apiKey: JUPITER_API_KEY,
+    accessToken,
+    body,
+  });
+}
+async function jupiterTriggerChallenge(row: any, body: any): Promise<Response> {
+  requireJupiterApiKey();
+  const address = clean(body?.address, 64);
+  await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const result = await jupiterApi<any>("/trigger/v2/auth/challenge", {
+    method: "POST",
+    apiKey: JUPITER_API_KEY,
+    body: { walletPubkey: address, type: "message" },
+  });
+  const challenge = String(result?.challenge ?? result?.message ?? "");
+  if (!challenge) throw new Error("jupiter_trigger_challenge_invalid");
+  return response({ ok: true, challenge, walletPubkey: address });
+}
+async function jupiterTriggerVerify(row: any, body: any): Promise<Response> {
+  requireJupiterApiKey();
+  const address = clean(body?.address, 64);
+  await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const signature = clean(body?.signature, 256);
+  if (!signature) throw new Error("jupiter_trigger_signature_required");
+  const result = await jupiterApi<any>("/trigger/v2/auth/verify", {
+    method: "POST",
+    apiKey: JUPITER_API_KEY,
+    body: {
+      walletPubkey: address,
+      type: "message",
+      signature,
+      authMode: "access_refresh",
+    },
+  });
+  const accessToken = String(result?.accessToken ?? "");
+  const refreshToken = String(result?.refreshToken ?? "");
+  if (!accessToken || !refreshToken) throw new Error("jupiter_trigger_auth_response_invalid");
+  // Trigger credentials are returned only to this Telegram-authenticated owner session.
+  // They are not written to Postgres or browser localStorage.
+  return response({
+    ok: true,
+    accessToken,
+    refreshToken,
+    expiresAt: result?.expiresAt ?? null,
+    tokenType: result?.tokenType ?? "Bearer",
+  });
+}
+async function jupiterTriggerRefresh(row: any, body: any): Promise<Response> {
+  requireJupiterApiKey();
+  const refreshToken = clean(body?.refreshToken, 4096);
+  if (!refreshToken) throw new Error("jupiter_trigger_refresh_required");
+  const address = clean(body?.address, 64);
+  await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const result = await jupiterApi<any>("/trigger/v2/auth/refresh", {
+    method: "POST",
+    apiKey: JUPITER_API_KEY,
+    body: { refreshToken },
+  });
+  if (!result?.accessToken || !result?.refreshToken) throw new Error("jupiter_trigger_refresh_invalid");
+  return response({
+    ok: true,
+    accessToken: String(result.accessToken),
+    refreshToken: String(result.refreshToken),
+    expiresAt: result.expiresAt ?? null,
+    tokenType: result.tokenType ?? "Bearer",
+  });
+}
+async function jupiterTriggerVault(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const accessToken = clean(body?.accessToken, 4096);
+  try {
+    const vault = await triggerAccess(null, accessToken, "/trigger/v2/vault");
+    return response({ ok: true, vault, registered: true });
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("jupiter_http_404")) throw error;
+    const registered = await triggerAccess(null, accessToken, "/trigger/v2/vault/register");
+    return response({ ok: true, vault: registered, registered: false });
+  }
+}
+async function jupiterTriggerDepositCraft(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const cert = await jupiterTriggerCertification();
+  if (!cert || cert.status !== "passed" || cert.delegated_automation_enabled !== true) {
+    throw new Error("jupiter_delegated_execution_certification_locked");
+  }
+  const accessToken = clean(body?.accessToken, 4096);
+  const orderType = String(body?.orderType ?? "");
+  if (orderType !== "dca") throw new Error("jupiter_trigger_order_type_unsupported");
+  const inputMint = new PublicKey(clean(body?.inputMint, 64)).toBase58();
+  const outputMint = new PublicKey(clean(body?.outputMint, 64)).toBase58();
+  if (inputMint === outputMint) throw new Error("jupiter_trigger_mint_pair_invalid");
+  const inputAmount = String(body?.amount ?? "");
+  if (!/^[1-9]\d*$/.test(inputAmount)) throw new Error("jupiter_trigger_amount_invalid");
+  if (orderType === "dca") {
+    const requestedLamports = BigInt(inputAmount);
+    if (requestedLamports > 500000000n) throw new Error("jupiter_dca_total_cap_exceeded");
+    const recent = await db(
+      "n8_jupiter_automation_orders?select=input_amount_raw,status,created_at&user_id=eq." +
+        encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
+        "&order_family=eq.dca&created_at=gte." + encodeURIComponent(new Date(Date.now() - 86400000).toISOString()) +
+        "&order=created_at.desc&limit=50"
+    );
+    const pendingSpend = (Array.isArray(recent) ? recent : [])
+      .filter((entry: any) => ["deposit_pending", "creating", "unknown", "active", "cancel_pending", "cancel_confirming", "cancel_unknown"].includes(String(entry.status)))
+      .reduce((sum: bigint, entry: any) => sum + BigInt(String(entry.input_amount_raw ?? "0")), 0n);
+    if (pendingSpend + requestedLamports > 500000000n) throw new Error("jupiter_dca_daily_cap_exceeded");
+  }
+  const orderCount = Number(body?.orderCount ?? 0);
+  const intervalSeconds = Number(body?.intervalSeconds ?? 0);
+  let usdPerDcaRound: number | null = null;
+  if (orderType === "dca") {
+    if (inputMint !== SOL_MINT || !Number.isInteger(orderCount) || orderCount < 2 || orderCount > 1000 ||
+        !Number.isInteger(intervalSeconds) || intervalSeconds < 60 || intervalSeconds > 31536000) {
+      throw new Error("jupiter_dca_parameters_invalid");
+    }
+    const priceResponse = await jupiterApi<any>("/price/v3?ids=" + encodeURIComponent(SOL_MINT), { apiKey: JUPITER_API_KEY });
+    const solPrice = Number(priceResponse?.[SOL_MINT]?.usdPrice ?? priceResponse?.data?.[SOL_MINT]?.usdPrice);
+    if (!Number.isFinite(solPrice) || solPrice <= 0) throw new Error("jupiter_sol_price_unavailable");
+    usdPerDcaRound = (Number(BigInt(inputAmount)) / 1e9 * solPrice) / orderCount;
+    if (usdPerDcaRound < 10) throw new Error("jupiter_dca_round_below_minimum_usd");
+  }
+  const requestBody: Record<string, unknown> = {
+    inputMint,
+    outputMint,
+    userAddress: wallet.public_address,
+    amount: inputAmount,
+    orderType,
+  };
+  const result = await triggerAccess(wallet, accessToken, "/trigger/v2/deposit/craft", "POST", requestBody);
+  if (!result?.transaction || !result?.requestId || !result?.receiverAddress) {
+    throw new Error("jupiter_trigger_deposit_craft_invalid");
+  }
+  let depositTx: VersionedTransaction;
+  try { depositTx = VersionedTransaction.deserialize(base64ToBytes(String(result.transaction))); }
+  catch { throw new Error("jupiter_trigger_deposit_transaction_invalid"); }
+  if (depositTx.message.version !== 0 ||
+      (depositTx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address) {
+    throw new Error("jupiter_trigger_deposit_transaction_invalid");
+  }
+  const depositMessageHash = await sha256HexBytes(depositTx.message.serialize());
+  const rows = await db("n8_jupiter_automation_orders", "POST", {
+    user_id: row.id,
+    wallet_connection_id: wallet.id,
+    jupiter_order_id: String(result.requestId),
+    order_family: orderType === "dca" ? "dca" : "price",
+    input_mint: inputMint,
+    output_mint: outputMint,
+    input_amount_raw: inputAmount,
+    vault_address: String(result.receiverAddress),
+    status: "deposit_pending",
+    order_metadata: {
+      depositRequestId: result.requestId, mint: result.mint ?? inputMint, amount: result.amount ?? inputAmount,
+      depositMessageHash, orderCount: orderType === "dca" ? orderCount : null,
+      intervalSeconds: orderType === "dca" ? intervalSeconds : null, usdPerDcaRound,
+    },
+  }, "return=representation");
+  if (!Array.isArray(rows) || !rows[0]?.id) throw new Error("jupiter_trigger_deposit_record_failed");
+  return response({
+    ok: true,
+    deposit: {
+      id: rows[0].id,
+      requestId: result.requestId,
+      transaction: result.transaction,
+      receiverAddress: result.receiverAddress,
+      mint: result.mint ?? inputMint,
+      amount: result.amount ?? inputAmount,
+      decimals: result.tokenDecimals ?? result.decimals ?? null,
+    },
+    custodyDisclosure: "This deposit moves the selected input token from your wallet into a Jupiter/Privy-managed vault for Trigger automation. It is not kept in your original wallet. You must review the receiver, token and amount before signing. Automation can be cancelled through a wallet-signed withdrawal.",
+  });
+}
+async function jupiterTriggerCreateDca(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const cert = await jupiterTriggerCertification();
+  if (!cert || cert.status !== "passed" || cert.delegated_automation_enabled !== true) {
+    throw new Error("jupiter_delegated_execution_certification_locked");
+  }
+  const accessToken = clean(body?.accessToken, 4096);
+  const depositRequestId = clean(body?.depositRequestId, 128);
+  const depositSignedTx = clean(body?.depositSignedTx, 120000);
+  const orderCount = Number(body?.orderCount);
+  const intervalSeconds = Number(body?.intervalSeconds);
+  if (!depositRequestId || !depositSignedTx || !Number.isInteger(orderCount) ||
+      orderCount < 2 || orderCount > 1000 || !Number.isInteger(intervalSeconds) ||
+      intervalSeconds < 60 || intervalSeconds > 31536000) {
+    throw new Error("jupiter_dca_parameters_invalid");
+  }
+  const localRows = await db(
+    "n8_jupiter_automation_orders?select=id,input_mint,output_mint,input_amount_raw,vault_address,status,order_metadata&jupiter_order_id=eq." +
+      encodeURIComponent(depositRequestId) + "&wallet_connection_id=eq." +
+      encodeURIComponent(wallet.id) + "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.deposit_pending&limit=1"
+  );
+  const deposit = Array.isArray(localRows) ? localRows[0] : null;
+  if (!deposit) throw new Error("jupiter_trigger_deposit_not_found");
+  const inputAmount = String(body?.inputAmount ?? deposit.input_amount_raw);
+  if (inputAmount !== String(deposit.input_amount_raw)) throw new Error("jupiter_trigger_deposit_amount_mismatch");
+  const orderMetadata = deposit.order_metadata ?? {};
+  if (orderCount !== Number(orderMetadata.orderCount) ||
+      intervalSeconds !== Number(orderMetadata.intervalSeconds) ||
+      Number(orderMetadata.usdPerDcaRound) < 10) {
+    throw new Error("jupiter_dca_parameters_mismatch");
+  }
+
+  let depositTx: VersionedTransaction;
+  try { depositTx = VersionedTransaction.deserialize(base64ToBytes(depositSignedTx)); }
+  catch { throw new Error("jupiter_trigger_deposit_signature_invalid"); }
+  const depositMessageBytes = depositTx.message.serialize();
+  if (depositTx.message.version !== 0 ||
+      (depositTx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address ||
+      await sha256HexBytes(depositMessageBytes) !== String(orderMetadata.depositMessageHash ?? "")) {
+    throw new Error("jupiter_trigger_deposit_message_changed");
+  }
+  const depositSignature = depositTx.signatures?.[0];
+  if (!depositSignature || depositSignature.length !== 64 || depositSignature.every((v: number) => v === 0)) {
+    throw new Error("jupiter_trigger_deposit_signature_missing");
+  }
+  const depositPub = new Uint8Array(new PublicKey(wallet.public_address).toBytes()).buffer;
+  const depositSig = new Uint8Array(depositSignature).buffer;
+  const depositMessage = new Uint8Array(depositMessageBytes).buffer;
+  const depositKey = await crypto.subtle.importKey("raw", depositPub, { name: "Ed25519" }, false, ["verify"]);
+  if (!await crypto.subtle.verify("Ed25519", depositKey, depositSig, depositMessage)) {
+    throw new Error("jupiter_trigger_deposit_signature_invalid");
+  }
+
+  const claimed = await db(
+    "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(deposit.id) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.deposit_pending",
+    "PATCH",
+    { status: "creating", deposit_signature: base58Encode(depositSignature), updated_at: new Date().toISOString() },
+    "return=representation"
+  );
+  if (!Array.isArray(claimed) || claimed.length !== 1) {
+    throw new Error("jupiter_trigger_deposit_already_claimed");
+  }
+  const requestBody = {
+    depositRequestId,
+    depositSignedTx,
+    userPubkey: wallet.public_address,
+    inputMint: String(deposit.input_mint),
+    outputMint: String(deposit.output_mint),
+    inputAmount,
+    orderCount,
+    intervalSeconds,
+  };
+  try {
+    const result = await triggerAccess(wallet, accessToken, "/trigger/v2/orders/dca", "POST", requestBody);
+    const jupiterOrderId = String(result?.id ?? result?.orderId ?? "");
+    if (!jupiterOrderId) throw new Error("jupiter_trigger_dca_response_invalid");
+    await db(
+      "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(deposit.id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.creating",
+      "PATCH",
+      {
+        jupiter_order_id: jupiterOrderId,
+        order_count: orderCount,
+        interval_seconds: intervalSeconds,
+        status: "active",
+        order_metadata: {
+          response: result, depositRequestId, orderType: "time_based",
+          depositMessageHash: orderMetadata.depositMessageHash,
+          usdPerDcaRound: orderMetadata.usdPerDcaRound,
+        },
+        updated_at: new Date().toISOString(),
+      },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_dca_created", "ok", {
+      jupiter_order_id: jupiterOrderId, wallet_connection_id: wallet.id,
+      order_count: orderCount, interval_seconds: intervalSeconds,
+    });
+    return response({ ok: true, orderId: jupiterOrderId, result, vaultAddress: deposit.vault_address });
+  } catch {
+    // A lost response may occur after the provider accepted the signed deposit.
+    // Mark unknown and reconcile through DCA history rather than creating a duplicate.
+    await db(
+      "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(deposit.id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.creating",
+      "PATCH",
+      { status: "unknown", updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_dca_create_unknown", "warning", {
+      deposit_request_id: depositRequestId, wallet_connection_id: wallet.id,
+    });
+    return response({
+      ok: true, status: "unknown", depositRequestId,
+      message: "Jupiter's response is unknown. Check DCA history before attempting anything again. The deposit will not be retried.",
+    }, 202);
+  }
+}
+
+async function jupiterTriggerHistory(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
+    "/trigger/v2/orders/history/dca?state=active&limit=20");
+  return response({ ok: true, orders: result, walletConnectionId: wallet.id });
+}
+async function jupiterTriggerCancelDca(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const orderId = clean(body?.orderId, 128);
+  if (!orderId) throw new Error("jupiter_trigger_order_id_required");
+  const local = await db(
+    "n8_jupiter_automation_orders?select=id,jupiter_order_id,status,order_metadata&user_id=eq." +
+      encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
+      "&jupiter_order_id=eq." + encodeURIComponent(orderId) + "&limit=1"
+  );
+  if (!Array.isArray(local) || !local[0] || local[0].status !== "active") {
+    throw new Error("jupiter_trigger_order_not_active");
+  }
+  const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
+    "/trigger/v2/orders/dca/cancel/" + encodeURIComponent(orderId), "POST", {});
+  if (!result?.transaction || !result?.requestId) throw new Error("jupiter_trigger_cancel_response_invalid");
+  let cancelTx: VersionedTransaction;
+  try { cancelTx = VersionedTransaction.deserialize(base64ToBytes(String(result.transaction))); }
+  catch { throw new Error("jupiter_trigger_cancel_transaction_invalid"); }
+  if (cancelTx.message.version !== 0 ||
+      (cancelTx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address) {
+    throw new Error("jupiter_trigger_cancel_transaction_invalid");
+  }
+  const cancelMessageHash = await sha256HexBytes(cancelTx.message.serialize());
+  const previousMeta = local[0].order_metadata ?? {};
+  const claimed = await db(
+    "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.active",
+    "PATCH",
+    {
+      status: "cancel_pending",
+      order_metadata: {
+        ...previousMeta,
+        pendingCancelRequestId: String(result.requestId),
+        pendingCancelMessageHash: cancelMessageHash,
+        pendingCancelRefundAmount: result.refundAmount ?? null,
+        pendingCancelRoundsRemaining: result.roundsRemaining ?? null,
+      },
+      updated_at: new Date().toISOString(),
+    },
+    "return=representation"
+  );
+  if (!Array.isArray(claimed) || claimed.length !== 1) throw new Error("jupiter_trigger_order_cancel_already_started");
+  return response({
+    ok: true,
+    orderId,
+    cancelRequestId: result.requestId,
+    transaction: result.transaction,
+    refundAmount: result.refundAmount ?? null,
+    roundsRemaining: result.roundsRemaining ?? null,
+    disclosure: "This is a one-way cancel. Review the refund amount, then sign the withdrawal transaction in your wallet. DCA cannot be paused and resumed.",
+  });
+}
+async function jupiterTriggerConfirmCancelDca(row: any, body: any): Promise<Response> {
+  const address = clean(body?.address, 64);
+  const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
+  const orderId = clean(body?.orderId, 128);
+  const cancelRequestId = clean(body?.cancelRequestId, 128);
+  const signedTransaction = clean(body?.signedTransaction, 120000);
+  if (!orderId || !cancelRequestId || !signedTransaction) throw new Error("jupiter_trigger_cancel_confirmation_invalid");
+  const local = await db(
+    "n8_jupiter_automation_orders?select=id,jupiter_order_id,status,order_metadata&user_id=eq." +
+      encodeURIComponent(row.id) + "&wallet_connection_id=eq." + encodeURIComponent(wallet.id) +
+      "&jupiter_order_id=eq." + encodeURIComponent(orderId) + "&status=eq.cancel_pending&limit=1"
+  );
+  if (!Array.isArray(local) || !local[0]) throw new Error("jupiter_trigger_cancel_not_pending");
+  const metadata = local[0].order_metadata ?? {};
+  if (String(metadata.pendingCancelRequestId ?? "") !== cancelRequestId) {
+    throw new Error("jupiter_trigger_cancel_request_mismatch");
+  }
+  let tx: VersionedTransaction;
+  try { tx = VersionedTransaction.deserialize(base64ToBytes(signedTransaction)); }
+  catch { throw new Error("jupiter_trigger_cancel_transaction_invalid"); }
+  const messageBytes = tx.message.serialize();
+  if (tx.message.version !== 0 ||
+      (tx.message.staticAccountKeys?.[0]?.toBase58?.() ?? "") !== wallet.public_address ||
+      await sha256HexBytes(messageBytes) !== String(metadata.pendingCancelMessageHash ?? "")) {
+    throw new Error("jupiter_trigger_cancel_transaction_changed");
+  }
+  const signature = tx.signatures?.[0];
+  if (!signature || signature.length !== 64 || signature.every((v: number) => v === 0)) {
+    throw new Error("jupiter_trigger_cancel_signature_missing");
+  }
+  const pub = new Uint8Array(new PublicKey(wallet.public_address).toBytes()).buffer;
+  const sig = new Uint8Array(signature).buffer;
+  const message = new Uint8Array(messageBytes).buffer;
+  const key = await crypto.subtle.importKey("raw", pub, { name: "Ed25519" }, false, ["verify"]);
+  if (!await crypto.subtle.verify("Ed25519", key, sig, message)) {
+    throw new Error("jupiter_trigger_cancel_signature_invalid");
+  }
+  const claim = await db(
+    "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
+      "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.cancel_pending",
+    "PATCH",
+    { status: "cancel_confirming", updated_at: new Date().toISOString() },
+    "return=representation"
+  );
+  if (!Array.isArray(claim) || claim.length !== 1) throw new Error("jupiter_trigger_cancel_already_claimed");
+  try {
+    const result = await triggerAccess(wallet, clean(body?.accessToken, 4096),
+      "/trigger/v2/orders/dca/confirm-cancel/" + encodeURIComponent(orderId), "POST",
+      { signedTransaction, cancelRequestId });
+    await db(
+      "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.cancel_confirming",
+      "PATCH",
+      {
+        status: "cancelled",
+        order_metadata: { cancelResult: result, cancelRequestId },
+        updated_at: new Date().toISOString(),
+      },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_dca_cancelled", "ok", { jupiter_order_id: orderId });
+    return response({ ok: true, orderId, result });
+  } catch {
+    await db(
+      "n8_jupiter_automation_orders?id=eq." + encodeURIComponent(local[0].id) +
+        "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.cancel_confirming",
+      "PATCH",
+      { status: "cancel_unknown", updated_at: new Date().toISOString() },
+      "return=minimal"
+    );
+    await audit(row.id, null, "jupiter_dca_cancel_unknown", "warning", { jupiter_order_id: orderId });
+    return response({
+      ok: true,
+      status: "cancel_unknown",
+      orderId,
+      message: "Cancellation outcome is unknown. Check Jupiter DCA history and vault balance before attempting another cancellation.",
+    }, 202);
+  }
+}
+
 async function handleMiniApp(body: any): Promise<Response> {
   try {
     // Read-only account views, assessments and emergency pause remain usable while
     // the private Mini App is open. Credential changes and all future trade approvals
     // retain the strict five-minute Telegram initData window.
+    // Only non-mutating reads may reuse a still-open Mini App's 24-hour initData.
+    // Revoke, pause, wallet changes, vault registration, quote creation and all
+    // transaction-related actions require fresh five-minute Telegram auth.
     const longLivedReadActions = new Set([
       "paper_terminal",
       "live_connections",
       "live_status",
-      "live_assess",
-      "live_pause",
       "binance_account",
       "okx_account",
-      "wallet_revoke",
+      "jupiter_swap_status",
+      "jupiter_trigger_history",
+      "jupiter_live_config",
     ]);
     const maxAge = longLivedReadActions.has(String(body?.action ?? "")) ? 24 * 60 * 60 : 300;
     const user = await verifyInitData(String(body?.initData ?? ""), maxAge);
@@ -792,7 +1611,7 @@ async function handleMiniApp(body: any): Promise<Response> {
       return response({
         ok: true,
         connectionId,
-        message: "Exchange connection revoked. Its stored API secret was deleted from Supabase Vault.",
+        message: "Exchange connection revoked. Its stored API secret was deleted from Supabase Vault. Also revoke the API key at the exchange.",
       });
     }
     if (body.action === "connect_exchange") {
@@ -855,6 +1674,19 @@ async function handleMiniApp(body: any): Promise<Response> {
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
     if (body.action === "wallet_revoke") return await revokeWalletSession(user, body);
+    if (body.action === "jupiter_live_config") return await getJupiterLiveConfig(row);
+    if (body.action === "jupiter_swap_order") return await createJupiterSwapOrder(user, row, body);
+    if (body.action === "jupiter_swap_execute") return await executeJupiterSwap(user, row, body);
+    if (body.action === "jupiter_swap_status") return await getJupiterSwapStatus(user, row, body);
+    if (body.action === "jupiter_trigger_challenge") return await jupiterTriggerChallenge(row, body);
+    if (body.action === "jupiter_trigger_verify") return await jupiterTriggerVerify(row, body);
+    if (body.action === "jupiter_trigger_refresh") return await jupiterTriggerRefresh(row, body);
+    if (body.action === "jupiter_trigger_vault") return await jupiterTriggerVault(row, body);
+    if (body.action === "jupiter_trigger_deposit_craft") return await jupiterTriggerDepositCraft(row, body);
+    if (body.action === "jupiter_trigger_create_dca") return await jupiterTriggerCreateDca(row, body);
+    if (body.action === "jupiter_trigger_history") return await jupiterTriggerHistory(row, body);
+    if (body.action === "jupiter_trigger_cancel_dca") return await jupiterTriggerCancelDca(row, body);
+    if (body.action === "jupiter_trigger_confirm_cancel_dca") return await jupiterTriggerConfirmCancelDca(row, body);
     if (body.action === "live_connections") {
       const exchangeRows = await db(
         "n8_exchange_connections?select=id,provider,environment,label,status&user_id=eq." +
@@ -911,6 +1743,17 @@ async function handleMiniApp(body: any): Promise<Response> {
       wallet_address_or_network_invalid: "The public address format does not match the selected network.",
       credential_storage_failed: "Credentials were checked but could not be saved. No connection was created.",
       user_registration_failed: "Could not register your Telegram account. Try again.",
+      jupiter_execution_certification_locked: "Live Jupiter swaps are still locked while execution certification tests are pending. You can request quotes, but no transaction will be submitted.",
+      jupiter_delegated_execution_certification_locked: "Jupiter DCA automation is locked until vault deposit, delegated execution, cancellation and withdrawal checks have passed.",
+      jupiter_api_key_not_configured: "Jupiter Trigger automation needs JUPITER_API_KEY in Supabase Edge Function Secrets. Manual Swap V2 quotes can work without it.",
+      jupiter_trigger_auth_required: "Reconnect your verified Solana wallet to Jupiter automation.",
+      jupiter_dca_round_below_minimum_usd: "Each Jupiter DCA round must be at least $10. Increase total SOL or reduce the number of rounds.",
+      jupiter_dca_total_cap_exceeded: "9N8 limits each DCA deposit to 0.50 SOL.",
+      jupiter_dca_daily_cap_exceeded: "This wallet would exceed the 0.50 SOL rolling 24-hour DCA deposit cap.",
+      swap_per_order_cap_exceeded: "This swap exceeds the 0.05 SOL per-order limit.",
+      swap_daily_cap_exceeded: "This swap would exceed the 0.10 SOL rolling 24-hour limit.",
+      swap_previous_request_unresolved: "A previous Jupiter quote or transaction is unresolved. Refresh its status before creating another swap.",
+      verified_solana_wallet_required: "Connect and verify your Solana-mainnet wallet before using the Jupiter terminal."
     };
     return response({ ok: false, message: messages[code] ?? "Could not complete the request. Check the provider and try again." }, 400);
   }
@@ -921,10 +1764,8 @@ async function listConnections(userId: string): Promise<string> {
   if (!Array.isArray(rows) || rows.length === 0) return "No exchange accounts connected yet. Use /connect to link Binance Spot or OKX Spot.";
   return "YOUR EXCHANGE CONNECTIONS\n\n" + rows.map((v: any) =>
     String(v.provider).toUpperCase() + " · " + v.environment + "\n" +
-    String(v.label ?? "Account") + " · " + v.status + "\n" +
-    "Connection ID: " + String(v.id)
-  ).join("\n\n") +
-    "\n\nTo disconnect one, send /disconnect CONNECTION_ID. This revokes and deletes its stored API secret.";
+    String(v.label ?? "Account") + " · " + v.status + "\nConnection ID: " + String(v.id)
+  ).join("\n\n") + "\n\nSend /disconnect CONNECTION_ID to revoke a stored connection.";
 }
 async function listWallets(userId: string): Promise<string> {
   const rows = await db("n8_wallet_connections?select=provider,network,public_address,status,connection_type,execution_mode,auto_trade_enabled&user_id=eq." +
@@ -1455,7 +2296,7 @@ function serviceOverview(): string {
     "The current crypto paper strategy uses EMA 9 / EMA 21 crossover with RSI 14 confirmation on closed one-minute candles. Signals are observations, not guaranteed predictions.",
     "",
     "🔗 EXCHANGE & WALLET CONNECTIONS",
-    "Connect Binance Spot Live with Read + Spot Trading enabled and withdrawals, internal transfers, margin, futures and options disabled; connect OKX Spot Live with a read-only account key. OKX trade/withdraw/transfer scopes are not exposed by the account-read validation, so keep those disabled yourself. Link EVM or Solana wallets for ownership verification or watch public addresses.",
+    "Connect Binance Spot Live with Read + Spot Trading enabled and withdrawals, internal transfers, margin, futures and options disabled; connect OKX Spot Live with a read-only account key. OKX trade/withdraw/transfer scopes are not exposed by account-read validation, so keep those disabled yourself. Link EVM or Solana wallets for ownership verification or watch public addresses.",
     "",
     "🛡️ APPROVALS & RISK CONTROLS",
     "Review linked accounts, risk limits, pending proposals, pause controls and the emergency stop. Private connections are attached to the Telegram account that opened the bot.",
@@ -1464,9 +2305,11 @@ function serviceOverview(): string {
     "9N8 includes a readiness assessment and a hard live-execution lock. Connecting Binance or verifying a wallet does not by itself authorize real-money orders.",
     "",
     "CURRENT LIMITS — PLEASE READ",
-    "• Binance Spot and OKX Spot Live account credentials can be connected and stored in Vault. Account reads work, but real-money order submission is disabled in this deployed candidate.",
-    "• WalletConnect currently verifies wallet ownership only. No swap, token approval or background wallet trade-signing is enabled.",
-    "• Stocks, forex, perps, unattended copy trading, launch sniping and DCA are not active in the deployed paper pilot.",
+    "• Binance Spot and OKX Spot account credentials can be connected and stored in Vault. The deployed candidate does not send exchange orders.",
+    "• Solana users can request Jupiter Swap V2 quotes. Wallet-signed execution is separately locked until owner-signature, message-integrity, idempotency and unknown-outcome reconciliation tests pass.",
+    "• Jupiter Trigger DCA requires a separately certified custody/delegated-execution release; the vault deposit moves assets out of the original wallet and remains disabled.",
+    "• Stocks, forex and perps are not in the deployed Supabase paper worker; the separate Python branch provides paper-only Alpaca stocks and OANDA practice support.",
+    "• Wallet linking proves ownership. It does not by itself grant trading, transfers or background signing.",
     "• Trojan is a feature reference, not a connected execution provider. 9N8 must use its own documented market-data and swap/exchange integrations.",
     "",
     "GET STARTED",
@@ -1474,8 +2317,8 @@ function serviceOverview(): string {
     "/simulator — open live Binance charts and paper trading",
     "/connect — connect Binance Spot Live or wallet",
     "/connections — review exchange connections and IDs",
-    "/disconnect CONNECTION_ID — delete your stored API secret from 9N8 Vault",
-    "/wallets — review linked wallets and watch addresses",
+    "/disconnect CONNECTION_ID — remove the stored exchange secret from 9N8",
+    "/wallets — review verified wallets and watch addresses",
     "/risk — view your configured risk limits",
     "/live — view live-trading readiness and lock status",
     "/pause — pause strategies and block new entries",
@@ -1532,7 +2375,7 @@ async function handleMessage(update: any) {
       "/status — inspect account and system state\n" +
       "/connect — connect Binance Spot Live or wallet\n" +
       "/connections — list your exchange connections\n" +
-      "/disconnect CONNECTION_ID — revoke your own exchange API key\n" +
+       "/disconnect CONNECTION_ID — disconnect an exchange from 9N8\n" +
       "/wallets — list your verified wallets\n" +
       "/migrate — assess live eligibility (does not enable live trading)\n" +
       "/live — live lock and risk status\n" +
@@ -1640,7 +2483,7 @@ async function handleMessage(update: any) {
       return;
     }
     await send(chatId,
-      "DISCONNECT EXCHANGE ACCOUNT?\\n\\nThis deletes the 9N8-stored API secret from Supabase Vault and revokes this connection inside 9N8. It does not revoke the API key at Binance or OKX. For full revocation, also delete the key in the exchange's own security settings.",
+      "DISCONNECT EXCHANGE ACCOUNT?\\n\\nThis deletes the stored API secret from 9N8 Vault and revokes this connection inside 9N8. It does not revoke the key at Binance or OKX. You must also delete it in the exchange security settings.",
       { inline_keyboard: [[
         { text: "Confirm disconnect", callback_data: "n8:exchange_revoke:" + connectionId },
         { text: "Cancel", callback_data: "n8:exchange_revoke_cancel" },
@@ -1680,11 +2523,9 @@ async function handleCallback(update: any) {
       await send(Number(chat.id), "No active exchange connection with that ID belongs to your Telegram account.");
       return;
     }
-    await audit(row.id, Number(chat.id), "exchange_connection_revoked", "ok", {
-      connection_id: connectionId,
-    });
+    await audit(row.id, Number(chat.id), "exchange_connection_revoked", "ok", { connection_id: connectionId });
     await send(Number(chat.id),
-      "Exchange connection revoked inside 9N8. Its stored API secret was deleted from Supabase Vault.\\n\\nFor full security, also delete the API key in Binance/OKX settings; 9N8 cannot revoke a key at the exchange itself."
+      "Exchange connection revoked inside 9N8. Its stored API secret was deleted from Supabase Vault. Also delete/revoke the API key at Binance/OKX."
     );
     return;
   }
@@ -1804,7 +2645,12 @@ async function mainHandler(req: Request): Promise<Response> {
   // Mini App traffic is authenticated with Telegram-signed initData.
   if (body?.action === "connect_exchange" || body?.action === "watch_wallet" ||
       ["wallet_challenge", "wallet_verify", "wallet_revoke", "exchange_revoke", "live_connections", "live_status", "live_assess", "live_pause",
-       "paper_terminal", "paper_start", "binance_account", "okx_account"].includes(String(body?.action))) {
+       "paper_terminal", "paper_start", "binance_account", "okx_account",
+       "jupiter_live_config", "jupiter_swap_order", "jupiter_swap_execute", "jupiter_swap_status",
+       "jupiter_trigger_challenge", "jupiter_trigger_verify", "jupiter_trigger_refresh",
+       "jupiter_trigger_vault", "jupiter_trigger_deposit_craft", "jupiter_trigger_create_dca",
+       "jupiter_trigger_history", "jupiter_trigger_cancel_dca",
+       "jupiter_trigger_confirm_cancel_dca"].includes(String(body?.action))) {
     return await handleMiniApp(body);
   }
 
