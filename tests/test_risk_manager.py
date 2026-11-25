@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from models import AccountState, MarketSnapshot, MarketType, Side, TradeIntent
+from models import AccountState, MarketSnapshot, MarketType, RiskRejected, Side, TradeIntent
 from risk_manager.risk_manager import RiskManager
 
 
@@ -101,3 +101,17 @@ async def test_daily_drawdown_trips_24_hour_kill_switch(risk_config):
     assert store.values["paused"]=="true"
     assert store.values["halt_until"]
     assert flattened == [True]
+
+
+@pytest.mark.asyncio
+async def test_uncertain_execution_reconciliation_lock_cannot_be_resumed(risk_config):
+    store = FakeStore()
+    store.values["execution_reconciliation_required"] = "true"
+    risk = RiskManager(store, risk_config)
+
+    with pytest.raises(RiskRejected, match="manual reconciliation"):
+        await risk.assert_entry_allowed()
+    with pytest.raises(RiskRejected, match="Cannot resume"):
+        await risk.resume()
+
+    assert store.values["execution_reconciliation_required"] == "true"
