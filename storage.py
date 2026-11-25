@@ -245,6 +245,7 @@ class TradeStore:
         return cur.rowcount == 1
 
     async def get_pending_approval(self, approval_id: str) -> dict[str, Any] | None:
+        await self.expire_stale_approvals()
         cur = await self._db().execute(
             "SELECT * FROM pending_approvals WHERE approval_id=?",
             (approval_id,),
@@ -257,6 +258,7 @@ class TradeStore:
         return result
 
     async def pending_approvals(self, limit: int = 20) -> list[dict[str, Any]]:
+        await self.expire_stale_approvals()
         bounded = min(max(int(limit), 1), 100)
         cur = await self._db().execute(
             """SELECT * FROM pending_approvals WHERE status='PENDING'
@@ -270,6 +272,68 @@ class TradeStore:
             item["payload"] = json.loads(item.pop("payload_json"))
             result.append(item)
         return result
+
+
+    async def expire_stale_approvals(self) -> int:
+        """Mark old proposals expired so Telegram never displays stale actionable buttons."""
+        now = datetime.now(timezone.utc).isoformat()
+        cur = await self._db().execute(
+            """UPDATE pending_approvals
+               SET status='EXPIRED', decided_at=?, decided_by='system',
+                   result='Approval window elapsed; no order was submitted.'
+               WHERE status='PENDING' AND expires_at<=?""",
+            (now, now),
+        )
+        await self._db().commit()
+        return max(0, int(cur.rowcount))
+
+    async def recover_interrupted_approvals(self) -> int:
+        """Fail closed after a process restart during an approval/execution operation.
+
+        A PROCESSING approval may have crossed the provider submission boundary
+        before the previous process died. It must never be retried automatically.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        db = self._db()
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cur = await db.execute(
+                """UPDATE pending_approvals
+                   SET status='RECONCILIATION_REQUIRED', decided_at=?,
+                       decided_by='startup-recovery',
+                       result='9N8 restarted while this proposal was processing. '
+                              'Inspect provider orders, fills and balances before resuming.'
+                   WHERE status='PROCESSING'""",
+                (now,),
+            )
+            count = max(0, int(cur.rowcount))
+            if count:
+                for key, value in (
+                    ("execution_reconciliation_required", "true"),
+                    ("kill_switch", "true"),
+                    ("paused", "true"),
+                ):
+                    await db.execute(
+                        """INSERT INTO controls(key,value,updated_at) VALUES(?,?,?)
+                           ON CONFLICT(key) DO UPDATE SET
+                             value=excluded.value,updated_at=excluded.updated_at""",
+                        (key, value, now),
+                    )
+                await db.execute(
+                    """INSERT INTO events(
+                         timestamp,level,event_type,venue,symbol,message,metadata_json
+                       ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        now, "CRITICAL", "interrupted_approval_recovery", None, None,
+                        f"Recovered {count} interrupted trade approval(s). New entries are locked until manual reconciliation.",
+                        json.dumps({"count": count}, separators=(",", ":")),
+                    ),
+                )
+            await db.commit()
+            return count
+        except Exception:
+            await db.rollback()
+            raise
 
     async def claim_pending_approval(self, approval_id: str) -> bool:
         cur = await self._db().execute(
