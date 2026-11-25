@@ -78,16 +78,16 @@ async function action(chat: number, name: string, args: string[] = []) {
   try {
     if (name === "status") {
       if (!OKX_KEY || !OKX_SECRET || !OKX_PHRASE) {
-        await send(chat, "OKX connection: NOT CONFIGURED\\nAdd the three OKX demo credentials in Supabase Edge Function Secrets.\\nTrading mode: DEMO only.");
+        await send(chat, "OKX connection: NOT CONFIGURED\nAdd the three OKX demo credentials in Supabase Edge Function Secrets.\nTrading mode: DEMO only.");
         return;
       }
       const rows = await okx("/api/v5/account/config", true);
       const account = rows[0] ?? {};
       const permissions = String(account.perm ?? "not returned");
       const warning = permissions.toLowerCase().split(",").map((x: string) => x.trim()).includes("withdraw")
-        ? "\\nWARNING: Withdraw permission is enabled. Revoke this key and create a new one with Withdraw OFF."
+        ? "\nWARNING: Withdraw permission is enabled. Revoke this key and create a new one with Withdraw OFF."
         : "";
-      await send(chat, "OKX PRIVATE CONNECTION\\nAPI: authenticated\\nEnvironment: DEMO — simulated funds\\nAccount level: " + String(account.acctLv ?? "n/a") + "\\nPermissions: " + permissions + warning + "\\nThis hosted release is read-only; it does not place orders.");
+      await send(chat, "OKX PRIVATE CONNECTION\nAPI: authenticated\nEnvironment: DEMO — simulated funds\nAccount level: " + String(account.acctLv ?? "n/a") + "\nPermissions: " + permissions + warning + "\nThis hosted release is read-only; it does not place orders.");
       return;
     }
     if (name === "balance") {
@@ -96,7 +96,7 @@ async function action(chat: number, name: string, args: string[] = []) {
       const details = Array.isArray(a.details) ? a.details : [];
       const currencies = details.filter((x: any) => Number(x.availBal ?? 0) > 0 || Number(x.eq ?? 0) > 0)
         .slice(0, 20).map((x: any) => String(x.ccy) + ": available " + n(x.availBal) + " | equity " + n(x.eq));
-      await send(chat, "OKX DEMO BALANCE\\nTotal equity: " + n(a.totalEq, 4) + "\\nAdjusted equity: " + n(a.adjEq, 4) + "\\n\\n" + (currencies.join("\\n") || "No non-zero balances.") + "\\n\\nSimulated funds only.");
+      await send(chat, "OKX DEMO BALANCE\nTotal equity: " + n(a.totalEq, 4) + "\nAdjusted equity: " + n(a.adjEq, 4) + "\n\n" + (currencies.join("\n") || "No non-zero balances.") + "\n\nSimulated funds only.");
       return;
     }
     if (name === "ticker") {
@@ -105,7 +105,7 @@ async function action(chat: number, name: string, args: string[] = []) {
       const rows = await okx("/api/v5/market/ticker?instId=" + encodeURIComponent(symbol));
       const x = rows[0];
       if (!x) throw new Error("No OKX spot ticker for " + symbol);
-      await send(chat, "OKX SPOT — " + symbol + "\\nLast: " + n(x.last) + "\\nBid: " + n(x.bidPx) + " | Ask: " + n(x.askPx) + "\\n24h high: " + n(x.high24h) + " | low: " + n(x.low24h) + "\\n24h volume: " + n(x.vol24h));
+      await send(chat, "OKX SPOT — " + symbol + "\nLast: " + n(x.last) + "\nBid: " + n(x.bidPx) + " | Ask: " + n(x.askPx) + "\n24h high: " + n(x.high24h) + " | low: " + n(x.low24h) + "\n24h volume: " + n(x.vol24h));
       return;
     }
     if (name === "scan") {
@@ -139,7 +139,7 @@ async function action(chat: number, name: string, args: string[] = []) {
       const close = closes[closes.length - 1];
       const label = fast > slow && close > fast && rsi >= 50 && rsi <= 70 ? "BULLISH SETUP"
         : fast < slow && close < fast && rsi >= 30 && rsi <= 50 ? "BEARISH SETUP" : "NO CLEAR SETUP";
-      await send(chat, "9N8 MARKET OBSERVATION\\n" + symbol + " · " + bar + "\\n" + label + "\\nLast close: " + n(close) + "\\nEMA 9: " + n(fast) + "\\nEMA 21: " + n(slow) + "\\nRSI 14: " + n(rsi, 2) + "\\nClosed candle: " + new Date(Number(candles[candles.length - 1][0])).toISOString() + "\\n\\nObservation only; no order is placed.");
+      await send(chat, "9N8 MARKET OBSERVATION\n" + symbol + " · " + bar + "\n" + label + "\nLast close: " + n(close) + "\nEMA 9: " + n(fast) + "\nEMA 21: " + n(slow) + "\nRSI 14: " + n(rsi, 2) + "\nClosed candle: " + new Date(Number(candles[candles.length - 1][0])).toISOString() + "\n\nObservation only; no order is placed.");
     }
   } catch (error) {
     await send(chat, "9N8: " + (error instanceof Error ? error.message : "Request failed."));
@@ -183,7 +183,7 @@ Deno.serve(async (req: Request) => {
     const userId = Number(m.from?.id);
 
     if (command === "/id") {
-      await send(chatId, "Your Telegram user ID: " + userId + "\\nAdd this number as TELEGRAM_OWNER_ID in Supabase Edge Function Secrets. Never share API credentials in chat.");
+      await send(chatId, "Your Telegram user ID: " + userId + "\nAdd this number as TELEGRAM_OWNER_ID in Supabase Edge Function Secrets. Never share API credentials in chat.");
       return reply({ ok: true });
     }
 
@@ -192,14 +192,14 @@ Deno.serve(async (req: Request) => {
 
     if (command === "/start") {
       await send(chatId,
-        "9N8 IS ONLINE\\n\\nHosted on Supabase — your cousin's laptop can be closed.\\nExchange: OKX spot\\nEnvironment: DEMO — simulated funds\\n\\nThis first hosted release is read-only. It can check your account, show balances, fetch spot prices and scan indicators. It does not place or cancel orders.",
+        "9N8 IS ONLINE\n\nHosted on Supabase — your cousin's laptop can be closed.\nExchange: OKX spot\nEnvironment: DEMO — simulated funds\n\nThis first hosted release is read-only. It can check your account, show balances, fetch spot prices and scan indicators. It does not place or cancel orders.",
         { inline_keyboard: [
           [{ text: "OKX connection", callback_data: "status" }, { text: "Demo balance", callback_data: "balance" }],
           [{ text: "Scan BTC-USDT", callback_data: "scan:BTC-USDT:15m" }]
         ] }
       );
     } else if (command === "/help") {
-      await send(chatId, "9N8 PRIVATE OKX DEMO BOT\\n/id — Telegram user ID\\n/start — open menu\\n/okx_status — test private OKX connection\\n/balance — demo balances\\n/ticker BTC-USDT — spot quote\\n/scan BTC-USDT 15m — EMA(9), EMA(21), RSI(14)\\n\\nNo live trading, withdrawals, futures, leverage or automatic order execution.");
+      await send(chatId, "9N8 PRIVATE OKX DEMO BOT\n/id — Telegram user ID\n/start — open menu\n/okx_status — test private OKX connection\n/balance — demo balances\n/ticker BTC-USDT — spot quote\n/scan BTC-USDT 15m — EMA(9), EMA(21), RSI(14)\n\nNo live trading, withdrawals, futures, leverage or automatic order execution.");
     } else if (command === "/okx_status") await action(chatId, "status");
     else if (command === "/balance") await action(chatId, "balance");
     else if (command === "/ticker") await action(chatId, "ticker", args);
