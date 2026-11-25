@@ -149,7 +149,16 @@ class TradeStore:
     async def positions(self) -> list[dict[str, Any]]:
         cur = await self._db().execute("SELECT * FROM positions ORDER BY opened_at")
         rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        result: list[dict[str, Any]] = []
+        for raw in rows:
+            item = dict(raw)
+            try:
+                metadata = json.loads(item.get("metadata_json") or "{}")
+                item["metadata"] = metadata if isinstance(metadata, dict) else {}
+            except (TypeError, json.JSONDecodeError):
+                item["metadata"] = {}
+            result.append(item)
+        return result
 
     async def trades_since(self, iso_timestamp: str) -> list[dict[str, Any]]:
         cur = await self._db().execute("SELECT * FROM trades WHERE entry_timestamp>=? ORDER BY id", (iso_timestamp,))
