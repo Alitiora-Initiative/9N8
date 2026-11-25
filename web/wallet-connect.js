@@ -193,8 +193,8 @@ async function initialize() {
     connectButton.disabled = false;
     setStatus("WalletConnect ready. Choose a network, then connect Phantom, Trust Wallet, MetaMask or another supported wallet.", "success");
   } catch (error) {
-    connectButton.disabled = true;
-    setStatus(error?.message || "Wallet connection initialization failed.", "error");
+    connectButton.disabled = false;
+    setStatus("WalletConnect could not initialise. Try opening 9N8 inside MetaMask, Trust Wallet or Phantom for a direct wallet connection. " + (error?.message || ""), "warning");
   }
 }
 
