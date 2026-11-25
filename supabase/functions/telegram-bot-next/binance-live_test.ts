@@ -34,7 +34,7 @@ Deno.test("market sell uses base quantity and enforces the exchange step size", 
   if (order.quantity !== "0.00120" || "quoteOrderQty" in order) throw new Error("SELL order payload invalid");
   let rejected = false;
   try {
-    buildSpotMarketOrder(symbol, "SELL", { quantity: "0.00121" }, 90000, "9n81234567890123456789012345678901");
+    buildSpotMarketOrder(symbol, "SELL", { quantity: "0.001215" }, 90000, "9n81234567890123456789012345678901");
   } catch (error) {
     rejected = error instanceof Error && error.message === "market_sell_quantity_violates_lot_size";
   }
