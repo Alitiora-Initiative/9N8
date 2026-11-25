@@ -90,6 +90,34 @@ class CCXTConnector(ExecutionConnector):
                 log.exception("WebSocket feed failed for %s; falling back to REST snapshot.", symbol)
         return await self.fetch_snapshot(symbol)
 
+    async def estimate_slippage_pct(self, symbol: str, side: Side, quantity: float) -> float:
+        """Estimate market impact by walking the actual order-book depth."""
+        if quantity <= 0:
+            raise ValueError("Quantity must be positive.")
+        book = await self._ex().fetch_order_book(symbol, 50)
+        levels = book.get("asks" if side is Side.BUY else "bids") or []
+        if not levels:
+            return float("inf")
+        remaining = float(quantity)
+        notional = 0.0
+        filled = 0.0
+        best = float(levels[0][0])
+        for price_raw, amount_raw in levels:
+            price = float(price_raw)
+            amount = float(amount_raw)
+            take = min(remaining, amount)
+            if price <= 0 or take <= 0:
+                continue
+            notional += price * take
+            filled += take
+            remaining -= take
+            if remaining <= 1e-12:
+                break
+        if remaining > max(quantity * 1e-8, 1e-12) or filled <= 0:
+            return float("inf")
+        average = notional / filled
+        return abs(average - best) / best
+
     async def fetch_candles(self, symbol: str, timeframe: str, limit: int) -> list[Candle]:
         rows = await self._ex().fetch_ohlcv(symbol, timeframe, limit=limit)
         return [Candle(int(r[0]),float(r[1]),float(r[2]),float(r[3]),float(r[4]),float(r[5])) for r in rows]
