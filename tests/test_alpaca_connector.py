@@ -138,3 +138,33 @@ async def test_live_order_methods_are_not_implemented():
     )
     with pytest.raises(ConnectorUnavailable, match="paper-data only"):
         await connector.buy(intent, 1, "test-order")
+
+
+@pytest.mark.asyncio
+async def test_historical_bars_exclude_the_current_incomplete_candle():
+    from datetime import timedelta
+
+    now = datetime.now(timezone.utc)
+    closed_start = (now - timedelta(minutes=10)).replace(second=0, microsecond=0)
+    open_start = (now - timedelta(minutes=1)).replace(second=0, microsecond=0)
+    def row(timestamp, price):
+        return {
+            "t": timestamp.isoformat().replace("+00:00", "Z"),
+            "o": price, "h": price + 1, "l": price - 1,
+            "c": price, "v": 100,
+        }
+    connector = connector_with_responses([
+        FakeResponse({
+            "bars": {
+                "AAPL": [
+                    row(closed_start, 100),
+                    row(open_start, 101),
+                ]
+            }
+        })
+    ])
+
+    candles = await connector.fetch_candles("AAPL", "5m", 10)
+
+    assert len(candles) == 1
+    assert candles[0].open == 100
