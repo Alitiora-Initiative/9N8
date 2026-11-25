@@ -342,22 +342,22 @@ button:disabled{opacity:.55;cursor:wait}
   qrImageInput.addEventListener("change",async()=>{
     const file=qrImageInput.files&&qrImageInput.files[0];
     if(!file)return;
+    await stopWalletQrScanner();
+    qrPanel.classList.remove("hidden");
     walletStatus.textContent="Reading the selected QR image on this device…";
+    let imageScanner=null;
     try{
       await loadQrLibrary();
-      const imageScanner=new Html5Qrcode("qrReader",{
+      imageScanner=new Html5Qrcode("qrReader",{
         formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],
         verbose:false
       });
-      try{
-        const decoded=await imageScanner.scanFile(file,true);
-        await handleWalletQr(decoded);
-      }finally{
-        try{imageScanner.clear();}catch(_error){}
-      }
+      const decoded=await imageScanner.scanFile(file,true);
+      parseWalletQr(decoded);
     }catch(error){
       walletStatus.textContent=error.message||"No supported QR code was found in that image.";
     }finally{
+      if(imageScanner){try{imageScanner.clear();}catch(_error){}}
       qrImageInput.value="";
       qrPanel.classList.add("hidden");
       qrReader.innerHTML="";
