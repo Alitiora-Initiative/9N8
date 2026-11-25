@@ -142,6 +142,17 @@ class TradeStore:
         cur = await self._db().execute("SELECT * FROM trades WHERE entry_timestamp>=? ORDER BY id", (iso_timestamp,))
         return [dict(r) for r in await cur.fetchall()]
 
+    async def closed_trades_between(self, start_iso: str, end_iso: str) -> list[dict[str, Any]]:
+        cur = await self._db().execute(
+            """SELECT * FROM trades
+               WHERE status IN ('closed','partial_closed')
+                 AND exit_timestamp IS NOT NULL
+                 AND exit_timestamp >= ? AND exit_timestamp < ?
+               ORDER BY exit_timestamp""",
+            (start_iso, end_iso),
+        )
+        return [dict(row) for row in await cur.fetchall()]
+
     async def set_control(self, key: str, value: str) -> None:
         await self._db().execute(
             "INSERT INTO controls(key,value,updated_at) VALUES(?,?,?) "
