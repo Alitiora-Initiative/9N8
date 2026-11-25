@@ -1,155 +1,113 @@
-# 9N8 — Private OKX Spot Trading Bot
+# 9N8 — Telegram Trading Intelligence and Live-Market Paper Simulator
 
-9N8 is a **personal, owner-only Telegram bot** for one Telegram account and one OKX account. It is not a public exchange-API service and does not collect API keys from other users.
+9N8 is a Telegram-first trading intelligence workspace with a private web app, a real-market paper simulator, Binance Spot account onboarding, wallet watching, and risk controls. The current crypto paper pilot uses public Binance Spot data. Paper trades use virtual balances and never submit exchange orders.
 
-The bot runs on your Windows laptop at no monthly hosting cost. The laptop must remain on and connected to the internet while you use it. A paid always-on server can be considered later, but it is not required for the local setup.
+**Current release state:** real-market paper trading and Binance Spot LIVE account connection are deployed in Supabase. The hosted web preview is behind the latest working branch while the Vercel Hobby deployment quota is exhausted. Real Binance order placement is not enabled in this release.
 
-## Current scope
+## What works
 
-- OKX v5 REST integration using your own API key, secret and passphrase.
-- Spot cash trading only: market and limit orders.
-- Demo trading by default, using OKX's simulated-trading request header.
-- Live trading requires both `OKX_TRADING_MODE=live` and `OKX_LIVE_TRADING_ENABLED=true` in your local `.env`.
-- Every new order is previewed in Telegram and requires pressing a **Confirm order** button before an API order request is sent.
-- Every order is capped by `OKX_MAX_ORDER_NOTIONAL` (default 10 quote-currency units).
-- Open-order viewing and cancellation, account status and balance reads.
-- OKX spot ticker/candles and EMA(9)/EMA(21)/RSI(14) observations.
-- Telegram owner lock: only the numeric `TELEGRAM_OWNER_ID` can use the bot, and only in a private chat.
+### Live-market paper simulator
 
-## Explicit exclusions
+- Reads genuine Binance Spot 1-minute candles, ticker data and order-book depth.
+- Displays live candles and volume with EMA/RSI overlays.
+- The current strategy is EMA 9 / EMA 21 crossover with RSI 14 confirmation.
+- Paper trades use a virtual $1,000 starting balance, a $50 maximum entry, up to three open paper positions, an estimated 0.1% fee, and spread/slippage guards.
+- Simulated fills consume visible bid/ask depth and calculate an estimated VWAP. This is a model based on the visible book, not a promise of the exchange's eventual fill.
+- The paper engine is server-side and continues scanning while a session is running. The web app is a view and control surface.
+- Paper results and positions are stored separately from live exchange balances and orders.
 
-- No MT5, MetaApi or MetaTrader terminal.
-- No Cloudflare Worker or D1 database.
-- No other users' exchange accounts or API credential collection.
-- No withdrawals, internal transfers, wallet operations or private-key handling.
-- No futures, perpetual swaps, margin, borrowing or leverage.
-- No unattended autonomous trade execution. Signals never place orders.
-- The bot does not attach stop-loss/take-profit algos to exchange orders yet. The order preview warns you that no exchange-side stop is attached.
+### Binance Spot LIVE account connection
 
-A confirmed order can be accepted but remain unfilled, partially filled, or be rejected by OKX. Always check `/openorders` and your OKX account. Market orders can execute at a different price from the last displayed quote.
+- The private Telegram Mini App accepts Binance Spot LIVE credentials only. Demo/testnet, margin, futures and options connections are rejected.
+- Connection validation checks Binance API permissions and the account's ability to trade.
+- A dedicated key should have Read and Spot Trading enabled, while withdrawals, internal transfers, universal transfers, margin, futures and options stay disabled. IP restrictions are recommended.
+- Credentials are stored server-side in Supabase Vault. They are not returned to the browser or posted back into Telegram.
+- The balance refresh reads the account and writes a timestamped USDT balance observation for the risk gate.
 
-## Setup on Windows (local, no hosting bill)
+### Telegram and wallets
 
-### 1. Install Python
+- Telegram commands include `/start`, `/paper`, `/simulator`, `/connect`, `/connections`, `/wallets`, `/migrate`, `/approvals`, `/status`, `/risk`, `/pause` and `/stop`.
+- The private Mini App has separate Binance account, wallet-watch and paper-simulator sections.
+- Wallet address linking/verification is distinct from Binance account access. A watch-only Trust Wallet address does not give 9N8 permission to sign transactions or trade from that wallet.
 
-Install Python 3.11 or newer from https://www.python.org/downloads/windows/. During setup, enable **Add Python to PATH**.
+## What is not enabled yet
 
-### 2. Download your repository
+- **No real Binance order is currently submitted by the deployed bot.** Binance connection validates credentials and reads balances; it is not yet a working live order executor.
+- The standalone Binance order helper module validates Spot market-order parameters and signs requests, but it is not the same as a fully released, approval-to-order execution and reconciliation service.
+- No withdrawals, transfers, wallet signing, futures, margin or unattended autonomous trading are available.
+- The 9N8 paper run must not be treated as a live account or a guarantee of profitability.
 
-Download the `exchange-api` branch from GitHub as a ZIP, extract it, then open the extracted `9N8` folder.
+Do not deposit funds on the assumption that real trading is ready. Do not share an API secret, private key or seed phrase in Telegram, GitHub issues, source code or this chat.
 
-Repository branch:
-https://github.com/Alitiora-Initiative/9N8/tree/exchange-api
+## Live-trading eligibility gates
 
-### 3. Install dependencies
+The database has a server-side eligibility assessment and an exact-payload approval preflight. They are safeguards, not proof that a user is eligible. The 30-day review currently requires:
 
-Double-click `setup_windows.bat`, or open PowerShell in the repository folder and run:
+1. A completed 30-day forward paper session using genuine market data.
+2. At least 100 closed paper exits per enabled strategy, with realized P&L and recorded fees/slippage.
+3. Positive net expectancy, drawdown within the configured policy, at least three profitable chronological folds, and a profitable final out-of-sample segment.
+4. No open virtual positions, unresolved live orders or pending live proposals.
+5. A current Binance Spot LIVE connection, a fresh account-balance check and a connector-readiness record that has passed security and reconciliation checks.
+6. At least $10 of available Binance USDT quote balance. This minimum is enforced by the database, not inferred from a wallet balance.
 
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-py -m pip install --upgrade pip
-py -m pip install -r requirements.txt
+A seven-day review is only a progress checkpoint. The 30-day finalizer refuses to complete a session before the window expires, while a worker tick is active, when the worker is stale/unhealthy, or while virtual positions remain open. Live trading stays disabled until a separate owner-confirmed release is correctly implemented and the connector is certified.
+
+A few dollars in Trust Wallet are not a Binance Spot balance. To use the Binance connector, assets must be available in the Binance Spot account and the USDT balance gate must be satisfied.
+
+## Architecture
+
+- **Frontend:** Vite app in `web/`, Lightweight Charts, Telegram Web App integration, wallet watch/connect surface.
+- **Telegram API:** Supabase Edge Function `telegram-bot-next`.
+- **Paper worker:** Supabase Edge Function `n8-paper-worker`, using Binance public Spot market data.
+- **Database:** Supabase Postgres for users, paper sessions/trades, exchange connection metadata, risk gates and audit events.
+- **Credential vault:** Supabase Vault stores per-user Binance API credentials. The browser receives connection status and balance information, not the secret.
+- **Hosting:** Vercel project `9n8-secure-connect`; primary domain `https://9n8-secure-connect.vercel.app`.
+- **Working branch:** `universal-multi-user`.
+
+## Local web build
+
+Use Node.js 22 or newer:
+
+```bash
+cd web
+npm install
+npm run dev
 ```
 
-### 4. Create your private environment file
+Create a production build with:
 
-Copy `.env.example` to `.env` in the repository root. Open `.env` in Notepad and enter your own values:
-
-```env
-TELEGRAM_BOT_TOKEN=your_botfather_token
-TELEGRAM_OWNER_ID=your_numeric_telegram_user_id
-
-OKX_API_KEY=
-OKX_API_SECRET=
-OKX_API_PASSPHRASE=
-
-OKX_API_BASE=https://www.okx.com
-OKX_TRADING_MODE=demo
-OKX_LIVE_TRADING_ENABLED=false
-OKX_MAX_ORDER_NOTIONAL=10
+```bash
+npm run build
 ```
 
-Get your Telegram user ID by starting the bot and sending `/id`. Before the owner lock is set, all commands except `/id` are blocked. Put the returned numeric ID in `TELEGRAM_OWNER_ID`, save `.env`, and restart the bot.
+## Backend tests
 
-**Never commit or send the real `.env` file.** The repository's `.gitignore` excludes it. Never paste exchange credentials into Telegram, GitHub Issues, code or this chat.
+Install Deno 2 and run the focused tests:
 
-### 5. Create an OKX DEMO API key
-
-In your OKX account, open Demo Trading, then the Demo Trading API page and create a demo API key. Store the API key, secret and passphrase in your local `.env`.
-
-For the first test, use a DEMO API key and keep `OKX_TRADING_MODE=demo`. OKX demo requests require `x-simulated-trading: 1`, which this bot adds automatically in demo mode.
-
-### 6. Secure the API key
-
-- Give the key **Read** and **Trade** permission only if you need order placement.
-- Keep **Withdraw** permission OFF. 9N8 also checks the permission list and refuses to stage an order if OKX reports Withdraw permission.
-- Important: OKX's current API docs describe the Trade permission as allowing orders, cancellations and funding transfers. This app does not call transfer endpoints, but the Trade key itself may have capabilities beyond this bot. Keep the key dedicated to 9N8 and IP-restrict it where possible.
-- Bind the key to your IP address if you have a stable IP.
-- Never put the key in a Telegram message or a GitHub secret for this local setup.
-- Use a separate API key for this bot and revoke it from OKX if the laptop or local `.env` file is compromised.
-
-OKX notes that API keys have three permissions (Read, Trade and Withdraw), recommends IP binding, and documents a 14-day inactivity expiry for trade/withdraw keys that are not IP-bound. Review OKX's current rules for your account region.
-
-### 7. Start 9N8
-
-In PowerShell, from the repository folder:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-py -m src.bot
+```bash
+deno test supabase/functions/n8-paper-worker/paper-engine_test.ts
+deno test supabase/functions/telegram-bot-next/binance-live_test.ts
 ```
 
-Or double-click `start_9n8.bat` after completing setup.
+Type-check the Edge Functions:
 
-The bot is reachable from Telegram while the laptop and bot process are running. Closing the terminal or sleeping/shutting down the laptop stops the bot.
-
-## Telegram commands
-
-```text
-/id
-/start
-/help
-/okx_status
-/balance
-/ticker BTC-USDT
-/scan BTC-USDT 15m
-/order BTC-USDT buy limit 0.001 90000
-/order BTC-USDT buy market 10
-/order BTC-USDT sell market 0.001
-/openorders
-/cancel BTC-USDT ORDER_ID
+```bash
+deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts
 ```
 
-Order size rules:
-- **Limit buy/sell:** size is in base currency (for BTC-USDT, BTC); include limit price.
-- **Market buy:** size is quote-currency spend (for BTC-USDT, USDT).
-- **Market sell:** size is base-currency quantity (for BTC-USDT, BTC).
+GitHub Actions runs the Python regression suite, web production build, Deno tests and Edge Function type-check on `universal-multi-user`.
 
-Before submitting, 9N8 checks the spot instrument, market state, lot/tick precision, minimum size and your configured notional cap. It then displays a confirmation button. No order is sent until you press it.
+## Deployment notes
 
-## Switching from demo to live
+The Supabase functions and database migrations are deployed. The Vercel team is currently on the Hobby plan and hit the 100-deployments-per-24-hour limit. That stopped the latest branch build from becoming the active website. The current stable Vercel URL therefore may not include the newest UI changes until the deployment quota resets or the project owner changes the Vercel plan.
 
-Do not enable live mode until you have checked demo orders, balances, order states, cancellation and your own risk limits.
+Do not bypass this deployment restriction by promoting an unrelated branch or an unverified build. Deploy the `universal-multi-user` branch after Vercel accepts another build, confirm it reaches READY, then assign the stable domain alias.
 
-To deliberately enable live order submissions, edit your local `.env`:
+## Safety and operational rules
 
-```env
-OKX_TRADING_MODE=live
-OKX_LIVE_TRADING_ENABLED=true
-```
-
-Restart the bot after changing the file. The bot will then show **LIVE — real funds** in each order preview, and each live order still requires a separate Telegram confirmation. The `OKX_MAX_ORDER_NOTIONAL` cap remains active. To lock live orders again, return to `OKX_TRADING_MODE=demo` and `OKX_LIVE_TRADING_ENABLED=false`.
-
-## OKX account region
-
-The default API domain is `https://www.okx.com`. OKX documents different REST domains for some regional accounts, including `https://eea.okx.com` for EEA accounts and `https://us.okx.com` for US/Australia accounts. Use the domain applicable to the account you registered; set it in `OKX_API_BASE`.
-
-## Tests
-
-```powershell
-py -m pip install -r requirements.txt pytest
-py -m pytest -q
-```
-
-The tests mock the exchange HTTP responses. They do not use your API key, access your funds or place exchange orders.
+- Keep API credentials out of source control and Telegram messages.
+- Use a dedicated Binance API key; disable withdrawals and all transfers.
+- Use IP allowlisting where possible.
+- Treat HTTP timeouts and Binance 5XX order responses as **unknown execution state**, not as proof the order failed. Reconcile by client order ID before any retry.
+- Do not turn on live trading or connector readiness manually to bypass the database gates.
+- Paper P&L is virtual and does not predict live profitability.
