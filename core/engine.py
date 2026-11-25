@@ -814,7 +814,43 @@ class TradingEngine:
                     stop_hit = mark <= stop if side is Side.BUY else mark >= stop
                     target_hit = mark >= target if side is Side.BUY else mark <= target
                     if stop_hit or target_hit:
-                        await self._close_position_row(row, connector, "stop_loss" if stop_hit else "take_profit")
+                        exit_reason = "stop_loss" if stop_hit else "take_profit"
+                        if self.mode == "paper":
+                            await self._close_position_row(row, connector, exit_reason)
+                        else:
+                            # Live/testnet entries already carry native venue-side
+                            # stop/TP instructions. Do not submit a second local
+                            # market close at the same instant: that can race the
+                            # bracket fill and create a reversed/oversized order.
+                            marker = "native_bracket_breach:" + hashlib.sha256(
+                                str(row["position_key"]).encode()
+                            ).hexdigest()[:24]
+                            if await self.store.get_control(marker, "false") != "true":
+                                await self.store.set_control(marker, "true")
+                                await self.store.set_control(
+                                    "execution_reconciliation_required", "true"
+                                )
+                                await self.store.set_control("kill_switch", "true")
+                                await self.risk.pause()
+                                message = (
+                                    "9N8 LIVE EXIT RECONCILIATION REQUIRED\\n"
+                                    f"{row['venue']} · {row['symbol']} · {exit_reason.upper()} threshold observed.\\n"
+                                    "The venue-side protective bracket was submitted with the entry. "
+                                    "9N8 did not send a duplicate market close. Inspect the provider's "
+                                    "open orders, fills and current position now; the bot remains paused "
+                                    "until the position is reconciled."
+                                )
+                                await self.store.event(
+                                    "CRITICAL", "native_bracket_breach_reconciliation",
+                                    message, row["venue"], row["symbol"],
+                                    {"position_key": row["position_key"], "reason": exit_reason},
+                                )
+                                if self.notifier:
+                                    try:
+                                        await self.notifier.send(message)
+                                    except Exception:
+                                        log.error("Could not deliver native bracket reconciliation alert.")
+                            await self.store.upsert_position(row)
                         continue
                     if self.mode == "paper":
                         risk_per_unit = abs(float(row["entry_price"]) - stop)
