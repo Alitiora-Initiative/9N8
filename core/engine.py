@@ -1203,9 +1203,13 @@ class TradingEngine:
             await self.store.event("CRITICAL", "panic", "Remote panic command received.")
             await self._flatten_all()
             await self.store.set_control("flatten_errors", "")
-            self.stop_event.set()
+            # Keep market/position monitoring and Telegram online. The kill switch
+            # remains active, so no new entry can be approved until the owner resumes.
             if self.notifier:
-                await self.notifier.send("PANIC complete: known positions flattened; engine shutting down.")
+                await self.notifier.send(
+                    "PANIC complete: known positions were processed and new entries remain locked. "
+                    "9N8 monitoring and Telegram controls are still online."
+                )
 
     async def paper_status_text(self) -> str:
         if self.mode != "paper":
