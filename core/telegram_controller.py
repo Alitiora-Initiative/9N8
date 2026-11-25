@@ -21,7 +21,7 @@ class TelegramController:
         }
         self.bot = Bot(self.token) if self.token else None
         self.dispatcher = Dispatcher()
-        self.dispatcher.message.register(self.menu, Command("start", "menu"))
+        self.dispatcher.message.register(self.menu, Command("start", "menu", "help"))
         self.dispatcher.message.register(self.status, Command("status"))
         self.dispatcher.message.register(self.positions, Command("positions"))
         self.dispatcher.message.register(self.history, Command("history"))
@@ -187,8 +187,8 @@ class TelegramController:
                     result = await self.engine.status_text()
                 elif action == "positions":
                     rows = await self.engine.store.positions()
-                    result = "OPEN POSITIONS\\n" + (
-                        "\\n\\n".join(
+                    result = "OPEN POSITIONS\n" + (
+                        "\n\n".join(
                             f"{p['symbol']} · {p['side'].upper()} · qty {float(p['quantity']):.8g} "
                             f"· entry {float(p['entry_price']):.10g} · mark {float(p['mark_price']):.10g}"
                             for p in rows[:20]
@@ -196,8 +196,8 @@ class TelegramController:
                     )
                 elif action == "pending":
                     rows = await self.engine.store.pending_approvals(20)
-                    result = "PENDING APPROVALS\\n" + (
-                        "\\n".join(
+                    result = "PENDING APPROVALS\n" + (
+                        "\n".join(
                             f"{r['approval_id']} · {r['payload']['intent']['side'].upper()} "
                             f"{r['payload']['intent']['symbol']} · expires {r['expires_at']}"
                             for r in rows
@@ -205,8 +205,8 @@ class TelegramController:
                     )
                 elif action == "history":
                     rows = await self.engine.store.query_trades(10)
-                    result = "RECENT TRADES\\n" + (
-                        "\\n".join(
+                    result = "RECENT TRADES\n" + (
+                        "\n".join(
                             f"{r['symbol']} · {r['status']} · PnL {float(r.get('realized_pnl_usd') or 0):+.4f} USD"
                             for r in rows
                         ) if rows else "None"
