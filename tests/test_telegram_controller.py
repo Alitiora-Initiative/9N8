@@ -7,8 +7,11 @@ from core.telegram_controller import TelegramController
 
 
 class FakeStore:
+    def __init__(self):
+        self.controls = {}
+
     async def set_control(self, key, value):
-        return None
+        self.controls[key] = value
 
     async def pending_approvals(self, limit=20):
         return []
@@ -76,3 +79,58 @@ async def test_telegram_send_fails_closed_without_a_valid_bot(monkeypatch):
     assert not await controller._send_message(123456, "No message is sent.")
     assert await controller.run() is None
     await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_telegram_does_not_delete_or_override_existing_webhook(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123456")
+    controller = TelegramController(FakeEngine())
+    store = controller.engine.store
+    controller.bot = SimpleNamespace(
+        get_webhook_info=AsyncMock(
+            return_value=SimpleNamespace(url="https://example.invalid/telegram-webhook")
+        )
+    )
+    controller.send = AsyncMock()
+
+    await controller.run()
+
+    assert store.controls["telegram_polling_status"] == "webhook_conflict"
+    controller.send.assert_awaited_once()
+    controller.dispatcher.start_polling = AsyncMock()
+    controller.dispatcher.start_polling.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_telegram_retries_transient_private_send_errors(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    class TelegramNetworkError(Exception):
+        pass
+
+    class TelegramRetryAfter(Exception):
+        def __init__(self):
+            self.retry_after = 0.001
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USER_IDS", "123456")
+    controller = TelegramController(FakeEngine())
+    attempts = 0
+
+    async def send_message(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TelegramNetworkError("transient network failure")
+        if attempts == 2:
+            raise TelegramRetryAfter()
+        return SimpleNamespace(message_id=7)
+
+    controller.bot = SimpleNamespace(send_message=send_message)
+    assert await controller._send_message(123456, "test delivery")
+    assert attempts == 3
