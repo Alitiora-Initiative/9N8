@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
+from connectors.retry import RetryableReadError, retry_read
 from models import RiskRejected
 
 
@@ -25,11 +26,12 @@ class DexSecurityGate:
     """Fail-closed GoPlus adapter. Unknown security fields are never treated as safe."""
 
     def __init__(self):
-        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=12))
+        self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10, connect=5))
 
     async def close(self) -> None:
         await self.session.close()
 
+    @retry_read(attempts=3, timeout_seconds=10)
     async def inspect(
         self, chain: str, token: str, chain_id: int | None = None,
         pool_liquidity_usd: float | None = None, min_liquidity_usd: float = 15000,
@@ -53,6 +55,8 @@ class DexSecurityGate:
             headers["Authorization"] = "Bearer " + access
         async with self.session.get(url, params=params, headers=headers) as response:
             body = await response.json(content_type=None)
+            if response.status in {408, 425, 429, 500, 502, 503, 504}:
+                raise RetryableReadError(f"GoPlus transient HTTP {response.status}.")
             if response.status >= 400:
                 raise RiskRejected(f"GoPlus token check failed with HTTP {response.status}.")
         result = body.get("result") or body.get("data")
