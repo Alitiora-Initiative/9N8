@@ -53,6 +53,10 @@ button:disabled{opacity:.55;cursor:wait}
 .connection-actions button{margin:0;padding:10px 12px;font-size:12px}
 .connection-actions .danger{background:#45242a;border:1px solid #83414c;color:#ffd8dc}
 .account-snapshot{border-top:1px solid #2c3f56;margin-top:10px;padding-top:10px;font-size:12px;color:#b7c7d9;white-space:pre-wrap;line-height:1.5}
+#jupiterQuoteResult{min-height:34px}
+#jupiterQuoteResult .quote-line{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid #24354b}
+#jupiterQuoteResult .quote-line:last-child{border-bottom:0}
+#jupiterQuoteResult .quote-line strong{text-align:right;overflow-wrap:anywhere}
 @media(max-width:520px){body{padding:16px 12px 36px}.card{padding:16px}.grid{grid-template-columns:1fr}.tag{font-size:10px}.connection-actions{grid-template-columns:1fr}}
 </style>
 </head>
@@ -146,6 +150,31 @@ button:disabled{opacity:.55;cursor:wait}
         <div id="walletConnections" class="connection-items"><p class="muted">Open this page from your Telegram private chat to load your wallet links.</p></div>
         <p class="muted">Removing a link removes it from 9N8. It does not disable or delete the wallet inside Phantom, Trust Wallet or MetaMask.</p>
       </section>
+      <section class="connection-list" id="jupiterQuotePanel">
+        <div class="connection-list-head"><h3>Solana swap quote preview</h3><span class="pill">QUOTE ONLY</span></div>
+        <p class="muted">Build a real Jupiter Swap V2 quote for a verified Solana Mainnet wallet. This does not sign or submit a transaction. Live swap execution and Jupiter Trigger DCA remain locked pending independent release certification.</p>
+        <form id="jupiterQuoteForm" autocomplete="off">
+          <label for="jupiterWallet">Verified Solana Mainnet wallet</label>
+          <select id="jupiterWallet" required><option value="">Load a verified Solana wallet first</option></select>
+          <div class="grid">
+            <div>
+              <label for="jupiterSide">Swap direction</label>
+              <select id="jupiterSide"><option value="buy">Buy token with SOL</option><option value="sell">Sell token for SOL</option></select>
+            </div>
+            <div>
+              <label for="jupiterAmount" id="jupiterAmountLabel">Amount · SOL</label>
+              <input id="jupiterAmount" type="number" min="0.000000001" step="any" inputmode="decimal" placeholder="0.01" required>
+            </div>
+          </div>
+          <label for="jupiterTokenMint">Token mint address</label>
+          <input id="jupiterTokenMint" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Paste the Solana token mint" required>
+          <button id="jupiterQuoteButton" type="submit" disabled>Get live quote</button>
+          <div class="status" id="jupiterQuoteStatus" role="status">Connect and verify a Solana Mainnet wallet to request a quote.</div>
+        </form>
+        <div id="jupiterQuoteResult" class="account-snapshot" aria-live="polite">No quote requested yet.</div>
+        <p class="muted">Quote guardrails: 2% maximum price impact, 0.05 SOL-equivalent per quote, 0.10 SOL-equivalent rolling 24-hour cap and a 55-second expiry. An existing unresolved quote must expire or be reconciled before requesting another.</p>
+        <p class="muted">Never enter a seed phrase or private key here. No transaction signature is requested by this preview.</p>
+      </section>
     </section>
   </section>
   <section id="setupPage" class="hidden">
@@ -221,6 +250,99 @@ button:disabled{opacity:.55;cursor:wait}
   const htmlEscape=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
   const displayAmount=value=>Number.isFinite(Number(value))?Number(value).toLocaleString("en-US",{maximumFractionDigits:8}):"—";
   function showConnectionMessage(id,message){const node=document.getElementById(id);if(node)node.textContent=message;}
+  function populateJupiterWallets(wallets){
+    const select=document.getElementById("jupiterWallet");
+    const button=document.getElementById("jupiterQuoteButton");
+    if(!select)return;
+    const verified=(Array.isArray(wallets)?wallets:[]).filter(wallet=>
+      wallet && wallet.status==="verified" &&
+      wallet.chain_namespace==="solana" &&
+      wallet.chain_id==="mainnet-beta" &&
+      /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(wallet.public_address||""))
+    );
+    select.innerHTML="";
+    if(!verified.length){
+      const option=document.createElement("option");
+      option.value="";
+      option.textContent="No verified Solana Mainnet wallet linked";
+      select.appendChild(option);
+      if(button)button.disabled=true;
+      return;
+    }
+    for(const wallet of verified){
+      const option=document.createElement("option");
+      option.value=String(wallet.id);
+      option.dataset.address=String(wallet.public_address);
+      option.textContent=String(wallet.provider||"Wallet")+" · "+String(wallet.public_address).slice(0,7)+"…"+String(wallet.public_address).slice(-5);
+      select.appendChild(option);
+    }
+    if(button)button.disabled=false;
+  }
+  let lastJupiterQuoteAt=0;
+  const jupiterSide=document.getElementById("jupiterSide");
+  function updateJupiterAmountLabel(){
+    const side=jupiterSide?.value||"buy";
+    const label=document.getElementById("jupiterAmountLabel");
+    const amount=document.getElementById("jupiterAmount");
+    if(label)label.textContent=side==="buy"?"Amount · SOL":"Amount · token units";
+    if(amount)amount.placeholder=side==="buy"?"0.01":"100";
+  }
+  jupiterSide?.addEventListener("change",updateJupiterAmountLabel);
+  updateJupiterAmountLabel();
+  document.getElementById("jupiterQuoteForm")?.addEventListener("submit",async function(event){
+    event.preventDefault();
+    const status=document.getElementById("jupiterQuoteStatus");
+    const resultBox=document.getElementById("jupiterQuoteResult");
+    const button=document.getElementById("jupiterQuoteButton");
+    const walletSelect=document.getElementById("jupiterWallet");
+    const walletOption=walletSelect?.selectedOptions?.[0];
+    const walletConnectionId=walletSelect?.value||"";
+    const address=walletOption?.dataset?.address||"";
+    const side=jupiterSide?.value||"buy";
+    const amount=document.getElementById("jupiterAmount")?.value?.trim()||"";
+    const tokenMint=document.getElementById("jupiterTokenMint")?.value?.trim()||"";
+    if(!tg?.initData){status.textContent="Open this page from your Telegram private chat.";return;}
+    if(!walletConnectionId||!address){status.textContent="Select a verified Solana Mainnet wallet.";return;}
+    if(!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tokenMint)){status.textContent="Enter a valid Solana token mint address.";return;}
+    if(!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(amount)||Number(amount)<=0){status.textContent="Enter a positive swap amount.";return;}
+    const now=Date.now();
+    if(now-lastJupiterQuoteAt<2000){status.textContent="Please wait before making another quote request.";return;}
+    lastJupiterQuoteAt=now;
+    button.disabled=true;
+    status.textContent="Requesting a live Jupiter Swap V2 quote…";
+    resultBox.textContent="Fetching a quote and checking the route, price impact and safety limits…";
+    try{
+      const quote=await apiPost({
+        action:"jupiter_swap_order",
+        initData:tg.initData,
+        walletConnectionId,
+        address,
+        side,
+        tokenMint,
+        amount
+      });
+      const impact=Number(quote.priceImpactPct);
+      const lines=[
+        ["Direction",side==="buy"?"SOL → token":"token → SOL"],
+        ["Input",String(quote.inputAmount||"—")],
+        ["Expected output",String(quote.outputAmount||"—")],
+        ["Minimum output",String(quote.minimumOutput||"—")],
+        ["Route",String(quote.router||"Jupiter")],
+        ["Price impact",Number.isFinite(impact)?(impact*100).toFixed(3)+"%":"—"],
+        ["Jupiter fee",quote.feeBps==null?"Not disclosed":String(quote.feeBps)+" bps"],
+        ["Quote expires",quote.expiresAt?new Date(quote.expiresAt).toLocaleTimeString():"—"]
+      ];
+      resultBox.innerHTML=lines.map(([label,value])=>
+        '<div class="quote-line"><span>'+htmlEscape(label)+'</span><strong>'+htmlEscape(value)+'</strong></div>'
+      ).join("");
+      status.textContent="Live quote received. No transaction was signed or submitted. "+String(quote.liveExecutionCertification||"Execution remains locked.");
+    }catch(error){
+      resultBox.textContent="No quote available. "+(error.message||"Jupiter request failed.");
+      status.textContent="Quote request failed. Check wallet verification, token mint, RPC/provider availability and the one-open-quote limit.";
+    }finally{
+      button.disabled=!document.getElementById("jupiterWallet")?.value;
+    }
+  });
   async function refreshConnections(){
     if(!tg || !tg.initData){
       showConnectionMessage("exchangeConnections","Open this page from your Telegram private chat to load your connections.");
@@ -235,6 +357,7 @@ button:disabled{opacity:.55;cursor:wait}
       const result=await apiPost({action:"live_connections",initData:tg.initData});
       const exchanges=Array.isArray(result.exchanges)?result.exchanges:[];
       const wallets=Array.isArray(result.wallets)?result.wallets:[];
+      populateJupiterWallets(wallets);
       if(exchangeList){
         exchangeList.innerHTML=exchanges.length?exchanges.map(connection=>{
           const id=htmlEscape(connection.id);
@@ -257,7 +380,7 @@ button:disabled{opacity:.55;cursor:wait}
           return '<article class="connection-item">'+
             '<b>'+htmlEscape(String(wallet.provider||"wallet").replaceAll("_"," ").toUpperCase())+'</b>'+
             '<div class="connection-meta">'+htmlEscape(wallet.network||"")+' · '+htmlEscape(wallet.status||"")+' · '+htmlEscape(wallet.connection_type||"address link")+'</div>'+
-            '<div class="connection-id">'+htmlEscape(wallet.public_address||"")+'</div>'+
+            '<div class="connection-id">'+htmlEscape(wallet.masked_address||wallet.public_address||"")+'</div>'+
             '<div class="connection-actions"><button type="button" class="danger" data-revoke-wallet="'+id+'">Revoke 9N8 link</button></div>'+
           '</article>';
         }).join(""):'<p class="muted">No linked wallet records are saved to this Telegram account.</p>';
