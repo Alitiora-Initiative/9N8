@@ -44,7 +44,8 @@ class PaperBroker:
                 snap = snapshots.get(key)
                 if snap:
                     mark = snap.bid if pos.side is Side.BUY else snap.ask
-                    equity += pos.quantity * (mark - pos.entry_price) * (1 if pos.side is Side.BUY else -1)
+                    # Cash was debited by the full buy notional at entry. Add only
+                    # current liquidation value; mark-to-market PnL is then implicit.
                     equity += pos.quantity * mark if pos.side is Side.BUY else 0
             return AccountState("paper", equity, max(self.cash, 0), self.cash)
 
