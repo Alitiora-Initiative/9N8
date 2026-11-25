@@ -923,6 +923,37 @@ class TradingEngine:
                     if self.mode == "paper":
                         risk_per_unit = abs(float(row["entry_price"]) - stop)
                         favourable = (mark - float(row["entry_price"])) * direction
+                        entry_price = max(float(row["entry_price"]), 1e-12)
+                        pnl_pct = ((mark - entry_price) / entry_price) * 100.0 * direction
+                        try:
+                            opened_at = datetime.fromisoformat(str(row["opened_at"]))
+                            if opened_at.tzinfo is None:
+                                opened_at = opened_at.replace(tzinfo=timezone.utc)
+                            elapsed_minutes = (
+                                datetime.now(timezone.utc) - opened_at
+                            ).total_seconds() / 60.0
+                        except (TypeError, ValueError):
+                            elapsed_minutes = 0.0
+                        max_hold_minutes = max(
+                            1,
+                            min(
+                                10080,
+                                int(os.getenv(
+                                    "PAPER_MAX_HOLD_MINUTES",
+                                    self.cfg["execution"].get("paper_max_hold_minutes", 240),
+                                )),
+                            ),
+                        )
+                        stagnation_profit_pct = float(os.getenv(
+                            "PAPER_MIN_STAGNATION_PROFIT_PCT",
+                            self.cfg["execution"].get("paper_min_stagnation_profit_pct", 1.0),
+                        ))
+                        if (
+                            elapsed_minutes >= max_hold_minutes
+                            and pnl_pct < stagnation_profit_pct
+                        ):
+                            await self._close_position_row(row, connector, "time_kill_switch")
+                            continue
                         if not row["partial_closed"] and risk_per_unit > 0 and favourable >= 1.5 * risk_per_unit:
                             await self._partial_close(row, connector, snapshot)
                             row["partial_closed"] = True
