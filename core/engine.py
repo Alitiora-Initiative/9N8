@@ -1058,7 +1058,8 @@ class TradingEngine:
                 if not spec:
                     raise TradingError("No connector for position.")
                 connector = self.connectors[spec["connector"]]
-                await connector.cancel_all_orders(row["symbol"])
+                if self.mode != "paper":
+                    await connector.cancel_all_orders(row["symbol"])
                 snapshot = await connector.fetch_snapshot(row["symbol"])
                 self.snapshots[row["position_key"]] = snapshot
                 row["mark_price"] = snapshot.bid if row["side"] == "buy" else snapshot.ask
