@@ -216,199 +216,7 @@ class TradingEngine:
             return int(text[:-1]) * 3_600_000
         if text.endswith("d") and text[:-1].isdigit():
             return int(text[:-1]) * 86_400_000
-        return 0
-
-    def _only_closed_candles(self, candles: list, timeframe: str) -> list:
-        duration = self._timeframe_ms(timeframe)
-        if duration <= 0:
-            return candles
-        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-        return [c for c in candles if c.timestamp + duration <= now_ms]
-
-    async def _market_loop(self, spec: dict[str, Any]) -> None:
-        connector = self.connectors[spec["connector"]]
-        delay = 1.0
-        last_candle_fetch = 0.0
-        last_evaluated_candle = None
-        cached_trend = []
-        cached_entry = []
-        candle_refresh = max(5.0, float(self.cfg["execution"].get("candle_refresh_seconds", 15)))
-        while not self.stop_event.is_set():
-            try:
-                async with self._market_semaphore:
-                    if hasattr(connector, "watch_snapshot"):
-                        snapshot = await connector.watch_snapshot(spec["symbol"])
-                    else:
-                        snapshot = await connector.fetch_snapshot(spec["symbol"])
-                key = self._key(spec["venue"], spec["symbol"])
-                self.snapshots[key] = snapshot
-                if spec.get("dex_data_only"):
-                    await asyncio.sleep(5)
-                    continue
-                now = asyncio.get_running_loop().time()
-                if now - last_candle_fetch >= candle_refresh or not cached_entry:
-                    trend_raw, entry_raw = await asyncio.gather(
-                        connector.fetch_candles(spec["symbol"], spec["trend_tf"], 250),
-                        connector.fetch_candles(spec["symbol"], spec["entry_tf"], 120),
-                    )
-                    cached_trend = self._only_closed_candles(trend_raw, spec["trend_tf"])
-                    cached_entry = self._only_closed_candles(entry_raw, spec["entry_tf"])
-                    last_candle_fetch = now
-                if cached_entry:
-                    candle_time = cached_entry[-1].timestamp
-                    if candle_time != last_evaluated_candle and cached_trend:
-                        last_evaluated_candle = candle_time
-                        intent = self.trend_strategy.evaluate(
-                            spec["venue"], spec["symbol"], spec["market_type"],
-                            cached_trend, cached_entry,
-                        )
-                        if intent is not None:
-                            await self._consider_entry(spec, connector, intent, snapshot, candle_time)
-                delay = 1.0
-                await asyncio.sleep(float(self.cfg["execution"].get("price_poll_seconds", 1.0)))
-            except asyncio.CancelledError:
-                raise
-            except RiskRejected as exc:
-                await self.store.event("WARNING", "risk_veto", str(exc), spec["venue"], spec["symbol"])
-                await asyncio.sleep(2)
-            except Exception as exc:
-                log.exception("Market loop error for %s %s", spec["venue"], spec["symbol"])
-                await self.store.event("ERROR", "market_loop_error", str(exc), spec["venue"], spec["symbol"])
-                if self.notifier:
-                    await self.notifier.send("9N8 feed error: " + spec["venue"] + " " + spec["symbol"] + ": " + str(exc)[:180])
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 30)
-
-    def _forex_spread_pips(self, snapshot: MarketSnapshot) -> float:
-        pip = 0.01 if "JPY" in snapshot.symbol else 0.0001
-        return (snapshot.ask - snapshot.bid) / pip
-
-    async def _consider_entry(self, spec: dict[str, Any], connector, intent: TradeIntent,
-                              snapshot: MarketSnapshot, candle_timestamp: int) -> None:
-        """Create a trade proposal. No new position is opened without Telegram approval."""
-        await self.risk.assert_entry_allowed()
-        key = self._key(intent.venue, intent.symbol)
-        open_rows = await self.store.positions()
-        if any(row["position_key"] == key for row in open_rows):
-            return
-        if intent.market_type in {MarketType.SOLANA_DEX, MarketType.EVM_DEX}:
-            raise RiskRejected("DEX entries remain data-only until verified simulations and reconciliation are complete.")
-
-        account = await self._portfolio_account()
-        exposure = sum(float(row["quantity"]) * float(row["mark_price"]) for row in open_rows)
-        spread_slippage = max(snapshot.spread_pct / 2, 0)
-        leverage = float(spec.get("leverage", 1))
-        contract_multiplier = (
-            connector.contract_multiplier(intent.symbol)
-            if hasattr(connector, "contract_multiplier") else 1.0
-        )
-        spread_pips = self._forex_spread_pips(snapshot) if intent.market_type is MarketType.FOREX else None
-        old_entry = float(intent.entry_price)
-        planned_stop_distance = abs(old_entry - float(intent.stop_loss))
-        planned_reward_distance = abs(float(intent.take_profit) - old_entry)
-        executable_entry = snapshot.ask if intent.side is Side.BUY else snapshot.bid
-        if planned_stop_distance <= 0 or planned_reward_distance <= 0 or executable_entry <= 0:
-            raise RiskRejected("Invalid signal stop/target distance or executable quote.")
-        if intent.side is Side.BUY:
-            rebased_stop = executable_entry - planned_stop_distance
-            rebased_target = executable_entry + planned_reward_distance
-        else:
-            rebased_stop = executable_entry + planned_stop_distance
-            rebased_target = executable_entry - planned_reward_distance
-        proposed = TradeIntent(
-            intent.venue, intent.symbol, intent.market_type, intent.side,
-            executable_entry, rebased_stop, rebased_target, planned_stop_distance,
-            intent.reason, {**intent.metadata, "signal_candle_ms": candle_timestamp},
-        )
-        decision = await self.risk.evaluate(
-            proposed, account, snapshot, exposure, spread_slippage,
-            leverage=leverage, forex_spread_pips=spread_pips,
-            contract_multiplier=contract_multiplier,
-            current_open_positions=len(open_rows),
-        )
-        if not decision.approved or not decision.size:
-            await self.store.event("WARNING", "trade_veto", decision.reason, proposed.venue, proposed.symbol)
-            return
-        if hasattr(connector, "estimate_slippage_pct"):
-            order_impact = await connector.estimate_slippage_pct(
-                proposed.symbol, proposed.side, decision.size.quantity
-            )
-            limit = self.risk.slippage_limit_pct(proposed.market_type.value)
-            if not math.isfinite(order_impact) or order_impact > limit:
-                reason = f"Order-book impact {order_impact:.4%} exceeds the hard {limit:.4%} limit."
-                await self.store.event("WARNING", "market_impact_veto", reason, proposed.venue, proposed.symbol)
-                return
-
-        signal_key = f"{proposed.venue}:{proposed.symbol}:{proposed.side.value}:{candle_timestamp}"
-        approval_id = uuid.uuid4().hex[:12].upper()
-        timeout_seconds = max(
-            15,
-            min(600, int(self.cfg["execution"].get("approval_timeout_seconds", 120))),
-        )
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
-        payload = {
-            "intent": {
-                "venue": proposed.venue,
-                "symbol": proposed.symbol,
-                "market_type": proposed.market_type.value,
-                "side": proposed.side.value,
-                "entry_price": proposed.entry_price,
-                "stop_loss": proposed.stop_loss,
-                "take_profit": proposed.take_profit,
-                "risk_distance": proposed.risk_distance,
-                "reason": proposed.reason,
-                "metadata": proposed.metadata,
-            },
-            "size": {
-                "quantity": decision.size.quantity,
-                "notional_usd": decision.size.notional_usd,
-                "risk_usd": decision.size.risk_usd,
-            },
-            "spec": {
-                "connector": spec["connector"],
-                "venue": spec["venue"],
-                "symbol": spec["symbol"],
-                "market_type": spec["market_type"].value,
-                "entry_tf": spec.get("entry_tf"),
-                "trend_tf": spec.get("trend_tf"),
-                "leverage": leverage,
-            },
-            "signal_key": signal_key,
-            "signal_candle_ms": candle_timestamp,
-            "reference_price": executable_entry,
-            "risk_reason": decision.reason,
-        }
-        created = await self.store.create_pending_approval(
-            approval_id, signal_key, expires_at.isoformat(), payload
-        )
-        if not created:
-            return
-
-        preview = (
-            f"9N8 TRADE APPROVAL REQUIRED\n"
-            f"{proposed.side.value.upper()} {proposed.symbol}\n"
-            f"Venue: {proposed.venue} · mode: {self.mode.upper()}\n"
-            f"Reference entry: {proposed.entry_price:.10g}\n"
-            f"Estimated quantity: {decision.size.quantity:.8g}\n"
-            f"Notional: {decision.size.notional_usd:.2f} USD · planned stop risk: {decision.size.risk_usd:.2f} USD\n"
-            f"Stop loss: {proposed.stop_loss:.10g}\n"
-            f"Take profit: {proposed.take_profit:.10g}\n"
-            f"Strategy: {proposed.reason}\n"
-            f"Approval expires in {timeout_seconds}s. The quote and risk limits will be checked again after approval.\n"
-            f"No order has been placed."
-        )
-        await self.store.event(
-            "INFO", "trade_approval_requested", preview, proposed.venue, proposed.symbol,
-            {"approval_id": approval_id, "signal_key": signal_key},
-        )
-        if self.notifier:
-            send_approval = getattr(self.notifier, "send_approval", None)
-            if send_approval:
-                await send_approval(approval_id, preview)
-            else:
-                await self.notifier.send(preview + f"\nApproval ID: {approval_id}")
-
-    async def approve_pending(self, approval_id: str, approved_by: str) -> str:
+        return 0    async def approve_pending(self, approval_id: str, approved_by: str) -> str:
         """Re-price and re-run all risk checks immediately before the confirmed order."""
         pending = await self.store.get_pending_approval(approval_id)
         if not pending:
@@ -428,6 +236,10 @@ class TradingEngine:
             raise TradingError("This trade proposal is already being processed or has been decided.")
 
         signal_key = pending["signal_key"]
+        submission_started = False
+        execution_returned = False
+        approval_finalized = False
+        message = ""
         try:
             await self.risk.assert_entry_allowed()
             payload = pending["payload"]
@@ -508,6 +320,7 @@ class TradingEngine:
             }):
                 raise TradingError("This signal already has an execution record.")
             client_id = hashlib.sha256(signal_key.encode()).hexdigest()[:32]
+            submission_started = True
             if self.mode == "paper":
                 receipt = await self.paper.execute(intent, decision.size.quantity, snapshot, client_id)
                 await self.store.set_control("paper_cash", str(self.paper.cash))
@@ -515,6 +328,7 @@ class TradingEngine:
                 receipt = await connector.buy(intent, decision.size.quantity, client_id)
             else:
                 receipt = await connector.sell(intent, decision.size.quantity, client_id)
+            execution_returned = True
             if receipt.quantity <= 0 or receipt.average_price <= 0:
                 raise ConnectorUnavailable("Provider returned no confirmed fill; manual reconciliation is required.")
 
@@ -547,10 +361,6 @@ class TradingEngine:
             }
             await self.store.upsert_position(position)
             await self.store.update_idempotency(signal_key, "filled")
-            await self.store.decide_pending_approval(
-                approval_id, "APPROVED", approved_by,
-                f"Filled {receipt.quantity:.8g} at {receipt.average_price:.10g}.",
-            )
             message = (
                 f"9N8 APPROVED ENTRY {receipt.side.value.upper()} {receipt.symbol}\n"
                 f"Venue: {receipt.venue} · mode: {self.mode.upper()}\n"
@@ -559,10 +369,18 @@ class TradingEngine:
                 f"Fee: {receipt.fee_usd:.6f} · slippage: {receipt.slippage_pct:.3%}\n"
                 f"Approved by Telegram user {str(approved_by)[:32]}."
             )
-            await self.store.event(
-                "INFO", "trade_entry", message, receipt.venue, receipt.symbol,
-                {"order_id": receipt.order_id, "tx_hash": receipt.tx_hash, "approval_id": approval_id},
+            await self.store.decide_pending_approval(
+                approval_id, "APPROVED", approved_by,
+                f"Filled {receipt.quantity:.8g} at {receipt.average_price:.10g}.",
             )
+            approval_finalized = True
+            try:
+                await self.store.event(
+                    "INFO", "trade_entry", message, receipt.venue, receipt.symbol,
+                    {"order_id": receipt.order_id, "tx_hash": receipt.tx_hash, "approval_id": approval_id},
+                )
+            except Exception as event_exc:
+                log.error("Trade was recorded but trade event logging failed (%s).", type(event_exc).__name__)
             if self.notifier:
                 try:
                     await self.notifier.send(message)
@@ -570,14 +388,54 @@ class TradingEngine:
                     log.warning("Trade fill notification failed (%s).", type(notify_exc).__name__)
             return message
         except Exception as exc:
-            await self.store.decide_pending_approval(
-                approval_id, "FAILED", approved_by, str(exc)[:1000]
-            )
-            if await self.store.get_control("kill_switch", "false") != "true":
+            if approval_finalized:
+                # The fill and approval are already committed. Do not reverse the
+                # successful state because a later notification/logging step failed.
+                log.error("Post-fill ancillary operation failed (%s).", type(exc).__name__)
+                return message or (
+                    f"9N8 trade {approval_id} was approved and recorded. "
+                    "Check the positions dashboard for the confirmed fill."
+                )
+            if execution_returned or (submission_started and self.mode != "paper"):
+                # Once a live/testnet broadcast starts, a network error can leave the
+                # actual provider result ambiguous. Never relabel it as a clean failure
+                # and never retry it automatically.
+                reconciliation = (
+                    "Execution outcome may be unknown. Inspect provider open orders, "
+                    "fills, wallet balances and transaction history manually before any retry. "
+                    "9N8 has halted new entries."
+                )
                 try:
-                    await self.store.update_idempotency(signal_key, "failed")
-                except Exception:
-                    pass
+                    await self.store.decide_pending_approval(
+                        approval_id, "RECONCILIATION_REQUIRED", approved_by,
+                        f"{type(exc).__name__}: {str(exc)[:700]}",
+                    )
+                    await self.store.set_control("kill_switch", "true")
+                    await self.store.set_control("execution_reconciliation_required", "true")
+                    await self.risk.pause()
+                    await self.store.event(
+                        "CRITICAL", "execution_reconciliation_required",
+                        reconciliation, intent.venue, intent.symbol,
+                        {"approval_id": approval_id, "signal_key": signal_key},
+                    )
+                except Exception as state_exc:
+                    log.critical(
+                        "Could not persist uncertain execution state (%s). Manual provider reconciliation is mandatory.",
+                        type(state_exc).__name__,
+                    )
+                if self.notifier:
+                    try:
+                        await self.notifier.send("9N8 EXECUTION WARNING\\n" + reconciliation)
+                    except Exception:
+                        log.error("Could not send execution reconciliation alert.")
+                raise TradingError(reconciliation) from exc
+            try:
+                await self.store.decide_pending_approval(
+                    approval_id, "FAILED", approved_by, str(exc)[:1000]
+                )
+                await self.store.update_idempotency(signal_key, "failed")
+            except Exception as state_exc:
+                log.error("Could not persist failed approval state (%s).", type(state_exc).__name__)
             raise
 
     async def deny_pending(self, approval_id: str, denied_by: str) -> str:
