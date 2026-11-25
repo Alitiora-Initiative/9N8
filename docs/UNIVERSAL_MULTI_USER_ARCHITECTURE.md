@@ -234,3 +234,29 @@ Do not mark a feature complete until:
 - the bot cannot act on group trade instructions or another user's connection;
 - Supabase security and performance advisors have been reviewed;
 - the active Edge Function and GitHub source are in sync.
+
+
+## Implementation status — 2026-11-25
+
+The database foundation is deployed to Supabase and the candidate Edge Function is deployed separately from the legacy function.
+
+Implemented in the candidate:
+- multi-user Telegram identity registration and user-specific data model;
+- backend-only RLS tables and Vault credential-storage/retrieval/revocation procedures;
+- atomic Telegram update claims with short retryable leases;
+- exchange-key validation for OKX Demo, Binance Spot Testnet and Bybit Demo;
+- Vercel-hosted Telegram Mini App pages for exchange setup, watch-only address entry, and webhook setup;
+- watch-only EVM and Solana public-address records;
+- group-setup and manual moderator commands with administrator checks.
+
+Not yet implemented:
+- exchange balances, market information and open-order reads for each attached connection;
+- actual wallet connection sessions, balances or transactions;
+- paper/demo trade execution, order reconciliation, strategies and scheduler jobs;
+- live trading (remains disabled);
+- full connection revoke/dashboard UI and comprehensive end-to-end test suite.
+
+Deployment state:
+- Supabase function `telegram-bot-next` is ACTIVE, but Telegram webhook registration is still pending the two shared Supabase Edge Function secrets.
+- The stable legacy function and `main` branch have not been replaced or merged.
+- The universal code is isolated in branch `universal-multi-user`.
