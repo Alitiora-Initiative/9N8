@@ -601,7 +601,6 @@ class TradingEngine:
             submission_started = True
             if self.mode == "paper":
                 receipt = await self.paper.execute(intent, decision.size.quantity, snapshot, client_id)
-                await self.store.set_control("paper_cash", str(self.paper.cash))
             elif intent.side is Side.BUY:
                 receipt = await connector.buy(intent, decision.size.quantity, client_id)
             else:
@@ -610,7 +609,7 @@ class TradingEngine:
             if receipt.quantity <= 0 or receipt.average_price <= 0:
                 raise ConnectorUnavailable("Provider returned no confirmed fill; manual reconciliation is required.")
 
-            await self.store.record_trade({
+            trade_record = {
                 "client_order_id": signal_key, "venue": receipt.venue, "symbol": receipt.symbol,
                 "market_type": intent.market_type.value, "side": receipt.side.value,
                 "status": "open", "mode": self.mode, "quantity": receipt.quantity,
@@ -619,7 +618,7 @@ class TradingEngine:
                 "slippage_pct": receipt.slippage_pct,
                 "gas_fee_usd": float(receipt.raw.get("gas_fee_usd", 0)),
                 "commission_usd": receipt.fee_usd, "metadata": receipt.raw,
-            })
+            }
             position = {
                 "position_key": position_key, "venue": intent.venue, "symbol": intent.symbol,
                 "market_type": intent.market_type.value, "side": intent.side.value,
@@ -640,7 +639,13 @@ class TradingEngine:
                 "opened_at": receipt.timestamp.isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
-            await self.store.upsert_position(position)
+            if self.mode == "paper":
+                await self.store.persist_paper_fill(
+                    trade_record, self.paper.cash, position=position
+                )
+            else:
+                await self.store.record_trade(trade_record)
+                await self.store.upsert_position(position)
             await self.store.update_idempotency(signal_key, "filled")
             message = (
                 f"9N8 APPROVED ENTRY {receipt.side.value.upper()} {receipt.symbol}\n"
