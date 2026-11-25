@@ -154,6 +154,12 @@ class TradingEngine:
 
         if not self.specs:
             raise TradingError("No markets enabled. Enable at least one provider in config.json.")
+        if self.mode == "paper":
+            configured_cash = float(self.cfg["execution"].get("paper_starting_cash_usd", 10000))
+            persisted_cash = await self.store.get_control("paper_cash", "")
+            cash = float(persisted_cash) if persisted_cash else configured_cash
+            await self.paper.restore_state(cash, await self.store.positions())
+            await self.store.set_control("paper_cash", str(self.paper.cash))
         await self.store.event("INFO", "engine_connected",
                                f"Connected {len(self.specs)} instruments in {self.mode} mode.")
 
@@ -266,6 +272,7 @@ class TradingEngine:
         try:
             if self.mode == "paper":
                 receipt = await self.paper.execute(intent, decision.size.quantity, snapshot, client_id)
+                await self.store.set_control("paper_cash", str(self.paper.cash))
             elif intent.side is Side.BUY:
                 receipt = await connector.buy(intent, decision.size.quantity, client_id)
             else:
@@ -408,6 +415,7 @@ class TradingEngine:
                 "TP1 partial close", {},
             )
             await self.paper.execute(intent, amount, snapshot, "tp1-" + uuid.uuid4().hex)
+            await self.store.set_control("paper_cash", str(self.paper.cash))
         else:
             p = OpenPosition(
                 row["venue"], row["symbol"], MarketType(row["market_type"]), Side(row["side"]),
@@ -436,6 +444,7 @@ class TradingEngine:
                 p.stop_loss, p.take_profit, abs(p.mark_price-p.stop_loss), reason, {},
             )
             receipt = await self.paper.execute(intent, p.quantity, snapshot, "exit-" + uuid.uuid4().hex)
+            await self.store.set_control("paper_cash", str(self.paper.cash))
         else:
             receipt = await connector.close_position(p)
         direction = 1 if p.side is Side.BUY else -1
