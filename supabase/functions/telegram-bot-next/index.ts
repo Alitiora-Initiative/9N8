@@ -16,6 +16,7 @@ const SUPABASE_SERVICE_KEY = (() => {
 })();
 const FUNCTION_URL = SUPABASE_URL + "/functions/v1/telegram-bot-next";
 const MINI_APP_URL = "https://9n8-secure-connect.vercel.app/connect";
+const MIGRATION_PAGE_URL = "https://9n8-secure-connect.vercel.app/migrate";
 const SETUP_PAGE_URL = "https://9n8-secure-connect.vercel.app/setup";
 const CORS_HEADERS = {
   "access-control-allow-origin": "https://9n8-secure-connect.vercel.app",
@@ -120,33 +121,17 @@ function splitText(value: string, maxCodePoints: number): string[] {
   return chunks.length ? chunks : [""];
 }
 async function send(chatId: number, text: string, markup?: Obj) {
-  const value = String(text ?? "");
-  const length = Array.from(value).length;
-  if (length <= 4096) {
-    const payload: Obj = { chat_id: chatId, text: value, disable_web_page_preview: true };
-    if (markup) payload.reply_markup = markup;
+  // Telegram sendMessage is limited to 4096 characters after entity parsing.
+  // Chunk plain text at Unicode code-point boundaries; never call undocumented methods.
+  const chunks = splitText(String(text ?? ""), 3900);
+  for (let i = 0; i < chunks.length; i++) {
+    const payload: Obj = {
+      chat_id: chatId,
+      text: chunks[i],
+      disable_web_page_preview: true,
+    };
+    if (markup && i === chunks.length - 1) payload.reply_markup = markup;
     await telegram("sendMessage", payload);
-    return;
-  }
-  const richChunks = splitText(value, 32000);
-  try {
-    for (let i = 0; i < richChunks.length; i++) {
-      const payload: Obj = {
-        chat_id: chatId,
-        rich_message: { html: richHtmlFromPlainText(richChunks[i]) },
-      };
-      if (markup && i === richChunks.length - 1) payload.reply_markup = markup;
-      await telegram("sendRichMessage", payload);
-    }
-    return;
-  } catch {
-    // Older Bot API deployments may not expose rich messages; never silently truncate.
-    const plainChunks = splitText(value, 3900);
-    for (let i = 0; i < plainChunks.length; i++) {
-      const payload: Obj = { chat_id: chatId, text: plainChunks[i], disable_web_page_preview: true };
-      if (markup && i === plainChunks.length - 1) payload.reply_markup = markup;
-      await telegram("sendMessage", payload);
-    }
   }
 }
 async function sendReportPhoto(chatId: number, signedUrl: string, caption: string, markup?: Obj) {
@@ -164,10 +149,27 @@ async function sendReportPhoto(chatId: number, signedUrl: string, caption: strin
   if (markup) payload.reply_markup = markup;
   await telegram("sendPhoto", payload);
 }
+async function sendReportDocument(chatId: number, signedUrl: string, caption: string) {
+  const url = new URL(signedUrl);
+  const backend = new URL(SUPABASE_URL);
+  if (url.protocol !== "https:" || url.hostname !== backend.hostname ||
+      !url.pathname.startsWith("/storage/v1/object/sign/")) {
+    throw new Error("report_document_url_not_allowed");
+  }
+  await telegram("sendDocument", {
+    chat_id: chatId,
+    document: signedUrl,
+    caption: Array.from(String(caption ?? "")).slice(0, 1024).join(""),
+  });
+}
 function mainKeyboard(): Obj {
   return { inline_keyboard: [
-    [{ text: "Connect exchange / link wallet", web_app: { url: MINI_APP_URL } }],
+    [{ text: "▶ Start crypto paper run ($1,000 virtual)", callback_data: "n8:paper_start_crypto" }],
+    [{ text: "Paper trading status", callback_data: "n8:paper_status" }],
+    [{ text: "Connect exchange / wallet", web_app: { url: MINI_APP_URL } }],
+    [{ text: "Live migration assessment", web_app: { url: MIGRATION_PAGE_URL } }],
     [{ text: "My exchange connections", callback_data: "n8:connections" }],
+    [{ text: "Live status / risk", callback_data: "n8:live_status" }],
   ] };
 }
 
@@ -573,6 +575,38 @@ async function handleMiniApp(body: any): Promise<Response> {
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
     if (body.action === "wallet_revoke") return await revokeWalletSession(user, body);
+    if (body.action === "live_connections") {
+      const exchangeRows = await db(
+        "n8_exchange_connections?select=id,provider,environment,label,status&user_id=eq." +
+          encodeURIComponent(row.id) + "&status=eq.active&order=created_at.desc"
+      );
+      const walletRows = await db(
+        "n8_wallet_connections?select=id,provider,network,public_address,status,connection_type&user_id=eq." +
+          encodeURIComponent(row.id) + "&status=eq.verified&order=created_at.desc"
+      );
+      return response({
+        ok: true,
+        exchanges: Array.isArray(exchangeRows) ? exchangeRows : [],
+        wallets: Array.isArray(walletRows) ? walletRows.map((w: any) => ({
+          ...w,
+          public_address: mask(String(w.public_address)),
+        })) : [],
+        liveTradingEnabled: false,
+        message: "Demo/testnet exchange connections cannot be migrated to live. A verified wallet still needs a separately owner-authorized trade-only smart-account delegation.",
+      });
+    }
+    if (body.action === "live_status") {
+      const status = await getLiveStatus(row.id);
+      return response({ ok: true, status });
+    }
+    if (body.action === "live_assess") {
+      return await assessLiveMigration(user, row, body);
+    }
+    if (body.action === "live_pause") {
+      const result = await applyEmergencyStop(row.id, "pause");
+      await audit(row.id, null, "live_migration_pause", "ok", { source: "mini_app" });
+      return response({ ok: true, ...result });
+    }
     throw new Error("unsupported_action");
   } catch (error) {
     const code = error instanceof Error ? error.message : "request_failed";
@@ -727,6 +761,390 @@ async function groupCommand(m: any, command: string, args: string[], actorRow: a
   }
 }
 
+
+async function getLiveStatus(userId: string): Promise<Obj> {
+  const policies = await db(
+    "n8_risk_policies?select=execution_mode,auto_execute_enabled,wallet_auto_execute_enabled,live_trading_enabled,require_confirmation,kill_switch,min_live_balance_usd,max_order_usd,max_daily_notional_usd,max_open_positions,max_slippage_bps,max_price_deviation_bps,minimum_liquidity_usd,paper_graduation_days&user_id=eq." +
+      encodeURIComponent(userId) + "&limit=1"
+  );
+  const policy = Array.isArray(policies) ? policies[0] : null;
+  const migrations = await db(
+    "n8_live_migrations?select=id,account_type,market_type,evaluation_window_days,status,execution_mode,failed_checks,owner_confirmed_at,live_enabled_at,paused_at,revoked_at,created_at&user_id=eq." +
+      encodeURIComponent(userId) + "&order=created_at.desc&limit=5"
+  );
+  return {
+    liveTradingEnabled: policy?.live_trading_enabled === true,
+    executionMode: String(policy?.execution_mode ?? "approval"),
+    automaticExecutionEnabled: policy?.auto_execute_enabled === true,
+    walletAutomaticExecutionEnabled: policy?.wallet_auto_execute_enabled === true,
+    killSwitch: policy?.kill_switch === true,
+    ownerApprovalRequired: policy?.require_confirmation !== false,
+    minimumLiveBalanceUsd: Number(policy?.min_live_balance_usd ?? 10),
+    maxOrderUsd: Number(policy?.max_order_usd ?? 10),
+    maxDailyNotionalUsd: Number(policy?.max_daily_notional_usd ?? 25),
+    maxOpenPositions: Number(policy?.max_open_positions ?? 3),
+    maxSlippageBps: Number(policy?.max_slippage_bps ?? 100),
+    maxPriceDeviationBps: Number(policy?.max_price_deviation_bps ?? 50),
+    minimumLiquidityUsd: Number(policy?.minimum_liquidity_usd ?? 50000),
+    paperGraduationDays: Number(policy?.paper_graduation_days ?? 30),
+    migrations: Array.isArray(migrations) ? migrations : [],
+    releaseState: "live_execution_not_activated",
+  };
+}
+
+async function assessLiveMigration(user: any, row: any, body: any): Promise<Response> {
+  const accountType = String(body?.accountType ?? "");
+  const marketType = String(body?.marketType ?? "");
+  const connectionId = clean(body?.connectionId, 64);
+  const windowDays = Number(body?.windowDays ?? 30);
+  if (!["exchange", "wallet", "broker"].includes(accountType) ||
+      !["solana", "crypto", "stocks", "forex"].includes(marketType) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(connectionId) ||
+      ![7, 30].includes(windowDays)) {
+    return response({ ok: false, message: "Choose a supported account, market, and 7- or 30-day review window." }, 400);
+  }
+
+  // Confirm connection ownership before calling the privileged database gate.
+  if (accountType === "wallet") {
+    const rows = await db(
+      "n8_wallet_connections?select=id,provider,status,chain_namespace,chain_id,network&user_id=eq." +
+        encodeURIComponent(row.id) + "&id=eq." + encodeURIComponent(connectionId) + "&status=eq.verified&limit=1"
+    );
+    if (!Array.isArray(rows) || rows.length !== 1) {
+      return response({ ok: false, message: "This verified wallet does not belong to your Telegram account." }, 403);
+    }
+  } else if (accountType === "exchange") {
+    const rows = await db(
+      "n8_exchange_connections?select=id,provider,environment,status&user_id=eq." +
+        encodeURIComponent(row.id) + "&id=eq." + encodeURIComponent(connectionId) + "&status=eq.active&limit=1"
+    );
+    if (!Array.isArray(rows) || rows.length !== 1) {
+      return response({ ok: false, message: "This active exchange connection does not belong to your Telegram account." }, 403);
+    }
+    if (rows[0].environment !== "live") {
+      return response({
+        ok: false,
+        message: "This exchange connection is " + String(rows[0].environment) + ". Demo/testnet keys cannot be migrated to live. A separate live-key onboarding and connector certification is required.",
+      }, 400);
+    }
+  } else {
+    return response({ ok: false, message: "A live broker connector is not yet certified for this market." }, 400);
+  }
+
+  let assessment = await db("rpc/n8_live_gate_assess", "POST", {
+    p_user_id: row.id,
+    p_window_days: windowDays,
+    p_account_type: accountType,
+    p_connection_id: connectionId,
+    p_market_type: marketType,
+  });
+
+  if (!assessment || typeof assessment !== "object") {
+    throw new Error("live_gate_assessment_unavailable");
+  }
+
+  // Seven days is a progress checkpoint only. The uploaded 9N8 specification
+  // uses a 30-day forward-paper period before live eligibility.
+  if (windowDays === 7) {
+    assessment = {
+      ...assessment,
+      eligible: false,
+      status: "progress_review_only",
+      reasons: [
+        ...(Array.isArray(assessment.reasons) ? assessment.reasons : []),
+        "The 7-day review is a progress checkpoint only. Complete the 30-day forward-paper evaluation before live eligibility.",
+      ],
+    };
+    await audit(row.id, null, "live_migration_progress_review", "ok", {
+      account_type: accountType, market_type: marketType, window_days: 7,
+    });
+    return response({ ok: true, assessment, liveTradingEnabled: false });
+  }
+
+  const eligible = assessment.eligible === true;
+  const migrationStatus = eligible ? "eligible_pending_setup" : "ineligible";
+  const failedChecks = Array.isArray(assessment.reasons) ? assessment.reasons : [];
+  const existing = await db(
+    "n8_live_migrations?select=id&user_id=eq." + encodeURIComponent(row.id) +
+      "&account_type=eq." + encodeURIComponent(accountType) +
+      "&connection_id=eq." + encodeURIComponent(connectionId) +
+      "&market_type=eq." + encodeURIComponent(marketType) +
+      "&evaluation_window_days=eq.30&order=created_at.desc&limit=1"
+  );
+  let migrationId = "";
+  if (Array.isArray(existing) && existing[0]?.id) {
+    migrationId = String(existing[0].id);
+    await db("n8_live_migrations?id=eq." + encodeURIComponent(migrationId), "PATCH", {
+      status: migrationStatus,
+      execution_mode: "approval",
+      gate_snapshot: assessment,
+      failed_checks: failedChecks,
+      updated_at: new Date().toISOString(),
+    }, "return=minimal");
+  } else {
+    const inserted = await db("n8_live_migrations", "POST", {
+      user_id: row.id,
+      account_type: accountType,
+      connection_id: connectionId,
+      market_type: marketType,
+      evaluation_window_days: 30,
+      status: migrationStatus,
+      execution_mode: "approval",
+      gate_snapshot: assessment,
+      failed_checks: failedChecks,
+    }, "return=representation");
+    migrationId = Array.isArray(inserted) ? String(inserted[0]?.id ?? "") : "";
+  }
+  await audit(row.id, null, "live_migration_assessed", eligible ? "eligible_pending_manual_release" : "ineligible", {
+    migration_id: migrationId || null,
+    account_type: accountType,
+    market_type: marketType,
+    evaluation_window_days: 30,
+    failed_check_count: failedChecks.length,
+  });
+
+  return response({
+    ok: true,
+    migrationId: migrationId || null,
+    assessment,
+    liveTradingEnabled: false,
+    nextStep: eligible
+      ? "The paper and connector gates passed. Live execution still requires a separately owner-signed trading-vault delegation and a manual connector release. No live order can be placed from this assessment."
+      : "Continue genuine paper trading and resolve the listed checks. No live trading is enabled.",
+  });
+}
+
+async function applyEmergencyStop(userId: string, mode: "pause" | "stop"): Promise<Obj> {
+  const now = new Date().toISOString();
+  await db("n8_risk_policies?user_id=eq." + encodeURIComponent(userId), "PATCH", {
+    kill_switch: true,
+    live_trading_enabled: false,
+    auto_execute_enabled: false,
+    wallet_auto_execute_enabled: false,
+    execution_mode: "approval",
+    updated_at: now,
+  }, "return=minimal");
+  const nextState = mode === "stop" ? "stopped" : "paused";
+  await db(
+    "n8_strategy_runs?user_id=eq." + encodeURIComponent(userId) + "&state=in.(running,paused)",
+    "PATCH", { state: nextState, updated_at: now }, "return=minimal"
+  );
+  await db(
+    "n8_paper_sessions?user_id=eq." + encodeURIComponent(userId) + "&status=eq.running",
+    "PATCH", { status: mode === "stop" ? "stopped" : "paused", updated_at: now }, "return=minimal"
+  );
+  await db(
+    "n8_live_migrations?user_id=eq." + encodeURIComponent(userId) + "&status=eq.active",
+    "PATCH", { status: "paused", paused_at: now, updated_at: now }, "return=minimal"
+  );
+  return {
+    stopped: true,
+    liveTradingEnabled: false,
+    killSwitch: true,
+    openPositionsWereNotLiquidated: true,
+    message: mode === "stop"
+      ? "Emergency stop is active. New execution is blocked. Existing positions remain open and visible; 9N8 did not liquidate them."
+      : "Automation is paused. Live trading is off. Existing positions remain open and visible.",
+  };
+}
+
+async function liveStatusText(userId: string): Promise<string> {
+  const state = await getLiveStatus(userId);
+  const migrations = state.migrations as any[];
+  const latest = migrations[0];
+  const lines = [
+    "9N8 LIVE TRADING STATUS",
+    "",
+    "Live execution: " + (state.liveTradingEnabled ? "ENABLED" : "LOCKED"),
+    "Mode: " + String(state.executionMode).toUpperCase(),
+    "Automatic execution: " + (state.automaticExecutionEnabled ? "ON" : "OFF"),
+    "Wallet auto execution: " + (state.walletAutomaticExecutionEnabled ? "ON" : "OFF"),
+    "Emergency stop: " + (state.killSwitch ? "ACTIVE" : "OFF"),
+    "Minimum verified quote balance: $" + Number(state.minimumLiveBalanceUsd).toFixed(2),
+    "Maximum order: $" + Number(state.maxOrderUsd).toFixed(2),
+    "Daily notional cap: $" + Number(state.maxDailyNotionalUsd).toFixed(2),
+    "Maximum open positions: " + String(state.maxOpenPositions),
+    "Maximum slippage: " + String(state.maxSlippageBps) + " bps",
+    "Minimum liquidity: $" + Number(state.minimumLiquidityUsd).toLocaleString("en-US"),
+    "",
+    "Live release: not activated in this build.",
+  ];
+  if (latest) {
+    lines.push(
+      "",
+      "Latest migration: " + String(latest.status),
+      "Market: " + String(latest.market_type),
+      "Window: " + String(latest.evaluation_window_days) + " days",
+    );
+    const failed = Array.isArray(latest.failed_checks) ? latest.failed_checks : [];
+    if (failed.length) lines.push("Blocking checks: " + failed.length);
+  } else {
+    lines.push("No live migration assessment yet. Use /migrate to assess your account.");
+  }
+  return lines.join("\n");
+}
+
+async function paperStatusText(userId: string): Promise<string> {
+  const sessions = await db(
+    "n8_paper_sessions?select=id,market_type,status,evaluation_window_days,started_at,last_activity_at,initial_balance_usd,cash_balance_usd,tick_count,last_tick_at,last_tick_error,config&user_id=eq." +
+      encodeURIComponent(userId) + "&order=created_at.desc&limit=1"
+  );
+  if (!Array.isArray(sessions) || sessions.length === 0) {
+    return "9N8 PAPER TRADING\n\nNo paper run yet. Send /start and tap Start crypto paper run. The engine starts with $1,000 virtual cash and uses public spot prices only. No real funds or API keys are involved.";
+  }
+  const session = sessions[0];
+  const sessionId = String(session.id);
+  const [ticks, positions, trades] = await Promise.all([
+    db("n8_paper_ticks?select=tick_at,symbols_scanned,symbols_failed,signals_generated,opened_trades,closed_trades,cash_balance_usd,equity_usd,realized_pnl_usd,unrealized_pnl_usd,status,metadata&session_id=eq." +
+      encodeURIComponent(sessionId) + "&order=tick_at.desc&limit=1"),
+    db("n8_paper_positions?select=symbol,quantity,average_entry_price,mark_price,unrealized_pnl_usd,stop_loss_price,take_profit_price&session_id=eq." +
+      encodeURIComponent(sessionId) + "&status=eq.open&order=opened_at.desc&limit=10"),
+    db("n8_paper_trades?select=symbol,side,quantity,fill_price,notional_usd,fee_usd,realized_pnl_usd,filled_at&session_id=eq." +
+      encodeURIComponent(sessionId) + "&order=filled_at.desc&limit=6"),
+  ]);
+  const num = (value: unknown): number => {
+    const n = Number(value ?? 0);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const initial = num(session.initial_balance_usd) || 1000;
+  const cash = num(session.cash_balance_usd);
+  const tick = Array.isArray(ticks) ? ticks[0] : null;
+  const equity = tick ? num(tick.equity_usd) : cash;
+  const pnl = equity - initial;
+  const lines = [
+    "9N8 PAPER TRADING",
+    "",
+    "Status: " + String(session.status).toUpperCase(),
+    "Market: " + String(session.market_type).toUpperCase() + " spot",
+    "Engine: EMA 9 / EMA 21 crossover · RSI 14 · 1-minute candles",
+    "Starting virtual balance: $" + initial.toFixed(2),
+    "Cash balance: $" + cash.toFixed(2),
+    "Latest equity: $" + equity.toFixed(2),
+    "Net P&L: " + (pnl >= 0 ? "+$" : "-$") + Math.abs(pnl).toFixed(2),
+    "Realized P&L: $" + num(tick?.realized_pnl_usd).toFixed(2),
+    "Unrealized P&L: $" + num(tick?.unrealized_pnl_usd).toFixed(2),
+    "Worker ticks: " + String(session.tick_count ?? 0),
+    "Last scan: " + String(tick?.tick_at ?? session.last_tick_at ?? "waiting for first scan"),
+  ];
+  if (tick) {
+    lines.push(
+      "Symbols scanned: " + String(tick.symbols_scanned) +
+        " · failed: " + String(tick.symbols_failed),
+      "Signals: " + String(tick.signals_generated) +
+        " · opened: " + String(tick.opened_trades) +
+        " · closed: " + String(tick.closed_trades),
+      "Latest worker result: " + String(tick.status).toUpperCase(),
+    );
+  } else {
+    lines.push("First market scan is pending. The scheduled worker checks every minute.");
+  }
+  lines.push("", "OPEN PAPER POSITIONS");
+  if (Array.isArray(positions) && positions.length) {
+    for (const p of positions) {
+      lines.push(
+        String(p.symbol) + " · quantity " + num(p.quantity).toPrecision(6) +
+        " · mark $" + num(p.mark_price).toPrecision(7) +
+        " · P&L $" + num(p.unrealized_pnl_usd).toFixed(4)
+      );
+    }
+  } else {
+    lines.push("No open positions.");
+  }
+  lines.push("", "LATEST SIMULATED FILLS");
+  if (Array.isArray(trades) && trades.length) {
+    for (const t of trades) {
+      lines.push(
+        String(t.side).toUpperCase() + " " + String(t.symbol) +
+        " · $" + num(t.notional_usd).toFixed(2) +
+        " · fill $" + num(t.fill_price).toPrecision(7) +
+        " · fee $" + num(t.fee_usd).toFixed(4)
+      );
+    }
+  } else {
+    lines.push("No simulated fills yet. The strategy waits for a real signal.");
+  }
+  if (session.last_tick_error) lines.push("", "Last scan issue: " + String(session.last_tick_error));
+  lines.push(
+    "",
+    "PAPER ONLY: public market data, simulated fills, fees and slippage. No real orders, no wallet signing, and live trading remains locked.",
+    "Use /pause to pause scans or /stop for the emergency stop."
+  );
+  return lines.join("\n");
+}
+
+async function startCryptoPaper(userId: string, chatId: number): Promise<{ ok: boolean; message: string }> {
+  const policies = await db(
+    "n8_risk_policies?select=kill_switch&user_id=eq." + encodeURIComponent(userId) + "&limit=1"
+  );
+  if (Array.isArray(policies) && policies[0]?.kill_switch === true) {
+    return {
+      ok: false,
+      message: "Paper trading is blocked by the emergency stop. Send /resume and confirm the resume button before starting again.",
+    };
+  }
+  const result = await db("rpc/n8_start_paper_session", "POST", {
+    p_user_id: userId,
+    p_market_type: "crypto",
+    p_chat_id: chatId,
+  });
+  if (result?.ok !== true || !result?.session_id) throw new Error("paper_session_start_not_confirmed");
+  await audit(userId, chatId, "paper_session_started", "ok", {
+    session_id: result.session_id, market_type: "crypto",
+  });
+  return {
+    ok: true,
+    message: "PAPER RUN STARTED\n\n" +
+      "Mode: PAPER ONLY · $1,000 virtual starting cash\n" +
+      "Market: Binance public crypto spot candles · 1-minute timeframe\n" +
+      "Universe: BTC, ETH, SOL, BNB, XRP, DOGE, SHIB, PEPE, BONK and WIF pairs where listed\n" +
+      "Strategy: EMA 9 / EMA 21 crossover with RSI 14 confirmation\n" +
+      "Risk: $50 maximum virtual entry · up to 3 open positions · simulated 0.10% fee and 5 bps slippage\n\n" +
+      "The first scan has been requested. A scheduled worker continues every minute. Signals may produce no trade; the bot will not invent fills.\n\n" +
+      "Use /paper for the latest scan, virtual equity, positions and simulated fills. /pause pauses scans; /stop activates the emergency stop. Real trading remains OFF."
+  };
+}
+
+function serviceOverview(): string {
+  return [
+    "WHAT 9N8 PROVIDES",
+    "",
+    "📡 MARKET INTELLIGENCE",
+    "Live public market observations, price and volume context, token/symbol lookups and strategy scans. The deployed paper pilot currently reads real Binance public spot candles for its supported USDT pairs.",
+    "",
+    "🧪 PAPER TRADING",
+    "Test with a $1,000 virtual account, simulated fees and slippage, position limits, stop-loss/take-profit logic and a trade journal. Paper fills are simulations, never real exchange orders.",
+    "",
+    "📈 STRATEGY & SIGNALS",
+    "The current crypto paper strategy uses EMA 9 / EMA 21 crossover with RSI 14 confirmation on closed one-minute candles. Signals are observations, not guaranteed predictions.",
+    "",
+    "🔗 EXCHANGE & WALLET CONNECTIONS",
+    "Connect OKX Demo, Binance Spot Testnet or Bybit Demo. Link EVM or Solana wallets through the WalletConnect-compatible connection panel where your Reown project is configured. You can also add public addresses for watch-only monitoring.",
+    "",
+    "🛡️ APPROVALS & RISK CONTROLS",
+    "Review linked accounts, risk limits, pending proposals, pause controls and the emergency stop. Private connections are attached to the Telegram account that opened the bot.",
+    "",
+    "🚦 LIVE-TRADING READINESS",
+    "9N8 includes a readiness assessment and a hard live-execution lock. A verified wallet or a demo exchange connection does not by itself authorize real-money orders.",
+    "",
+    "CURRENT LIMITS — PLEASE READ",
+    "• Real-money execution is OFF. This bot does not currently submit live trades.",
+    "• WalletConnect verifies wallet ownership with a message signature only. No swap, token approval or transaction is signed by this connection flow yet.",
+    "• Stocks, forex, perps, unattended copy trading, launch sniping and DCA are not active in the deployed paper pilot.",
+    "• Trojan is a feature reference, not a connected execution provider. 9N8 must use its own documented market-data and swap/exchange integrations.",
+    "",
+    "GET STARTED",
+    "/paper — view virtual equity, positions and simulated fills",
+    "/connect — connect a demo exchange or wallet session",
+    "/connections — review exchange connections",
+    "/wallets — review verified wallets and watch addresses",
+    "/risk — view your configured risk limits",
+    "/migrate — open live-readiness assessment",
+    "/pause — pause strategies and block new entries",
+    "/stop — activate the emergency stop",
+    "/help — view all commands"
+  ].join("\n");
+}
+
 async function handleMessage(update: any) {
   const m = update?.message ?? update?.edited_message;
   if (!m?.chat?.id || !m?.from?.id) return;
@@ -749,20 +1167,116 @@ async function handleMessage(update: any) {
 
   if (command === "/start" || command === "/menu") {
     await audit(row.id, chatId, "private_start");
+    const started = await startCryptoPaper(row.id, chatId);
+    const sessionLine = started.ok
+      ? "PAPER SESSION: STARTED\n$1,000 virtual starting balance · Binance public spot candles · simulated fills only."
+      : "PAPER SESSION: NOT STARTED\n" + started.message;
     await send(chatId,
-      "9N8 UNIVERSAL ASSISTANT\n\nYour private account is ready.\nConnect OKX Demo, Binance Spot Testnet or Bybit Demo from the secure form. You can save Trust Wallet and Phantom public addresses as watch-only links. WalletConnect signing is not enabled yet.\n\n" +
-      "This candidate release is demo/testnet and read-only. No live orders, withdrawals, transfers or wallet signing.",
+      "⚡ WELCOME TO 9N8\n" +
+      "Trading intelligence, paper testing and account controls in one private Telegram workspace.\n\n" +
+      serviceOverview() +
+      "\n\n" + sessionLine +
+      "\n\nUse the buttons below to open your control panel. Send /services any time to review these features.",
       mainKeyboard());
     return;
   }
+  if (command === "/services") {
+    await send(chatId, serviceOverview(), mainKeyboard());
+    return;
+  }
   if (command === "/help") {
-    await send(chatId, "9N8 COMMANDS\n/start — open private dashboard\n/connect — open secure exchange and wallet form\n/connections — list your exchange connections\n/wallets — list your watch-only addresses\n\nGROUP COMMANDS\n/n8setup, /n8admin, /n8moderator\n/n8delete and /n8ban — reply to a member message\n/n8unban TELEGRAM_USER_ID\n\nNever send API credentials in chat. Demo/testnet only. No trade execution is enabled in this candidate.");
+    await send(chatId,
+      "9N8 COMMANDS\n" +
+      "/services — what 9N8 does and current feature status\n" +
+      "/start — open private control panel\n" +
+      "/status — inspect account and system state\n" +
+      "/connect — connect a demo exchange or wallet session\n" +
+      "/connections — list your exchange connections\n" +
+      "/wallets — list your verified wallets\n" +
+      "/migrate — assess live eligibility (does not enable live trading)\n" +
+      "/live — live lock and risk status\n" +
+      "/risk — current account risk limits\n" +
+      "/approvals — pending trade proposals\n" +
+      "/paper — paper-trading status and fills\n" +
+      "/pause — pause strategies and block new execution\n" +
+      "/stop — emergency stop and kill switch\n" +
+      "/resume — request to resume paper scanning; live stays off\n\n" +
+      "GROUP COMMANDS\n/n8setup, /n8admin, /n8moderator\n/n8delete and /n8ban — reply to a member message\n/n8unban TELEGRAM_USER_ID\n\n" +
+      "Never send exchange API secrets, private keys or seed phrases in chat."
+    );
     return;
   }
   if (command === "/connect") {
     await send(chatId, "Open this private secure form to connect an exchange or save a public wallet address. Never send API credentials in Telegram chat.", {
       inline_keyboard: [[{ text: "Open secure connections", web_app: { url: MINI_APP_URL } }]],
     });
+    return;
+  }
+  if (command === "/migrate") {
+    await send(chatId,
+      "LIVE MIGRATION\n\nOpen the private eligibility check. The 7-day option is a progress review only; the live gate uses a 30-day forward-paper evaluation. A fresh balance check and a certified connector are required. This screen cannot turn on live orders.",
+      { inline_keyboard: [[{ text: "Open live migration assessment", web_app: { url: MIGRATION_PAGE_URL } }]] }
+    );
+    return;
+  }
+  if (command === "/live") {
+    await send(chatId, await liveStatusText(row.id));
+    return;
+  }
+  if (command === "/risk") {
+    const state = await getLiveStatus(row.id);
+    await send(chatId,
+      "YOUR RISK POLICY\n\n" +
+      "Execution mode: " + String(state.executionMode) + "\n" +
+      "Owner approval: " + (state.ownerApprovalRequired ? "required" : "not required") + "\n" +
+      "Minimum live balance: $" + Number(state.minimumLiveBalanceUsd).toFixed(2) + "\n" +
+      "Maximum order: $" + Number(state.maxOrderUsd).toFixed(2) + "\n" +
+      "Daily notional cap: $" + Number(state.maxDailyNotionalUsd).toFixed(2) + "\n" +
+      "Maximum open positions: " + String(state.maxOpenPositions) + "\n" +
+      "Maximum slippage: " + String(state.maxSlippageBps) + " bps\n" +
+      "Minimum liquidity: $" + Number(state.minimumLiquidityUsd).toLocaleString("en-US") + "\n" +
+      "Emergency kill switch: " + (state.killSwitch ? "ACTIVE" : "OFF") + "\n\n" +
+      "No risk setting can override a hard reject or connector security failure."
+    );
+    return;
+  }
+  if (command === "/pause" || command === "/stop") {
+    const mode = command === "/stop" ? "stop" : "pause";
+    const result = await applyEmergencyStop(row.id, mode);
+    await audit(row.id, chatId, mode === "stop" ? "emergency_stop" : "automation_paused", "ok");
+    await send(chatId, String(result.message));
+    return;
+  }
+  if (command === "/resume") {
+    await send(chatId,
+      "Resume is a separate owner action. Confirm only if you want to clear the emergency stop for paper scanning. Live trading will remain disabled.",
+      { inline_keyboard: [[{ text: "Confirm resume paper scanning", callback_data: "n8:resume_confirm" }]] }
+    );
+    return;
+  }
+  if (command === "/status") {
+    await send(chatId, await liveStatusText(row.id));
+    return;
+  }
+  if (command === "/paper") {
+    await send(chatId, await paperStatusText(row.id));
+    return;
+  }
+  if (command === "/approvals") {
+    const proposals = await db(
+      "n8_trade_proposals?select=id,symbol,venue,side,environment,quote_amount_usd,status,expires_at&user_id=eq." +
+        encodeURIComponent(row.id) + "&status=in.(pending,approved,executing,submitted,partially_filled)&order=created_at.desc&limit=10"
+    );
+    if (!Array.isArray(proposals) || proposals.length === 0) {
+      await send(chatId, "APPROVALS\n\nNo pending trade proposals are recorded for your account.");
+    } else {
+      await send(chatId, "PENDING TRADE PROPOSALS\n\n" + proposals.map((v: any) =>
+        String(v.symbol) + " · " + String(v.side).toUpperCase() + "\n" +
+        String(v.venue) + " · " + String(v.environment) + "\n" +
+        "Notional: " + String(v.quote_amount_usd ?? "not set") + "\n" +
+        "Status: " + String(v.status) + "\nExpires: " + String(v.expires_at)
+      ).join("\n\n"));
+    }
     return;
   }
   if (command === "/connections") {
@@ -783,7 +1297,36 @@ async function handleCallback(update: any) {
   const chat = q.message?.chat;
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
+  if (q.data === "n8:paper_start_crypto") {
+    const started = await startCryptoPaper(row.id, Number(chat.id));
+    await send(Number(chat.id), started.message);
+  }
+  if (q.data === "n8:paper_status") await send(Number(chat.id), await paperStatusText(row.id));
   if (q.data === "n8:connections") await send(Number(chat.id), await listConnections(row.id));
+  if (q.data === "n8:live_status") await send(Number(chat.id), await liveStatusText(row.id));
+  if (q.data === "n8:resume_confirm") {
+    const now = new Date().toISOString();
+    await db("n8_risk_policies?user_id=eq." + encodeURIComponent(row.id), "PATCH", {
+      kill_switch: false,
+      live_trading_enabled: false,
+      auto_execute_enabled: false,
+      wallet_auto_execute_enabled: false,
+      execution_mode: "approval",
+      updated_at: now,
+    }, "return=minimal");
+    await db(
+      "n8_strategy_runs?user_id=eq." + encodeURIComponent(row.id) + "&state=eq.paused",
+      "PATCH", { state: "running", updated_at: now }, "return=minimal"
+    );
+    await db(
+      "n8_paper_sessions?user_id=eq." + encodeURIComponent(row.id) + "&status=eq.paused",
+      "PATCH", { status: "running", updated_at: now }, "return=minimal"
+    );
+    await audit(row.id, Number(chat.id), "paper_resume_confirmed", "ok");
+    await send(Number(chat.id),
+      "Paper scanning resume request recorded. Live trading remains OFF and automatic execution remains OFF."
+    );
+  }
 }
 async function handleMyChatMember(update: any) {
   const e = update.my_chat_member;
@@ -844,6 +1387,7 @@ async function mainHandler(req: Request): Promise<Response> {
       walletConnectConfigured: Boolean(REOWN_PROJECT_ID),
       reownProjectId: REOWN_PROJECT_ID || null,
       supportedNamespaces: ["eip155", "solana"],
+      watchOnlyNamespaces: ["eip155", "solana"],
       liveWalletExecution: false,
     });
   }
@@ -865,7 +1409,7 @@ async function mainHandler(req: Request): Promise<Response> {
   if (body?.action === "register_webhook") return await registerWebhook(body);
   // Mini App traffic is authenticated with Telegram-signed initData.
   if (body?.action === "connect_exchange" || body?.action === "watch_wallet" ||
-      ["wallet_challenge", "wallet_verify", "wallet_revoke"].includes(String(body?.action))) {
+      ["wallet_challenge", "wallet_verify", "wallet_revoke", "live_connections", "live_status", "live_assess", "live_pause"].includes(String(body?.action))) {
     return await handleMiniApp(body);
   }
 
