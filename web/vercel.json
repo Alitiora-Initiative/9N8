@@ -1,0 +1,17 @@
+{
+  "rewrites": [
+    { "source": "/connect", "destination": "/" },
+    { "source": "/setup", "destination": "/" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        { "key": "Content-Security-Policy", "value": "default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; style-src 'self' 'unsafe-inline'; connect-src 'self' https://qlfcazdfxexcnzdgpqqm.supabase.co; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors https://web.telegram.org https://*.telegram.org" }
+      ]
+    }
+  ]
+}
