@@ -258,6 +258,10 @@ class TradingEngine:
         last_evaluated_candle = None
         cached_trend = []
         cached_entry = []
+        last_feed_error = ""
+        last_feed_notice_at = 0.0
+        last_risk_reason = ""
+        last_risk_notice_at = 0.0
         candle_refresh = max(
             5.0, float(self.cfg["execution"].get("candle_refresh_seconds", 15))
         )
@@ -270,6 +274,18 @@ class TradingEngine:
                         snapshot = await connector.fetch_snapshot(spec["symbol"])
                 key = self._key(spec["venue"], spec["symbol"])
                 self.snapshots[key] = snapshot
+                if last_feed_error:
+                    if self.notifier:
+                        try:
+                            await self.notifier.send(
+                                f"9N8 market feed recovered: {spec['venue']} {spec['symbol']}."
+                            )
+                        except Exception:
+                            log.debug("Could not deliver market-feed recovery notification.")
+                    last_feed_error = ""
+                    last_feed_notice_at = 0.0
+                last_risk_reason = ""
+                last_risk_notice_at = 0.0
                 if spec.get("dex_data_only"):
                     await asyncio.sleep(5)
                     continue
@@ -303,23 +319,58 @@ class TradingEngine:
             except asyncio.CancelledError:
                 raise
             except RiskRejected as exc:
-                await self.store.event(
-                    "WARNING", "risk_veto", str(exc), spec["venue"], spec["symbol"]
-                )
-                await asyncio.sleep(2)
-            except Exception as exc:
-                log.exception("Market loop error for %s %s", spec["venue"], spec["symbol"])
-                await self.store.event(
-                    "ERROR", "market_loop_error", str(exc), spec["venue"], spec["symbol"]
-                )
-                if self.notifier:
+                reason = str(exc)
+                now = asyncio.get_running_loop().time()
+                if reason != last_risk_reason or now - last_risk_notice_at >= 300.0:
+                    last_risk_reason = reason
+                    last_risk_notice_at = now
                     try:
-                        await self.notifier.send(
-                            "9N8 feed error: " + spec["venue"] + " "
-                            + spec["symbol"] + ": " + str(exc)[:180]
+                        await self.store.event(
+                            "WARNING", "risk_veto", reason,
+                            spec["venue"], spec["symbol"],
                         )
                     except Exception:
-                        log.warning("Could not deliver market-feed error notification.")
+                        log.warning("Could not persist risk-veto event for %s.", spec["symbol"])
+                await asyncio.sleep(2)
+            except Exception as exc:
+                now = asyncio.get_running_loop().time()
+                should_notify = (
+                    not last_feed_error
+                    or type(exc).__name__ != last_feed_error
+                    or now - last_feed_notice_at >= 300.0
+                )
+                last_feed_error = type(exc).__name__
+                if should_notify:
+                    last_feed_notice_at = now
+                    log.exception(
+                        "Market loop error for %s %s",
+                        spec["venue"], spec["symbol"],
+                    )
+                    try:
+                        await self.store.event(
+                            "ERROR",
+                            "market_loop_error",
+                            str(exc),
+                            spec["venue"],
+                            spec["symbol"],
+                            {"error_type": type(exc).__name__},
+                        )
+                    except Exception:
+                        log.warning("Could not persist market-feed error for %s.", spec["symbol"])
+                    if self.notifier:
+                        try:
+                            await self.notifier.send(
+                                "9N8 feed error: " + spec["venue"] + " "
+                                + spec["symbol"] + ": " + str(exc)[:180]
+                                + ". Retrying automatically."
+                            )
+                        except Exception:
+                            log.debug("Could not deliver market-feed error notification.")
+                else:
+                    log.debug(
+                        "Market feed is still unavailable for %s %s (%s).",
+                        spec["venue"], spec["symbol"], type(exc).__name__,
+                    )
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30)
 
@@ -1073,10 +1124,13 @@ class TradingEngine:
                 and risk_per_unit > 0
                 and favourable >= 1.5 * risk_per_unit
             ):
-                await self._partial_close(row, connector, snapshot)
+                # Persist the TP1 state in the same transaction as the partial
+                # fill. If the process dies immediately afterwards, it must not
+                # sell another 50% on the next restart.
                 row["partial_closed"] = True
                 row["breakeven_moved"] = True
                 row["stop_loss"] = entry_price
+                await self._partial_close(row, connector, snapshot)
             elif bool(row["partial_closed"]):
                 candles = self._only_closed_candles(
                     await connector.fetch_candles(row["symbol"], "5m", 60),
