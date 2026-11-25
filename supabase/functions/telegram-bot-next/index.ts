@@ -810,6 +810,7 @@ async function rpcSignatureStatus(signature: string): Promise<any> {
 }
 
 async function createJupiterSwapOrder(user: any, row: any, body: any): Promise<Response> {
+  requireJupiterApiKey();
   const address = clean(body?.address, 64);
   const wallet = await verifiedSolanaWallet(row.id, clean(body?.walletConnectionId, 64), address);
   const side = String(body?.side ?? "").toLowerCase();
@@ -1059,6 +1060,7 @@ async function getJupiterLiveConfig(row: any): Promise<Response> {
     manualWalletExecutionEnabled: cert?.status === "passed" && cert?.live_manual_wallet_execution_enabled === true,
     delegatedAutomationEnabled: cert?.status === "passed" && cert?.delegated_automation_enabled === true,
     certificationStatus: cert?.status ?? "missing",
+    jupiterApiConfigured: Boolean(JUPITER_API_KEY),
     triggerApiConfigured: Boolean(JUPITER_API_KEY),
     maxSwapSol: "0.05",
     dailySwapSol: "0.10",
