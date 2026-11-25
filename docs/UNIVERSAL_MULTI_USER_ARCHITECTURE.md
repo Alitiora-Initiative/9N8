@@ -236,27 +236,53 @@ Do not mark a feature complete until:
 - the active Edge Function and GitHub source are in sync.
 
 
-## Implementation status — 2026-11-25
+## Implementation status — 2026-11-26
 
-The database foundation is deployed to Supabase and the candidate Edge Function is deployed separately from the legacy function.
+This section describes the current deployed Supabase candidate and the separate Python development branch. "Implemented" means source and backend handlers exist; it does not imply that every user's external account has been configured or that real-money trading is available.
 
-Implemented in the candidate:
-- multi-user Telegram identity registration and user-specific data model;
-- backend-only RLS tables and Vault credential-storage/retrieval/revocation procedures;
-- atomic Telegram update claims with short retryable leases;
-- exchange-key validation for OKX Demo, Binance Spot Testnet and Bybit Demo;
-- Vercel-hosted Telegram Mini App pages for exchange setup, watch-only address entry, webhook setup, and browser-side QR scanning of public wallet receive addresses (camera or image-file input);
-- watch-only EVM and Solana public-address records;
-- group-setup and manual moderator commands with administrator checks.
+### Deployed Supabase candidate
 
-Not yet implemented:
-- exchange balances, market information and open-order reads for each attached connection;
-- actual WalletConnect/Phantom wallet sessions, wallet balances or transactions. The QR scanner only extracts public receive addresses for watch-only linking; WalletConnect pairing QR codes are deliberately rejected;
-- paper/demo trade execution, order reconciliation, strategies and scheduler jobs;
-- live trading (remains disabled);
-- full connection revoke/dashboard UI and comprehensive end-to-end test suite.
+Verified against the connected 9N8 Supabase project:
 
-Deployment state:
-- Supabase function `telegram-bot-next` is ACTIVE. The shared Telegram bot token and webhook secret are now detected by the live function; Telegram webhook registration still needs a successful confirmation from the `/setup` page.
-- The stable legacy function and `main` branch have not been replaced or merged.
-- The universal code is isolated in branch `universal-multi-user`.
+- `telegram-bot-next` is ACTIVE at deployed version 34 when inspected; it is the multi-user Telegram/Mini App candidate, separate from the preserved legacy function.
+- `n8-paper-worker` is ACTIVE at version 2, and a one-minute `pg_cron` job invokes it.
+- The database contained a running crypto paper session with recurring successful ticks. Recent worker rows reported 10 symbols scanned and 0 symbol failures; a tick with no signal intentionally creates no trade.
+- The deployed paper worker uses Binance public Spot market data and a virtual balance. It does not submit an exchange order.
+
+### Implemented in the deployed candidate
+
+- Telegram identity registration, private-chat account scoping, backend-only access and RLS-backed user data.
+- Vault-backed user-specific Binance Spot Live and OKX Spot Live credential storage, validation, retrieval and owner-scoped revoke procedure.
+- Binance/OKX account read actions in the secure Mini App. These reads do not activate order placement.
+- EVM and Solana wallet ownership proof through challenge/signature verification, plus public watch-only address linking.
+- Wallet-link/session revocation; these are address/ownership features, not wallet trading or signing automation.
+- Paper crypto session lifecycle, Binance public one-minute candle/ticker/order-book reads, simulated visible-depth fills, virtual fees/slippage, persisted trades/positions/equity, pause/stop/resume controls and a one-minute scheduled worker.
+- Telegram webhook update claims with leases, duplicate suppression and retry handling.
+- Group setup and permission-checked manual moderator commands.
+- Exchange disconnect path is implemented in the candidate source: `/connections` displays a connection ID and `/disconnect CONNECTION_ID` asks for confirmation, then removes the corresponding 9N8 Vault secret through the owner-scoped database procedure. This removes the stored credential from 9N8; the user must separately revoke the API key at Binance or OKX.
+
+### Implemented separately in the Python development branch
+
+- A multi-asset Python paper engine with live provider quotes/candles and virtual fills.
+- Bybit public crypto spot defaults, OANDA practice connector and an Alpaca U.S. stock/ETF market-data adapter.
+- Alpaca stock data is read-only and paper-only. It does not read Alpaca brokerage balances or submit orders. It is disabled by default and requires the user's own Alpaca market-data credentials and feed entitlement.
+- Persistent approval proposals, SQLite atomic paper fills, fee-aware partial exits, risk gates, Telegram private owner controls and restart recovery.
+- The stock adapter has automated tests; it has not yet been verified using a user's live Alpaca subscription.
+
+### Not implemented or not certified
+
+- Live exchange order submission in the deployed Supabase candidate.
+- Automated wallet signing, swaps, token approvals, bridge operations or DEX order execution.
+- Solana/EVM DEX entries in the Python engine; their data/security adapters are integration code only and the engine blocks entries.
+- Stock order submission, stock shorting/borrow handling, broker account reads, non-U.S. stock venue coverage, and a live stock connector.
+- Live Forex/CFD execution certification, live partial exits/trailing amendments, complete exchange-native bracket reconciliation and post-bracket position reconciliation.
+- Automated group anti-spam moderation, news feed publishing, copy trading, sniping and DCA.
+- A continuous 48-hour testnet/practice soak, independent execution/security review, and production certification.
+
+### Deployment and source-of-truth boundary
+
+- The deployed Supabase function and worker were retrieved and their active secret-free source was synchronized into `multi-asset-python`. The new GitHub exchange-revoke change is in the feature branch until its tests pass and it is deployed.
+- The preserved legacy Telegram function and GitHub `main` branch have not been replaced.
+- Pull Request #5 is a draft; its contents are not merged or deployed automatically.
+- The Telegram webhook's current registration state has not been confirmed in this audit. A successful `/setup` registration/confirmation is required before claiming Telegram delivery is operational for the candidate.
+- The production paper worker's successful ticks prove its scheduled market-data scan is running, not that the strategy is profitable or every user's Telegram connection is configured.
