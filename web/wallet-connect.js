@@ -17,6 +17,7 @@ let currentAddress = "";
 let currentProviderState = null;
 let appKitReady = false;
 let connectionBusy = false;
+let injectedSession = null;
 
 const evmNetworks = [mainnet, base, bsc];
 const networkById = {
@@ -97,6 +98,49 @@ function setWalletState(state) {
     disconnectButton.disabled = true;
     currentAddress = "";
   }
+}
+function injectedEvmCandidates() {
+  const candidates = [];
+  const ethereum = window.ethereum;
+  if (Array.isArray(ethereum?.providers)) candidates.push(...ethereum.providers);
+  if (ethereum) candidates.push(ethereum);
+  if (window.phantom?.ethereum) candidates.push(window.phantom.ethereum);
+  if (window.trustwallet?.ethereum) candidates.push(window.trustwallet.ethereum);
+  return [...new Set(candidates)];
+}
+function injectedWalletName(provider) {
+  if (provider?.isMetaMask && !provider?.isBraveWallet) return "MetaMask";
+  if (provider?.isTrust || provider?.isTrustWallet) return "Trust Wallet";
+  if (provider?.isPhantom) return "Phantom";
+  return "Injected wallet";
+}
+async function connectInjectedWallet() {
+  const selected = networkSelect?.value || "eip155:1";
+  if (selected.startsWith("solana:")) {
+    const provider = window.phantom?.solana || window.solana;
+    if (!provider || typeof provider.connect !== "function" || typeof provider.signMessage !== "function") {
+      throw new Error("No injected Solana wallet was detected. Open 9N8 inside Phantom or use WalletConnect QR pairing.");
+    }
+    const connected = await provider.connect();
+    const key = connected?.publicKey || provider.publicKey;
+    const address = key?.toString?.() || String(key || "");
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) throw new Error("The injected wallet did not return a valid Solana address.");
+    injectedSession = { namespace: "solana", chainId: "mainnet-beta", address, network: "Solana Mainnet", walletName: "Phantom", provider };
+    return injectedSession;
+  }
+  const candidates = injectedEvmCandidates();
+  const provider = candidates.find((item) => item.isMetaMask && !item.isBraveWallet) || candidates.find((item) => item.isTrust || item.isTrustWallet) || candidates[0];
+  if (!provider || typeof provider.request !== "function") throw new Error("No injected EVM wallet was detected. Open 9N8 inside MetaMask or Trust Wallet, or configure WalletConnect.");
+  const accounts = await provider.request({ method: "eth_requestAccounts" });
+  const address = Array.isArray(accounts) ? String(accounts[0] || "") : "";
+  if (!/^0x[a-fA-F0-9]{40}$/.test(address)) throw new Error("The injected wallet did not return a valid EVM address.");
+  const chainId = normalizeEvmChainId(await provider.request({ method: "eth_chainId" }));
+  const expected = selected.split(":")[1];
+  if (expected && chainId !== expected) throw new Error("Switch your wallet to the selected network, then connect again.");
+  const network = networkLabels[chainId] || "";
+  if (!network) throw new Error("The connected EVM network is not supported by 9N8.");
+  injectedSession = { namespace: "eip155", chainId, address, network, walletName: injectedWalletName(provider), provider };
+  return injectedSession;
 }
 async function initialize() {
   if (!connectButton || !verifyButton || !disconnectButton) return;
