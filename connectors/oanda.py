@@ -18,10 +18,12 @@ log = logging.getLogger(__name__)
 class OandaConnector(ExecutionConnector):
     venue = "oanda"
 
-    def __init__(self, environment: str = "practice", token: str | None = None, account_id: str | None = None):
+    def __init__(self, environment: str = "practice", token: str | None = None,
+                 account_id: str | None = None, live_certified: bool = False):
         if environment not in {"practice","live"}:
             raise ValueError("OANDA environment must be practice or live.")
         self.environment = environment
+        self.live_certified = bool(live_certified)
         self.base = "https://api-fxpractice.oanda.com" if environment == "practice" else "https://api-fxtrade.oanda.com"
         self.stream_base = "https://stream-fxpractice.oanda.com" if environment == "practice" else "https://stream-fxtrade.oanda.com"
         self.token = token or os.getenv("OANDA_API_TOKEN","").strip()
@@ -93,8 +95,16 @@ class OandaConnector(ExecutionConnector):
         return result
 
     async def _market_order(self, intent: TradeIntent, quantity: float, client_order_id: str) -> TradeReceipt:
-        if self.environment == "live" and os.getenv("LIVE_TRADING","false").lower() != "true":
-            raise ConnectorUnavailable("OANDA live order rejected: LIVE_TRADING is not enabled.")
+        if self.environment == "live":
+            acknowledged = os.getenv("LIVE_ACKNOWLEDGEMENT", "") == "I_UNDERSTAND_REAL_FUNDS_CAN_BE_LOST"
+            authorized = (
+                os.getenv("TRADING_MODE", "").lower() == "live"
+                and os.getenv("LIVE_TRADING", "false").lower() == "true"
+                and os.getenv("ALLOW_LIVE_TRADING", "false").lower() == "true"
+                and acknowledged and self.live_certified
+            )
+            if not authorized:
+                raise ConnectorUnavailable("OANDA live order rejected by connector-level authorization gate.")
         signed_units=quantity if intent.side is Side.BUY else -quantity
         request={"order":{
             "type":"MARKET","instrument":intent.symbol,"units":str(signed_units),
