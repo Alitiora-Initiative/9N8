@@ -24,7 +24,9 @@
     "live_execution_certified": false,
     "approval_timeout_seconds": 120,
     "approval_max_price_drift_pct": 0.5,
-    "minimum_24h_quote_volume_usd": 100000
+    "minimum_24h_quote_volume_usd": 100000,
+    "paper_max_hold_minutes": 240,
+    "paper_min_stagnation_profit_pct": 1
   },
   "markets": {
     "crypto_spot": {
