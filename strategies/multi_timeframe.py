@@ -44,7 +44,7 @@ class MultiTimeframeStrategy:
                 {"adx":a,"atr":volatility,"rsi":strength,"strategy":"multi_timeframe_v1"},
             )
         if short_regime and crossed_down and float(sc["rsi_short_min"]) <= strength <= float(sc["rsi_short_max"]) and macd_previous >= 0 > macd_now:
-            if market_type in {MarketType.CRYPTO_SPOT, MarketType.SOLANA_DEX, MarketType.EVM_DEX}:
+            if market_type in {MarketType.CRYPTO_SPOT, MarketType.SOLANA_DEX, MarketType.EVM_DEX, MarketType.STOCK}:
                 return None
             return TradeIntent(
                 venue,symbol,market_type,Side.SELL,price,price+distance,price-distance*r_multiple,
