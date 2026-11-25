@@ -1,4 +1,10 @@
 import { isAddress as isEvmAddress, verifyMessage as verifyEvmMessage } from "npm:viem@2.58.4";
+import { PublicKey, VersionedTransaction } from "npm:@solana/web3.js@1.98.4";
+import {
+  assertSolanaOrder, base58Encode, base64ToBytes, decimalToRaw,
+  jupiterApi, MAX_SWAP_SOL_LAMPORTS, DAILY_SWAP_SOL_LAMPORTS,
+  priceImpactFraction, rawToDecimal, sha256HexBytes, SOL_MINT, SWAP_QUOTE_TTL_SECONDS,
+} from "./jupiter-live.ts";
 import { validateOkxSpotRead, type OkxRegion } from "./okx-live.ts";
 import {
   binanceSignedRequest,
@@ -13,6 +19,8 @@ import {
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
+const JUPITER_API_KEY = (Deno.env.get("JUPITER_API_KEY") ?? "").trim();
+const SOLANA_RPC_URL = (Deno.env.get("SOLANA_RPC_URL") ?? "https://api.mainnet-beta.solana.com").trim();
 const HOOK_SECRET = (Deno.env.get("TELEGRAM_WEBHOOK_SECRET") ?? "").trim();
 const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") ?? "").trim().replace(/\/+$/, "");
 const SUPABASE_SERVICE_KEY = (() => {
