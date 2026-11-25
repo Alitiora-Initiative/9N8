@@ -297,6 +297,10 @@ class PaperTradingEngine:
         symbol = str(symbol).strip().upper()
         if not symbol or len(symbol) > 30:
             raise PaperTradingError("A valid market symbol is required.")
+        if self.config.quote_currency and not symbol.endswith(f"-{self.config.quote_currency.upper()}"):
+            raise PaperTradingError(
+                f"Paper account is denominated in {self.config.quote_currency}; use a {self.config.quote_currency}-quoted spot pair."
+            )
         budget = _decimal(quote_budget, "Quote amount")
         bid_price = _decimal(bid, "Bid")
         ask_price = _decimal(ask, "Ask")
@@ -323,9 +327,10 @@ class PaperTradingEngine:
             cash = _decimal(account["cash_balance"])
             equity = self._equity(db)
             allocation_cap = equity * self.config.max_position_pct / Decimal("100")
-            if budget > allocation_cap:
+            budget_notional = budget / (Decimal("1") + self.config.fee_rate)
+            if budget_notional > allocation_cap:
                 raise PaperTradingError(
-                    f"Quote budget exceeds the per-position cap ({allocation_cap:.4f} {self.config.quote_currency})."
+                    f"Position notional exceeds the per-position cap ({allocation_cap:.4f} {self.config.quote_currency}, fees excluded)."
                 )
             if total_cost > cash:
                 raise PaperTradingError("Insufficient paper cash after estimated fees.")
