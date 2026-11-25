@@ -27,3 +27,19 @@ jobs:
         run: python -m compileall -q main.py config.py models.py storage.py connectors strategies risk_manager security core tests
       - name: Run unit tests
         run: pytest -q
+
+  web-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install web dependencies
+        run: npm install --no-audit --no-fund
+      - name: Build secure connections and dashboard pages
+        run: npm run build
