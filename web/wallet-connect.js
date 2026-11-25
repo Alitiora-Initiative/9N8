@@ -224,75 +224,57 @@ connectButton?.addEventListener("click", async () => {
 });
 
 verifyButton?.addEventListener("click", async () => {
-  if (!appKitReady || !modal || connectionBusy) return;
+  if ((!appKitReady || !modal) && !injectedSession) return;
+  if (connectionBusy) return;
   connectionBusy = true;
   verifyButton.disabled = true;
   try {
     const selected = networkSelect?.value || "eip155:1";
-    const namespace = selected.startsWith("solana:") ? "solana" : "eip155";
-    const providers = modal.getProviders?.() || {};
-    const provider = namespace === "solana" ? providers.solana : providers.eip155;
-    const address = String(modal.getAddress?.() || currentProviderState?.address || "");
+    const namespace = injectedSession?.namespace || (selected.startsWith("solana:") ? "solana" : "eip155");
+    const providers = modal?.getProviders?.() || {};
+    const provider = injectedSession?.provider || (namespace === "solana" ? providers.solana : providers.eip155);
+    const address = String(injectedSession?.address || modal?.getAddress?.() || currentProviderState?.address || "");
     if (!provider || !address) throw new Error("No connected wallet provider or address was found. Reopen the wallet connection.");
     let chainId = "";
     if (namespace === "solana") {
       chainId = "mainnet-beta";
-      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) {
-        throw new Error("The connected Solana address could not be validated.");
-      }
+      if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) throw new Error("The connected Solana address could not be validated.");
     } else {
-      chainId = normalizeEvmChainId(modal.getChainId?.() || currentProviderState?.chainId);
+      chainId = injectedSession?.chainId || normalizeEvmChainId(modal?.getChainId?.() || currentProviderState?.chainId);
       const expected = selected.split(":")[1];
       if (!chainId) throw new Error("Could not determine the connected EVM chain.");
-      if (expected && chainId !== expected) {
-        throw new Error("Your wallet is on chain " + chainId + ". Switch to the selected network and reconnect.");
-      }
+      if (expected && chainId !== expected) throw new Error("Your wallet is on chain " + chainId + ". Switch to the selected network and reconnect.");
       if (!/^0x[a-fA-F0-9]{40}$/.test(address)) throw new Error("The connected EVM address is invalid.");
     }
-    const walletInfo = modal.getWalletInfo?.() || {};
-    const walletName = String(walletInfo.name || "WalletConnect");
-    const providerName = mapWalletProvider(walletName);
-    const connectionType = getWalletConnectionType();
+    const walletInfo = modal?.getWalletInfo?.() || {};
+    const walletName = injectedSession?.walletName || String(walletInfo.name || "WalletConnect");
+    const providerName = injectedSession ? mapWalletProvider(walletName) : mapWalletProvider(walletName);
+    const connectionType = injectedSession ? "injected_session" : getWalletConnectionType();
     setStatus("Creating a one-time ownership challenge…");
-    const challenge = await post({
-      action: "wallet_challenge",
-      provider: providerName,
-      connectionType,
-      namespace,
-      chainId,
-      address
-    });
+    const challenge = await post({ action: "wallet_challenge", provider: providerName, connectionType, namespace, chainId, address });
     setStatus("Approve the ownership message inside your wallet. It does not authorize a transaction…");
     let signature;
     if (namespace === "eip155") {
       if (typeof provider.request !== "function") throw new Error("The connected EVM wallet cannot sign a message.");
-      signature = await provider.request({
-        method: "personal_sign",
-        params: [bytesToHex(challenge.message), address]
-      });
+      signature = await provider.request({ method: "personal_sign", params: [bytesToHex(challenge.message), address] });
     } else {
       if (typeof provider.signMessage !== "function") throw new Error("The connected Solana wallet cannot sign a message.");
       const signed = await provider.signMessage(new TextEncoder().encode(challenge.message));
       const signatureBytes = signed?.signature || signed;
       signature = bytesToBase64(signatureBytes);
     }
-    const result = await post({
-      action: "wallet_verify",
-      challengeId: challenge.challengeId,
-      signature,
-      walletName,
-      connectionType
-    });
+    const result = await post({ action: "wallet_verify", challengeId: challenge.challengeId, signature, walletName, connectionType });
+    disconnectButton.disabled = false;
     setStatus("Verified and linked: " + result.address + " · " + result.network + ". Execution remains approval-only; no transaction permission was granted.", "success");
-    document.getElementById("walletStatus").textContent = "Verified wallet session: " + result.address + " · " + result.network + ". No wallet transaction was sent.";
+    const status = document.getElementById("walletStatus");
+    if (status) status.textContent = "Verified wallet session: " + result.address + " · " + result.network + ". No wallet transaction was sent.";
   } catch (error) {
     setStatus(error?.message || "Wallet ownership verification failed.", "error");
   } finally {
     connectionBusy = false;
-    verifyButton.disabled = !modal?.getIsConnected?.();
+    verifyButton.disabled = injectedSession ? false : !modal?.getIsConnected?.();
   }
 });
-
 disconnectButton?.addEventListener("click", async () => {
   if (!modal || connectionBusy) return;
   connectionBusy = true;
