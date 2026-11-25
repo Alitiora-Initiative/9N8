@@ -21,8 +21,6 @@ class FakeStore:
     async def set_daily_equity(self,day,equity):
         if day not in self.daily:
             self.daily[day]=equity
-        else:
-            self.daily[day]=self.daily[day]
         return self.daily[day]
 
     async def event(self,*args,**kwargs):
@@ -46,20 +44,18 @@ def risk_config():
     }
 
 
-def test_position_size_obeys_notional_and_risk_caps(risk_config):
-    import asyncio
-    async def run():
-        store=FakeStore()
-        risk=RiskManager(store,risk_config)
-        snapshot=MarketSnapshot("test","BTC/USDT",MarketType.CRYPTO_SPOT,99.9,100.1,100)
-        intent=TradeIntent("test","BTC/USDT",MarketType.CRYPTO_SPOT,Side.BUY,
-                           100,98,106,2,"test",{})
-        result=await risk.evaluate(intent,AccountState("test",10000,10000,10000),
-                                   snapshot,0,0.001)
-        assert result.approved and result.size
-        assert result.size.notional_usd <= 100
-        assert result.size.risk_usd <= 100
-    asyncio.run(run())
+@pytest.mark.asyncio
+async def test_position_size_obeys_notional_and_risk_caps(risk_config):
+    store=FakeStore()
+    risk=RiskManager(store,risk_config)
+    snapshot=MarketSnapshot("test","BTC/USDT",MarketType.CRYPTO_SPOT,99.9,100.1,100)
+    intent=TradeIntent("test","BTC/USDT",MarketType.CRYPTO_SPOT,Side.BUY,
+                       100,98,106,2,"test",{})
+    result=await risk.evaluate(intent,AccountState("test",10000,10000,10000),
+                               snapshot,0,0.001)
+    assert result.approved and result.size
+    assert result.size.notional_usd <= 100
+    assert result.size.risk_usd <= 100
 
 
 @pytest.mark.asyncio
@@ -72,6 +68,19 @@ async def test_spread_and_leverage_are_hard_vetoes(risk_config):
     decision=await risk.evaluate(intent,account,snapshot,0,0.02,leverage=1)
     assert not decision.approved
     decision=await risk.evaluate(intent,account,snapshot,0,0.001,leverage=4)
+    assert not decision.approved
+
+
+@pytest.mark.asyncio
+async def test_concurrent_position_cap_is_enforced(risk_config):
+    risk=RiskManager(FakeStore(),risk_config)
+    snapshot=MarketSnapshot("test","BTC/USDT",MarketType.CRYPTO_SPOT,99.9,100.1,100)
+    intent=TradeIntent("test","BTC/USDT",MarketType.CRYPTO_SPOT,Side.BUY,
+                       100,98,106,2,"test",{})
+    decision=await risk.evaluate(
+        intent,AccountState("test",10000,10000,10000),snapshot,
+        current_exposure_usd=0,estimated_slippage_pct=0.001,current_open_positions=3,
+    )
     assert not decision.approved
 
 
