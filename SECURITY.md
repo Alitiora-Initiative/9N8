@@ -22,7 +22,7 @@ Not implemented:
 - Unattended autonomous order submission.
 - Exchange-side attached stop-loss/take-profit algos.
 
-The API key should have only the permissions you need. Keep **Withdraw** disabled. OKX's documentation describes Read, Trade and Withdraw permissions, recommends IP-binding API keys, and documents inactivity expiry rules for trade/withdraw keys not linked to an IP. Review your OKX account's current API policy.
+Use Read and Trade permissions only if you need trading. Keep **Withdraw** disabled; the bot checks the returned permission list and refuses to stage new orders if Withdraw is present. OKX documents that Trade permission can include funding transfers as well as orders/cancellations. This application contains no transfer endpoints, but the API key itself may have capabilities beyond this app. Use a dedicated key and bind it to your IP where possible. OKX notes that unbound Trade/Withdraw keys can expire after 14 days of inactivity; check the current policy for your account.
 
 ## Demo-first and execution confirmation
 
