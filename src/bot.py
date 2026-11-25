@@ -136,6 +136,10 @@ def _verify_safe_key() -> dict:
             "This OKX API key has Withdraw permission. 9N8 refuses to stage orders with that key. "
             "Revoke it at OKX and create a new key with Withdraw turned OFF."
         )
+    if "trade" not in permissions:
+        raise OKXError(
+            "This OKX API key does not report Trade permission. Add Trade permission in OKX API settings, keep Withdraw OFF, and retry."
+        )
     return account
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -204,7 +208,7 @@ async def cmd_okx_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"Position mode: {account.get('posMode', 'not returned')}\n"
             f"API key permissions: {account.get('perm', 'not returned')}\n"
             f"Total equity: {_fmt(balance.get('totalEq', '0'), 4)}\n"
-            + ("WARNING: this key has Withdraw permission. Do not trade with it; replace it." if "withdraw" in str(account.get("perm", "")).lower().split(",") else "")
+            + ("WARNING: this key has Withdraw permission. Do not trade with it; replace it." if any(part.strip() == "withdraw" for part in str(account.get("perm", "")).lower().split(",")) else "")
             + "\n9N8 does not call withdrawal or transfer endpoints."
         )
     except OKXError as exc:
