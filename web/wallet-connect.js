@@ -157,8 +157,8 @@ async function initialize() {
     if (!response.ok || config.ok !== true) throw new Error("Could not read wallet connection settings.");
     reownProjectId = config.reownProjectId;
     if (!reownProjectId) {
-      connectButton.disabled = true;
-      setStatus("WalletConnect is not activated yet. The owner must create a Reown project and add REOWN_PROJECT_ID to Supabase Edge Function Secrets.", "warning");
+      connectButton.disabled = false;
+      setStatus("WalletConnect QR is not configured. Open 9N8 inside MetaMask, Trust Wallet or Phantom to use the injected-wallet connection.", "warning");
       return;
     }
     const wagmiAdapter = new WagmiAdapter({ projectId: reownProjectId, networks: evmNetworks });
@@ -199,17 +199,24 @@ async function initialize() {
 }
 
 connectButton?.addEventListener("click", async () => {
-  if (!appKitReady || !modal) return;
   const selected = networkSelect?.value || "eip155:1";
   const namespace = selected.startsWith("solana:") ? "solana" : "eip155";
   try {
-    if (namespace === "solana") {
-      await modal.open({ view: "Connect", namespace: "solana" });
+    if (appKitReady && modal) {
+      if (namespace === "solana") {
+        await modal.open({ view: "Connect", namespace: "solana" });
+      } else {
+        const chainId = selected.split(":")[1];
+        const target = networkById[chainId] || mainnet;
+        try { await modal.switchNetwork(target); } catch (_) {}
+        await modal.open({ view: "Connect", namespace: "eip155" });
+      }
     } else {
-      const chainId = selected.split(":")[1];
-      const target = networkById[chainId] || mainnet;
-      try { await modal.switchNetwork(target); } catch (_) {}
-      await modal.open({ view: "Connect", namespace: "eip155" });
+      const session = await connectInjectedWallet();
+      currentAddress = session.address;
+      verifyButton.disabled = false;
+      disconnectButton.disabled = false;
+      setStatus(session.walletName + " connected: " + shortAddress(session.address) + " · " + session.network + ". Verify ownership to link it to 9N8.", "success");
     }
   } catch (error) {
     setStatus(error?.message || "Wallet connection was not completed.", "error");
