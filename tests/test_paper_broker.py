@@ -83,3 +83,52 @@ def test_paper_configuration_rejects_unbounded_fees_and_slippage():
         PaperBroker(1000, fee_rate=0.1)
     with pytest.raises(ValueError):
         PaperBroker(1000, slippage_bps=1000)
+
+
+@pytest.mark.asyncio
+async def test_stock_paper_fill_requires_sufficient_displayed_top_of_book_size():
+    broker = PaperBroker(1000, fee_rate=0.001, slippage_bps=5)
+    stock = MarketSnapshot(
+        "alpaca-stocks", "AAPL", MarketType.STOCK,
+        200.10, 200.12, 200.11,
+        bid_size=5, ask_size=3,
+    )
+    stock_buy = TradeIntent(
+        "alpaca-stocks", "AAPL", MarketType.STOCK, Side.BUY,
+        200.11, 195, 215, 5, "stock paper test", {},
+    )
+
+    with pytest.raises(ValueError, match="displayed top-of-book size"):
+        await broker.execute(stock_buy, 4, stock, "too-large-stock-buy")
+
+    fill = await broker.execute(stock_buy, 2, stock, "valid-stock-buy")
+    assert fill.quantity == 2
+    assert fill.average_price > stock.ask
+
+
+@pytest.mark.asyncio
+async def test_stock_paper_exit_requires_visible_bid_size():
+    broker = PaperBroker(1000, fee_rate=0.001, slippage_bps=0)
+    stock_entry_quote = MarketSnapshot(
+        "alpaca-stocks", "AAPL", MarketType.STOCK,
+        200.10, 200.12, 200.11,
+        bid_size=10, ask_size=10,
+    )
+    stock_buy = TradeIntent(
+        "alpaca-stocks", "AAPL", MarketType.STOCK, Side.BUY,
+        200.11, 195, 215, 5, "stock paper test", {},
+    )
+    await broker.execute(stock_buy, 5, stock_entry_quote, "stock-entry")
+
+    thin_bid = MarketSnapshot(
+        "alpaca-stocks", "AAPL", MarketType.STOCK,
+        200.10, 200.12, 200.11,
+        bid_size=2, ask_size=10,
+    )
+    stock_sell = TradeIntent(
+        "alpaca-stocks", "AAPL", MarketType.STOCK, Side.SELL,
+        200.11, 205, 190, 5, "stock paper close", {},
+    )
+    with pytest.raises(ValueError, match="displayed top-of-book size"):
+        await broker.execute(stock_sell, 5, thin_bid, "stock-exit-too-large")
+    assert "alpaca-stocks:AAPL" in broker.positions
