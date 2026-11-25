@@ -276,6 +276,32 @@ function connectHtml(): Response {
     },
   });
 }
+
+function setupHtml(): Response {
+  const html = [
+    "<!doctype html>",
+    "<html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><meta name='theme-color' content='#111827'><title>9N8 Webhook Setup</title>",
+    "<style>:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0b1220;color:#edf2f7}body{margin:0;padding:22px;max-width:540px;margin:auto}.card{margin-top:28px;padding:20px;background:#131e30;border:1px solid #26364d;border-radius:16px}label{display:block;margin:15px 0 7px;color:#aab7ca;font-size:14px}input{width:100%;box-sizing:border-box;padding:14px;border:1px solid #40516a;border-radius:10px;background:#0b1422;color:#fff;font-size:15px}button{width:100%;padding:14px;margin-top:16px;border:0;border-radius:10px;background:#2dbb80;color:#061a12;font-weight:700;font-size:15px}button:disabled{opacity:.6}.muted{color:#aab7ca;line-height:1.5}.warn{color:#f2c879}.status{white-space:pre-wrap;margin-top:12px;min-height:24px}</style></head><body>",
+    "<div class='card'><h1>Activate 9N8 Telegram webhook</h1>",
+    "<p class='muted'>This switches your Telegram bot from the old single-owner endpoint to the new universal candidate. Only do this after TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET are saved in the 9N8 Supabase Edge Function Secrets.</p>",
+    "<p class='warn'>Enter only the webhook secret you created. Never enter your BotFather token here, in GitHub, or in this page.</p>",
+    "<form id='setupForm'><label for='secret'>TELEGRAM_WEBHOOK_SECRET</label><input id='secret' type='password' autocomplete='off' required minlength='32' maxlength='256'><button id='activate' type='submit'>Register new webhook</button><div id='status' class='status' role='status'></div></form>",
+    "<p class='muted'>The webhook secret is sent over HTTPS to the 9N8 server. The page does not save it in browser storage. Telegram receives the same secret as its webhook header token.</p></div>",
+    "<script>(function(){const form=document.getElementById('setupForm');const secret=document.getElementById('secret');const status=document.getElementById('status');const button=document.getElementById('activate');form.addEventListener('submit',async function(e){e.preventDefault();button.disabled=true;status.textContent='Registering webhook with Telegram…';const value=secret.value;try{const r=await fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'register_webhook',setupSecret:value})});const j=await r.json().catch(()=>({}));if(!r.ok||j.ok!==true)throw new Error(j.message||'Webhook registration failed.');status.textContent='Webhook registered successfully. Telegram will now send updates to the new 9N8 candidate. You can close this page and send /start to your bot.';secret.value='';}catch(err){status.textContent=err.message||'Registration failed. Check the secrets in Supabase.';}finally{button.disabled=false;}});})();</script>",
+    "</body></html>"
+  ].join("\n");
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    },
+  });
+}
+
 async function handleMiniApp(body: any): Promise<Response> {
   try {
     const user = await verifyInitData(String(body?.initData ?? ""));
@@ -539,9 +565,40 @@ async function handleMyChatMember(update: any) {
   }, "resolution=merge-duplicates,return=minimal");
 }
 
+
+async function registerWebhook(body: any): Promise<Response> {
+  if (!TOKEN || !HOOK_SECRET) {
+    return response({ ok: false, message: "Add TELEGRAM_BOT_TOKEN and TELEGRAM_WEBHOOK_SECRET in Supabase Edge Function Secrets first." }, 503);
+  }
+  if (!same(String(body?.setupSecret ?? ""), HOOK_SECRET)) {
+    return response({ ok: false, message: "Webhook setup secret did not match." }, 403);
+  }
+  try {
+    await telegram("setWebhook", {
+      url: FUNCTION_URL,
+      secret_token: HOOK_SECRET,
+      allowed_updates: ["message", "callback_query", "my_chat_member"],
+      drop_pending_updates: false,
+      max_connections: 20,
+    });
+    const info = await telegram("getWebhookInfo", {});
+    if (String(info?.url ?? "") !== FUNCTION_URL) {
+      return response({ ok: false, message: "Telegram did not confirm the new webhook URL. Try again after checking the bot settings." }, 502);
+    }
+    return response({
+      ok: true,
+      message: "Telegram webhook registered.",
+      pendingUpdateCount: Number(info.pending_update_count ?? 0),
+    });
+  } catch {
+    return response({ ok: false, message: "Telegram rejected webhook registration. Check the BotFather token and webhook secret in Supabase." }, 502);
+  }
+}
+
 async function mainHandler(req: Request): Promise<Response> {
   const url = new URL(req.url);
   if (req.method === "GET" && url.searchParams.get("view") === "connect") return connectHtml();
+  if (req.method === "GET" && url.searchParams.get("view") === "setup") return setupHtml();
   if (req.method === "GET") return response({
     ok: true, service: "9N8 universal candidate", state: "staging", environment: "demo-testnet-only",
     config: {
@@ -554,6 +611,8 @@ async function mainHandler(req: Request): Promise<Response> {
   let body: any;
   try { body = await req.json(); } catch { return response({ ok: false, error: "invalid_json" }, 400); }
 
+  // Webhook setup is protected by the secret already stored in Supabase.
+  if (body?.action === "register_webhook") return await registerWebhook(body);
   // Mini App traffic is authenticated with Telegram-signed initData.
   if (body?.action === "connect_exchange" || body?.action === "watch_wallet") return await handleMiniApp(body);
 
