@@ -1,3 +1,37 @@
+# 9N8 — Universal Trading Intelligence (Paper Pilot)
+
+## Current deployed paper-trading path
+
+The `paper-trading-pilot` branch adds a private, multi-user Telegram paper-trading workflow. In this pilot, pressing Telegram's **Start** button sends `/start` and creates or resumes that user's crypto paper session automatically.
+
+- **Execution:** simulated only. No exchange orders, wallet signing, withdrawals or real-money transfers are available in this path.
+- **Market data:** Binance public spot API, closed one-minute candles. No exchange API credentials are needed.
+- **Initial universe:** BTC, ETH, SOL, BNB, XRP, DOGE, SHIB, PEPE, BONK and WIF USDT pairs where listed by the provider.
+- **Strategy:** EMA 9 / EMA 21 crossover with RSI 14 confirmation. A signal is not guaranteed and no order is generated when the entry conditions are not met.
+- **Virtual account:** $1,000 starting cash, $50 maximum simulated entry, up to three open positions.
+- **Costs and exits:** simulated 0.10% fee, adverse 5 bps slippage, 2% stop loss and 4% take profit.
+- **Cadence:** an immediate first scan is requested at start; Supabase Cron invokes the paper worker every minute thereafter.
+- **Controls:** `/paper` shows status, scans, equity, positions and fills; `/pause` pauses a run; `/stop` activates the emergency stop; `/resume` requires a separate confirmation.
+- **Data isolation:** paper positions, trades, asset state and scan history are stored in server-only tables with RLS enabled and no anon/authenticated table grants.
+
+The worker is a separate Supabase Edge Function and its authentication key is kept in Supabase Vault. The worker contains no exchange execution adapter or wallet signer. The Telegram start RPC and the worker both enforce the emergency-stop / session-lock checks.
+
+### Important scope limits
+
+This pilot is **crypto spot only**, through the listed Binance USDT pairs. It is not yet the full multi-venue build: on-chain Solana DEX execution, additional exchange/broker market data, stocks and forex paper feeds are not part of this initial run. The meme-coin list is limited to pairs listed by the market-data provider; this is not a general Solana token scanner.
+
+Live trading remains disabled. The paper pilot does not enable, prepare or imply a permission to trade real funds. Paper results must be observed and independently evaluated before any separately engineered live-execution release.
+
+### Verify the paper engine
+
+The Deno test suite is under `supabase/functions/_shared/paper-engine_test.ts`. GitHub Actions checks the paper engine, worker and Telegram Edge Function on this feature branch. The worker's GET health route reports `simulated-only` and `realOrdersEnabled: false`.
+
+---
+
+## Legacy local OKX bot
+
+The material below describes the original standalone Python / OKX demo client. It is retained for reference and should not be confused with the new Supabase multi-user paper pilot above.
+
 # 9N8 — Private OKX Spot Trading Bot
 
 9N8 is a **personal, owner-only Telegram bot** for one Telegram account and one OKX account. It is not a public exchange-API service and does not collect API keys from other users.
