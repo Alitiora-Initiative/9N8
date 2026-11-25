@@ -111,7 +111,10 @@ class TradingEngine:
                 env = "practice"
             elif not self.cfg["execution"].get("allow_oanda_live", False) or env != "live":
                 raise TradingError("OANDA live requires config allow_oanda_live and OANDA_ENVIRONMENT=live.")
-            c = OandaConnector(env)
+            c = OandaConnector(
+                env,
+                live_certified=bool(self.cfg["execution"].get("live_execution_certified", False)),
+            )
             await c.connect()
             self.connectors["oanda"] = c
             for symbol in o.get("instruments", []):
