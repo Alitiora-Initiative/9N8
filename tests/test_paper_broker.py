@@ -108,7 +108,7 @@ async def test_stock_paper_fill_requires_sufficient_displayed_top_of_book_size()
 
 @pytest.mark.asyncio
 async def test_stock_paper_exit_requires_visible_bid_size():
-    broker = PaperBroker(1000, fee_rate=0.001, slippage_bps=0)
+    broker = PaperBroker(2000, fee_rate=0.001, slippage_bps=0)
     stock_entry_quote = MarketSnapshot(
         "alpaca-stocks", "AAPL", MarketType.STOCK,
         200.10, 200.12, 200.11,
