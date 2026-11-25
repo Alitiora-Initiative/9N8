@@ -1,4 +1,15 @@
 import { isAddress as isEvmAddress, verifyMessage as verifyEvmMessage } from "npm:viem@2.58.4";
+import { validateOkxSpotRead, type OkxRegion } from "./okx-live.ts";
+import {
+  binanceSignedRequest,
+  buildSpotMarketOrder,
+  canonicalJson,
+  estimateDepthExecution,
+  mapBinanceOrderStatus,
+  sha256Hex,
+  type BinanceBook,
+  type BinanceSymbolInfo,
+} from "./binance-live.ts";
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
@@ -15,19 +26,19 @@ const SUPABASE_SERVICE_KEY = (() => {
   }
 })();
 const FUNCTION_URL = SUPABASE_URL + "/functions/v1/telegram-bot-next";
-const MINI_APP_URL = "https://9n8-secure-connect-6hzlvgrw9-jolse.vercel.app/connect";
-const MIGRATION_PAGE_URL = "https://9n8-secure-connect-6hzlvgrw9-jolse.vercel.app/migrate";
+const MINI_APP_URL = "https://9n8-secure-connect.vercel.app/connect";
+const MIGRATION_PAGE_URL = "https://9n8-secure-connect.vercel.app/migrate";
 const SETUP_PAGE_URL = "https://9n8-secure-connect.vercel.app/setup";
 const CORS_HEADERS = {
-  "access-control-allow-origin": "https://9n8-secure-connect-6hzlvgrw9-jolse.vercel.app",
+  "access-control-allow-origin": "https://9n8-secure-connect.vercel.app",
   "access-control-allow-methods": "GET, POST, OPTIONS",
   "access-control-allow-headers": "content-type",
   "vary": "Origin",
 };
 const enc = new TextEncoder();
 
-type Provider = "okx" | "binance" | "bybit";
-type Credentials = { apiKey: string; apiSecret: string; passphrase?: string };
+type Provider = "okx" | "binance";
+type Credentials = { apiKey: string; apiSecret: string; passphrase?: string; region?: OkxRegion };
 type Obj = Record<string, unknown>;
 
 function response(data: Obj, status = 200): Response {
@@ -47,16 +58,8 @@ function b64(bytes: Uint8Array): string {
   for (const byte of bytes) value += String.fromCharCode(byte);
   return btoa(value);
 }
-
-function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  // Copy into an owned ArrayBuffer so modern TypeScript's
-  // ArrayBufferLike/SharedArrayBuffer types are not passed to WebCrypto.
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer as ArrayBuffer;
-}
-async function mac(keyBytes: Uint8Array, message: string): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", asArrayBuffer(keyBytes), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+async function mac(keyBytes: BufferSource, message: string): Promise<Uint8Array> {
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(message)));
 }
 function same(a: string, b: string): boolean {
@@ -172,28 +175,29 @@ async function sendReportDocument(chatId: number, signedUrl: string, caption: st
 }
 function mainKeyboard(): Obj {
   return { inline_keyboard: [
-    [{ text: "▶ Start crypto paper run ($1,000 virtual)", callback_data: "n8:paper_start_crypto" }],
-    [{ text: "Paper trading status", callback_data: "n8:paper_status" }],
-    [{ text: "Connect exchange / wallet", web_app: { url: MINI_APP_URL } }],
-    [{ text: "Live migration assessment", web_app: { url: MIGRATION_PAGE_URL } }],
+    [{ text: "▶ Start / view live-market paper run", callback_data: "n8:paper_start_crypto" }],
+    [{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }],
+    [{ text: "Connect exchange · Binance / OKX", web_app: { url: MINI_APP_URL } }],
+    [{ text: "Wallet watch / connect", web_app: { url: "https://9n8-secure-connect.vercel.app/connect?view=wallet" } }],
+    [{ text: "📚 Services & features", callback_data: "n8:services" }],
     [{ text: "My exchange connections", callback_data: "n8:connections" }],
     [{ text: "Live status / risk", callback_data: "n8:live_status" }],
   ] };
 }
 
-async function verifyInitData(raw: string): Promise<any> {
+async function verifyInitData(raw: string, maxAgeSeconds = 300): Promise<any> {
   if (!TOKEN || !raw || raw.length > 12000) throw new Error("telegram_auth_invalid");
   const p = new URLSearchParams(raw);
   const supplied = (p.get("hash") ?? "").toLowerCase();
   const authDate = Number(p.get("auth_date") ?? "0");
   const now = Math.floor(Date.now() / 1000);
   if (!/^[a-f0-9]{64}$/.test(supplied) || !Number.isSafeInteger(authDate)) throw new Error("telegram_auth_invalid");
-  if (authDate > now + 30 || now - authDate > 300) throw new Error("telegram_auth_expired");
+  if (authDate > now + 30 || now - authDate > maxAgeSeconds) throw new Error("telegram_auth_expired");
   const entries = Array.from(p.entries()).filter(([key]) => key !== "hash");
   entries.sort(([a], [b]) => a.localeCompare(b));
   const check = entries.map(([key, value]) => key + "=" + value).join("\n");
   const derived = await mac(enc.encode("WebAppData"), TOKEN); // Telegram: HMAC key=WebAppData, message=bot token.
-  const calculated = hex(await mac(derived, check));
+  const calculated = hex(await mac(new Uint8Array(derived).buffer, check));
   if (!same(calculated, supplied)) throw new Error("telegram_auth_invalid");
   let user: any;
   try { user = JSON.parse(p.get("user") ?? "null"); } catch { throw new Error("telegram_auth_invalid"); }
@@ -239,18 +243,47 @@ async function validateOKX(c: Credentials) {
     },
   };
 }
-async function validateBinance(c: Credentials) {
+async function binanceSignedGet(c: Credentials, path: string): Promise<any> {
   const query = "recvWindow=5000&timestamp=" + Date.now();
   const signature = hex(await mac(enc.encode(c.apiSecret), query));
-  const data = await jsonGet("https://testnet.binance.vision/api/v3/account?" + query + "&signature=" + signature, {
+  return await jsonGet("https://api.binance.com" + path + "?" + query + "&signature=" + signature, {
     "X-MBX-APIKEY": c.apiKey, accept: "application/json",
   });
-  if (!Array.isArray(data?.balances)) throw new Error("exchange_credentials_rejected");
-  if (data.canWithdraw === true) throw new Error("withdraw_permission_detected");
-  const scopes = Array.isArray(data.permissions) ? data.permissions.map(String) : [];
+}
+async function validateBinanceLive(c: Credentials) {
+  // Binance exposes the API key's own scope through this signed SAPI endpoint.
+  // Fail closed unless read + Spot are enabled and withdrawal/transfer scopes are off.
+  const restrictions = await binanceSignedGet(c, "/sapi/v1/account/apiRestrictions");
+  if (restrictions?.enableReading !== true) throw new Error("binance_read_permission_required");
+  if (restrictions?.enableSpotAndMarginTrading !== true) throw new Error("binance_spot_permission_required");
+  if (restrictions?.enableWithdrawals !== false) throw new Error("withdraw_permission_detected");
+  if (restrictions?.enableInternalTransfer !== false || restrictions?.permitsUniversalTransfer !== false) {
+    throw new Error("binance_transfer_permission_detected");
+  }
+  if (restrictions?.enableFutures !== false || restrictions?.enableMargin !== false ||
+      restrictions?.enableVanillaOptions !== false || restrictions?.enablePortfolioMarginTrading === true) {
+    throw new Error("binance_non_spot_permission_detected");
+  }
+  const account = await binanceSignedGet(c, "/api/v3/account");
+  if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
+    throw new Error("exchange_credentials_rejected");
+  }
+  if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
   return {
-    label: "Binance Spot Testnet",
-    permissions: { read: true, spotTrade: data.canTrade === true || scopes.includes("SPOT"), withdraw: false, scopes },
+    label: "Binance Spot LIVE",
+    permissions: {
+      read: true,
+      spotTrade: true,
+      withdraw: false,
+      internalTransfer: false,
+      universalTransfer: restrictions.permitsUniversalTransfer === true,
+      margin: restrictions.enableMargin === true,
+      futures: restrictions.enableFutures === true,
+      options: restrictions.enableVanillaOptions === true,
+      ipRestricted: restrictions.ipRestrict === true,
+      accountCanTrade: true,
+    },
+    accountHint: account.uid == null ? null : "Binance UID · " + mask(String(account.uid)),
   };
 }
 async function validateBybit(c: Credentials) {
@@ -281,16 +314,13 @@ async function validateBybit(c: Credentials) {
 }
 async function validateExchange(provider: Provider, environment: string, c: Credentials) {
   if (!c.apiKey || !c.apiSecret) throw new Error("api_key_and_secret_required");
-  if (c.apiKey.length > 512 || c.apiSecret.length > 1024 || (c.passphrase ?? "").length > 256) {
-    throw new Error("credential_field_too_long");
-  }
-  if (provider === "okx" && environment === "demo") return await validateOKX(c);
-  if (provider === "binance" && environment === "testnet") return await validateBinance(c);
-  if (provider === "bybit" && environment === "demo") return await validateBybit(c);
+  if (c.apiKey.length > 512 || c.apiSecret.length > 1024) throw new Error("credential_field_too_long");
+  if (provider === "binance" && environment === "live") return await validateBinanceLive(c);
+  if (provider === "okx" && environment === "live") return await validateOkxSpotRead({ apiKey: c.apiKey, apiSecret: c.apiSecret, passphrase: c.passphrase ?? "", region: c.region ?? "global" });
   throw new Error("unsupported_provider_environment");
 }
 async function saveExchange(telegramId: number, provider: Provider, environment: string,
-  label: string, credentials: Credentials, permissions: Obj): Promise<string> {
+  label: string, credentials: Credentials, permissions: Obj, accountHint: string | null = null): Promise<string> {
   const result = await db("rpc/n8_store_exchange_secret", "POST", {
     p_telegram_user_id: telegramId,
     p_provider: provider,
@@ -298,7 +328,7 @@ async function saveExchange(telegramId: number, provider: Provider, environment:
     p_label: label,
     p_credentials: credentials,
     p_permissions: permissions,
-    p_account_hint: null,
+    p_account_hint: accountHint,
   });
   const id = typeof result === "string" ? result : Array.isArray(result) ? result[0] : result;
   if (typeof id !== "string" || !id) throw new Error("credential_storage_failed");
@@ -344,8 +374,11 @@ async function verifyWalletProof(challenge: any, signature: string): Promise<boo
     const publicKey = decodeBase58(String(challenge.public_address));
     const proof = decodeBase64(signature);
     if (publicKey.length !== 32 || proof.length !== 64) return false;
-    const key = await crypto.subtle.importKey("raw", asArrayBuffer(publicKey), { name: "Ed25519" }, false, ["verify"]);
-    return await crypto.subtle.verify("Ed25519", key, asArrayBuffer(proof), asArrayBuffer(enc.encode(String(challenge.message))));
+    // Copy into ArrayBuffer-backed views for WebCrypto's strict BufferSource overloads.
+    const publicKeyData = new Uint8Array(publicKey).buffer;
+    const signatureData = new Uint8Array(proof).buffer;
+    const key = await crypto.subtle.importKey("raw", publicKeyData, { name: "Ed25519" }, false, ["verify"]);
+    return await crypto.subtle.verify("Ed25519", key, signatureData, enc.encode(String(challenge.message)));
   }
   return false;
 }
@@ -354,12 +387,6 @@ async function createWalletChallenge(user: any, body: any): Promise<Response> {
   const address = clean(body?.address, 128);
   const provider = String(body?.provider ?? "walletconnect");
   const connectionType = String(body?.connectionType ?? "walletconnect_session");
-  if (namespace === "solana") {
-    return response({
-      ok: false,
-      message: "Solana wallet sessions are temporarily disabled while 9N8 replaces the legacy wallet adapter. You can still link Solana public addresses for watch-only monitoring.",
-    }, 403);
-  }
   const allowedProviders = ["walletconnect", "phantom", "trust_wallet", "metamask"];
   const allowedConnectionTypes = ["walletconnect_session", "injected_session"];
   const evmNetworks: Record<string, string> = {
@@ -551,23 +578,208 @@ function setupHtml(): Response {
   });
 }
 
+async function paperTerminalData(userId: string): Promise<Obj> {
+  const sessions = await db(
+    "n8_paper_sessions?select=id,market_type,status,started_at,last_activity_at,initial_balance_usd,cash_balance_usd,tick_count,last_tick_at,last_tick_error,config&user_id=eq." +
+      encodeURIComponent(userId) + "&order=created_at.desc&limit=1"
+  );
+  const session = Array.isArray(sessions) ? sessions[0] : null;
+  if (!session) return { session: null, tick: null, positions: [], trades: [] };
+  const [ticks, positions, trades] = await Promise.all([
+    db("n8_paper_ticks?select=tick_at,symbols_scanned,symbols_failed,signals_generated,opened_trades,closed_trades,cash_balance_usd,equity_usd,realized_pnl_usd,unrealized_pnl_usd,status,metadata&session_id=eq." +
+      encodeURIComponent(String(session.id)) + "&order=tick_at.desc&limit=1"),
+    db("n8_paper_positions?select=id,symbol,quantity,average_entry_price,mark_price,unrealized_pnl_usd,realized_pnl_usd,stop_loss_price,take_profit_price,opened_at&session_id=eq." +
+      encodeURIComponent(String(session.id)) + "&status=eq.open&order=opened_at.desc&limit=20"),
+    db("n8_paper_trades?select=id,symbol,side,quantity,fill_price,reference_price,notional_usd,fee_usd,realized_pnl_usd,signal_reason,filled_at,metadata&session_id=eq." +
+      encodeURIComponent(String(session.id)) + "&order=filled_at.desc&limit=50"),
+  ]);
+  return {
+    session,
+    tick: Array.isArray(ticks) ? ticks[0] ?? null : null,
+    positions: Array.isArray(positions) ? positions : [],
+    trades: Array.isArray(trades) ? trades : [],
+  };
+}
+async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
+  const rows = await db(
+    "n8_exchange_connections?select=id,label,account_hint,permissions,last_validated_at&user_id=eq." +
+      encodeURIComponent(userId) + "&provider=eq.binance&environment=eq.live&status=eq.active&order=created_at.desc&limit=1"
+  );
+  const connection = Array.isArray(rows) ? rows[0] : null;
+  if (!connection?.id) throw new Error("binance_live_connection_missing");
+  const credentials = await db("rpc/n8_get_exchange_credentials", "POST", {
+    p_telegram_user_id: Number(user.id),
+    p_connection_id: connection.id,
+  });
+  const exchangeCredentials = {
+    apiKey: clean(credentials?.apiKey, 512),
+    apiSecret: clean(credentials?.apiSecret, 1024),
+  };
+  await validateBinanceLive(exchangeCredentials);
+  const account = await binanceSignedRequest<any>(
+    exchangeCredentials,
+    "GET",
+    "/api/v3/account",
+    { omitZeroBalances: "true" },
+  );
+  if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
+    throw new Error("exchange_credentials_rejected");
+  }
+  const balances = account.balances
+    .map((entry: any) => ({
+      asset: String(entry.asset ?? ""),
+      free: Number(entry.free ?? 0),
+      locked: Number(entry.locked ?? 0),
+    }))
+    .filter((entry: any) => Number.isFinite(entry.free) && Number.isFinite(entry.locked) &&
+      entry.free + entry.locked > 0)
+    .slice(0, 100);
+  const quote = balances.find((entry: any) => entry.asset === "USDT") ?? { free: 0, locked: 0 };
+  const observedAt = new Date().toISOString();
+  const evidence = {
+    source: "binance_signed_spot_account",
+    connectionId: connection.id,
+    quoteAsset: "USDT",
+    availableQuote: quote.free,
+    // USDT is the exchange's quote unit for this release; it is valued at its USD peg
+    // for risk gating and the exact USDT quantity is preserved alongside this USD proxy.
+    availableQuoteUsdValuation: "USDT nominal USD peg at 1.00",
+    balances,
+    accountCanTrade: true,
+    observedAt,
+  };
+  await db("n8_live_balance_checks", "POST", {
+    user_id: userId,
+    account_type: "exchange",
+    connection_id: connection.id,
+    provider: "binance",
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    available_quote_usd: quote.free,
+    observed_at: observedAt,
+    source: "binance_signed_spot_account",
+    evidence_hash: await sha256Hex(canonicalJson(evidence)),
+    evidence,
+  }, "return=minimal");
+  await audit(userId, null, "binance_balance_refreshed", "ok", {
+    connection_id: connection.id,
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    observed_at: observedAt,
+  });
+  return {
+    connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
+    balances,
+    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, availableUsdApprox: quote.free },
+    accountCanTrade: true,
+    updatedAt: observedAt,
+  };
+}
+async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
+  const rows = await db(
+    "n8_exchange_connections?select=id,label,account_hint,permissions,last_validated_at&user_id=eq." +
+      encodeURIComponent(userId) + "&provider=eq.okx&environment=eq.live&status=eq.active&order=created_at.desc&limit=1"
+  );
+  const connection = Array.isArray(rows) ? rows[0] : null;
+  if (!connection?.id) throw new Error("okx_live_connection_missing");
+  const stored = await db("rpc/n8_get_exchange_credentials", "POST", {
+    p_telegram_user_id: Number(user.id),
+    p_connection_id: connection.id,
+  });
+  const regionValue = String(stored?.region ?? "global");
+  const credentials = {
+    apiKey: clean(stored?.apiKey, 512),
+    apiSecret: clean(stored?.apiSecret, 1024),
+    passphrase: clean(stored?.passphrase, 256),
+    region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
+  };
+  const validation = await validateOkxSpotRead(credentials);
+  const quote = validation.quoteBalance;
+  const observedAt = new Date().toISOString();
+  const evidence = {
+    source: "okx_signed_spot_account",
+    connectionId: connection.id,
+    region: validation.region,
+    quoteAsset: "USDT",
+    availableQuote: quote.free,
+    availableQuoteUsdValuation: "USDT nominal USD peg at 1.00",
+    balances: validation.balances,
+    accountLevel: validation.permissions.accountLevel,
+    spotTradeScope: "not_verified",
+    withdrawalScope: "not_verified",
+    transferScope: "not_verified",
+    observedAt,
+  };
+  await db("n8_live_balance_checks", "POST", {
+    user_id: userId,
+    account_type: "exchange",
+    connection_id: connection.id,
+    provider: "okx",
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    available_quote_usd: quote.free,
+    observed_at: observedAt,
+    source: "okx_signed_spot_account",
+    evidence_hash: await sha256Hex(canonicalJson(evidence)),
+    evidence,
+  }, "return=minimal");
+  await audit(userId, null, "okx_balance_refreshed", "ok", {
+    connection_id: connection.id,
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    observed_at: observedAt,
+    permission_scopes: "read validated; trade/withdraw/transfer not verified",
+  });
+  return {
+    connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
+    balances: validation.balances,
+    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, equity: quote.equity, availableUsdApprox: quote.free },
+    permissions: validation.permissions,
+    accountEquityUsdApprox: validation.accountEquityUsd,
+    updatedAt: observedAt,
+    liveOrdersEnabled: false,
+  };
+}
 async function handleMiniApp(body: any): Promise<Response> {
   try {
-    const user = await verifyInitData(String(body?.initData ?? ""));
+    // Read-only account views, assessments and emergency pause remain usable while
+    // the private Mini App is open. Credential changes and all future trade approvals
+    // retain the strict five-minute Telegram initData window.
+    const longLivedReadActions = new Set([
+      "paper_terminal",
+      "live_connections",
+      "live_status",
+      "live_assess",
+      "live_pause",
+      "binance_account",
+      "okx_account",
+      "wallet_revoke",
+    ]);
+    const maxAge = longLivedReadActions.has(String(body?.action ?? "")) ? 24 * 60 * 60 : 300;
+    const user = await verifyInitData(String(body?.initData ?? ""), maxAge);
     const row = await userRow(user);
     if (body.action === "connect_exchange") {
       const provider = String(body.provider) as Provider;
       const environment = String(body.environment);
-      if (!["okx", "binance", "bybit"].includes(provider)) throw new Error("unsupported_provider");
+      if (!["okx", "binance"].includes(provider)) throw new Error("unsupported_provider");
+      const regionValue = clean(body?.credentials?.region, 16);
       const credentials: Credentials = {
         apiKey: clean(body?.credentials?.apiKey, 512),
         apiSecret: clean(body?.credentials?.apiSecret, 1024),
         passphrase: clean(body?.credentials?.passphrase, 256),
+        region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
       };
+      if (!["binance", "okx"].includes(provider) || environment !== "live") throw new Error("unsupported_provider_environment");
       const validation = await validateExchange(provider, environment, credentials);
-      const id = await saveExchange(Number(user.id), provider, environment, validation.label, credentials, validation.permissions);
+      const id = await saveExchange(Number(user.id), provider, environment, validation.label, credentials,
+        validation.permissions, validation.accountHint ?? null);
       await audit(row.id, null, "exchange_connected", "ok", { provider, environment, connection_id: id, permissions: validation.permissions });
-      return response({ ok: true, label: validation.label, connectionId: id });
+      return response({
+        ok: true, label: validation.label, connectionId: id,
+        permissions: validation.permissions,
+        accountHint: validation.accountHint ?? null,
+        liveOrdersEnabled: false,
+      });
     }
     if (body.action === "watch_wallet") {
       const provider = String(body.provider);
@@ -575,7 +787,7 @@ async function handleMiniApp(body: any): Promise<Response> {
       const address = clean(body.address, 128);
       const network = clean(body.network, 80);
       const chainId = clean(body.chainId, 40);
-      if (!["trust_wallet", "phantom", "walletconnect", "manual"].includes(provider) ||
+      if (!["trust_wallet", "phantom", "metamask", "walletconnect", "manual"].includes(provider) ||
           !walletAddressValid(namespace, address) || !network || !chainId) {
         throw new Error("wallet_address_or_network_invalid");
       }
@@ -585,6 +797,18 @@ async function handleMiniApp(body: any): Promise<Response> {
       }, "resolution=merge-duplicates,return=minimal");
       await audit(row.id, null, "wallet_address_added", "ok", { provider, namespace, network });
       return response({ ok: true, address: mask(address) });
+    }
+    if (body.action === "paper_terminal") {
+      return response({ ok: true, ...(await paperTerminalData(row.id)) });
+    }
+    if (body.action === "paper_start") {
+      const started = await startCryptoPaper(row.id, Number(user.id));
+      return response({ ok: started.ok, message: started.message });
+    }
+    if (body.action === "binance_account") {
+      return response({ ok: true, ...(await liveBinanceAccount(user, row.id)) });
+    }    if (body.action === "okx_account") {
+      return response({ ok: true, ...(await liveOkxAccount(user, row.id)) });
     }
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
@@ -606,7 +830,7 @@ async function handleMiniApp(body: any): Promise<Response> {
           public_address: mask(String(w.public_address)),
         })) : [],
         liveTradingEnabled: false,
-        message: "Demo/testnet exchange connections cannot be migrated to live. A verified wallet still needs a separately owner-authorized trade-only smart-account delegation.",
+        message: "Binance Spot and OKX Spot accounts can be linked for account access. OKX read access is validated separately from trade and withdrawal scopes. Real orders remain locked until each connector passes release checks and each exact order has owner approval. A verified wallet still requires a separate owner-controlled trade permission.",
       });
     }
     if (body.action === "live_status") {
@@ -629,12 +853,19 @@ async function handleMiniApp(body: any): Promise<Response> {
       telegram_auth_expired: "This page expired. Reopen the secure form from 9N8.",
       private_chat_required: "Personal connections can only be created from a private Telegram chat.",
       backend_not_configured: "The secure backend is not configured yet. No credentials were saved.",
-      okx_passphrase_required: "OKX requires its API passphrase as well as the key and secret.",
+      binance_read_permission_required: "Enable Read permission for this Binance API key.",
+      binance_spot_permission_required: "Enable Spot Trading permission only. Futures, margin and options are not supported here.",
+      binance_transfer_permission_detected: "Disable internal transfers and universal transfers on the Binance API key.",
+      binance_non_spot_permission_detected: "This key has margin, futures or options permission. Create a Spot-only key.",
+      binance_live_connection_missing: "Connect your Binance Spot Live account first.",
+      okx_live_connection_missing: "Connect your OKX Spot Live account first.",
+      okx_api_key_secret_and_passphrase_required: "Enter your OKX API key, secret and API passphrase.",
+      okx_passphrase_required: "Enter the API passphrase configured when you created this OKX API key.",
       withdraw_permission_detected: "This API key has withdrawal permission. Revoke it and create a new key with withdrawals disabled.",
       wallet_transfer_or_withdraw_scope_detected: "This Bybit key has Wallet transfer/withdrawal permissions. Create a key without Wallet permissions.",
       exchange_credentials_rejected: "The exchange rejected the credentials or the key belongs to a different environment.",
       exchange_temporarily_unavailable: "The exchange is temporarily unavailable. Try again shortly.",
-      unsupported_provider_environment: "Choose the matching demo/testnet environment for this exchange.",
+      unsupported_provider_environment: "Choose Binance Spot or OKX Spot Live. Demo, testnet, margin and derivatives connectors are not accepted in this release.",
       wallet_address_or_network_invalid: "The public address format does not match the selected network.",
       credential_storage_failed: "Credentials were checked but could not be saved. No connection was created.",
       user_registration_failed: "Could not register your Telegram account. Try again.",
@@ -645,7 +876,7 @@ async function handleMiniApp(body: any): Promise<Response> {
 async function listConnections(userId: string): Promise<string> {
   const rows = await db("n8_exchange_connections?select=provider,environment,label,status&user_id=eq." +
     encodeURIComponent(userId) + "&status=neq.revoked&order=created_at.desc");
-  if (!Array.isArray(rows) || rows.length === 0) return "No exchange connections yet. Use /connect to add a demo/testnet account.";
+  if (!Array.isArray(rows) || rows.length === 0) return "No exchange accounts connected yet. Use /connect to link Binance Spot or OKX Spot.";
   return "YOUR EXCHANGE CONNECTIONS\n\n" + rows.map((v: any) =>
     String(v.provider).toUpperCase() + " · " + v.environment + "\n" + String(v.label ?? "Account") + " · " + v.status
   ).join("\n\n");
@@ -843,6 +1074,19 @@ async function assessLiveMigration(user: any, row: any, body: any): Promise<Resp
     }
   } else {
     return response({ ok: false, message: "A live broker connector is not yet certified for this market." }, 400);
+  }
+
+  if (windowDays === 30 && marketType === "crypto") {
+    const finalized = await db("rpc/n8_finalize_mature_paper_session", "POST", {
+      p_user_id: row.id,
+      p_market_type: "crypto",
+    });
+    if (finalized?.ok === true && finalized?.already_completed !== true) {
+      await audit(row.id, null, "paper_evaluation_finalized", "ok", {
+        session_id: finalized.session_id,
+        completed_at: finalized.completed_at,
+      });
+    }
   }
 
   let assessment = await db("rpc/n8_live_gate_assess", "POST", {
@@ -1109,13 +1353,88 @@ async function startCryptoPaper(userId: string, chatId: number): Promise<{ ok: b
     ok: true,
     message: "PAPER RUN STARTED\n\n" +
       "Mode: PAPER ONLY · $1,000 virtual starting cash\n" +
-      "Market: Binance public crypto spot candles · 1-minute timeframe\n" +
+      "Market: real Binance Spot 1-minute candles + best bid/ask depth\n" +
       "Universe: BTC, ETH, SOL, BNB, XRP, DOGE, SHIB, PEPE, BONK and WIF pairs where listed\n" +
       "Strategy: EMA 9 / EMA 21 crossover with RSI 14 confirmation\n" +
-      "Risk: $50 maximum virtual entry · up to 3 open positions · simulated 0.10% fee and 5 bps slippage\n\n" +
-      "The first scan has been requested. A scheduled worker continues every minute. Signals may produce no trade; the bot will not invent fills.\n\n" +
+      "Execution model: ask/bid order-book VWAP · configurable fee estimate · spread/slippage gates\n" +
+      "Risk: $50 maximum virtual entry · up to 3 open positions · virtual fees only\n\n" +
+      "The simulator reads real Binance candles, ticker and order-book depth. Paper fills consume visible asks/bids and account for estimated fees and slippage. Signals may produce no trade; 9N8 will not invent market prices or fills.\n\n" +
       "Use /paper for the latest scan, virtual equity, positions and simulated fills. /pause pauses scans; /stop activates the emergency stop. Real trading remains OFF."
   };
+}
+
+async function setBotProfileAndCommands(): Promise<void> {
+  // Keep Telegram's pre-Start description, profile bio and command menu aligned
+  // with the actual deployed feature set. Metadata failure must never block /start.
+  try {
+    await telegram("setMyDescription", {
+      description: "9N8 combines a real-market crypto paper simulator, Binance and OKX Spot account connections, self-custody wallet linking, trade approvals and risk controls. Paper fills are virtual; real order execution is separately gated."
+    });
+    await telegram("setMyShortDescription", {
+      short_description: "Binance / OKX account connections, multi-wallet links, live market charts and paper trading."
+    });
+    await telegram("setMyCommands", {
+      commands: [
+        { command: "start", description: "Start 9N8 and show services" },
+        { command: "services", description: "List features and limits" },
+        { command: "paper", description: "Show virtual equity, positions and simulated fills" },
+        { command: "simulator", description: "Open live Binance charts and paper simulator" },
+        { command: "connect", description: "Connect Binance, OKX or wallet" },
+        { command: "connections", description: "View exchange connections" },
+        { command: "wallets", description: "View linked wallets" },
+        { command: "live", description: "Show live-trading lock" },
+        { command: "risk", description: "View risk limits" },
+        { command: "approvals", description: "View pending approvals" },
+        { command: "pause", description: "Pause strategies" },
+        { command: "stop", description: "Emergency stop" },
+        { command: "help", description: "Show all commands" }
+      ]
+    });
+  } catch {
+    // Telegram metadata is secondary; never block trading controls or /start.
+  }
+}
+
+function serviceOverview(): string {
+  return [
+    "WHAT 9N8 PROVIDES",
+    "",
+    "📡 MARKET INTELLIGENCE",
+    "Live public market observations, price and volume context, token/symbol lookups and strategy scans. The deployed paper pilot currently reads real Binance public spot candles for its supported USDT pairs.",
+    "",
+    "🧪 PAPER TRADING",
+    "Use a $1,000 virtual account against real Binance Spot candles, ticker and order-book depth. Paper entries and exits use visible ask/bid VWAP, a configurable fee estimate, and spread/slippage gates. No exchange order is sent.",
+    "",
+    "📈 STRATEGY & SIGNALS",
+    "The current crypto paper strategy uses EMA 9 / EMA 21 crossover with RSI 14 confirmation on closed one-minute candles. Signals are observations, not guaranteed predictions.",
+    "",
+    "🔗 EXCHANGE & WALLET CONNECTIONS",
+    "Connect a Binance Spot Live API key with Read + Spot Trading permissions only; withdrawals, internal transfers, futures, margin and options must be disabled. Link EVM or Solana wallets for ownership verification or watch public addresses.",
+    "",
+    "🛡️ APPROVALS & RISK CONTROLS",
+    "Review linked accounts, risk limits, pending proposals, pause controls and the emergency stop. Private connections are attached to the Telegram account that opened the bot.",
+    "",
+    "🚦 LIVE-TRADING READINESS",
+    "9N8 includes a readiness assessment and a hard live-execution lock. Connecting Binance or verifying a wallet does not by itself authorize real-money orders.",
+    "",
+    "CURRENT LIMITS — PLEASE READ",
+    "• Binance Spot Live account credentials can be connected and stored encrypted, but real-money order submission remains locked until the live connector is certified and the exact order is approved.",
+    "• WalletConnect currently verifies wallet ownership only. No swap, token approval or background wallet trade-signing is enabled.",
+    "• Stocks, forex, perps, unattended copy trading, launch sniping and DCA are not active in the deployed paper pilot.",
+    "• Trojan is a feature reference, not a connected execution provider. 9N8 must use its own documented market-data and swap/exchange integrations.",
+    "",
+    "GET STARTED",
+    "/paper — view virtual equity, positions and simulated fills",
+    "/simulator — open live Binance charts and paper trading",
+    "/connect — connect Binance Spot Live or wallet",
+    "/connections — review exchange connections",
+    "/wallets — review verified wallets and watch addresses",
+    "/risk — view your configured risk limits",
+    "/live — view live-trading readiness and lock status",
+    "/pause — pause strategies and block new entries",
+    "/stop — activate the emergency stop",
+    "/help — view all commands"
+  ].join("\n");
 }
 
 async function handleMessage(update: any) {
@@ -1139,21 +1458,32 @@ async function handleMessage(update: any) {
   if (chatType !== "private") return;
 
   if (command === "/start" || command === "/menu") {
+    await setBotProfileAndCommands();
     await audit(row.id, chatId, "private_start");
     const started = await startCryptoPaper(row.id, chatId);
+    const sessionLine = started.ok
+      ? "PAPER SESSION: STARTED\n$1,000 virtual starting balance · Binance public spot candles · simulated fills only."
+      : "PAPER SESSION: NOT STARTED\n" + started.message;
     await send(chatId,
-      "9N8 TRADING INTELLIGENCE\n\n" +
-      (started.ok ? started.message : started.message) +
-      "\n\nYour private control panel is ready. /paper shows live paper status. Real-money execution is locked.",
+      "⚡ WELCOME TO 9N8\n" +
+      "Trading intelligence, paper testing and account controls in one private Telegram workspace.\n\n" +
+      serviceOverview() +
+      "\n\n" + sessionLine +
+      "\n\nUse the buttons below to open your control panel. Send /services any time to review these features.",
       mainKeyboard());
+    return;
+  }
+  if (command === "/services") {
+    await send(chatId, serviceOverview(), mainKeyboard());
     return;
   }
   if (command === "/help") {
     await send(chatId,
       "9N8 COMMANDS\n" +
+      "/services — what 9N8 does and current feature status\n" +
       "/start — open private control panel\n" +
       "/status — inspect account and system state\n" +
-      "/connect — connect a demo exchange or wallet session\n" +
+      "/connect — connect Binance Spot Live or wallet\n" +
       "/connections — list your exchange connections\n" +
       "/wallets — list your verified wallets\n" +
       "/migrate — assess live eligibility (does not enable live trading)\n" +
@@ -1170,15 +1500,16 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/connect") {
-    await send(chatId, "Open this private secure form to connect an exchange or save a public wallet address. Never send API credentials in Telegram chat.", {
+    await send(chatId, "Open this private secure form to connect Binance Spot or OKX Spot, or link a self-custody wallet. Use restricted API keys with withdrawals and transfers disabled. Never send API credentials, private keys or seed phrases in Telegram chat.", {
       inline_keyboard: [[{ text: "Open secure connections", web_app: { url: MINI_APP_URL } }]],
     });
     return;
   }
   if (command === "/migrate") {
     await send(chatId,
-      "LIVE MIGRATION\n\nOpen the private eligibility check. The 7-day option is a progress review only; the live gate uses a 30-day forward-paper evaluation. A fresh balance check and a certified connector are required. This screen cannot turn on live orders.",
-      { inline_keyboard: [[{ text: "Open live migration assessment", web_app: { url: MIGRATION_PAGE_URL } }]] }
+      "LIVE-TRADING READINESS\\n\\n" +
+      await liveStatusText(row.id) +
+      "\\n\\nThis is a status report only. Live execution remains locked; connecting a wallet or exchange does not enable real-money orders."
     );
     return;
   }
@@ -1222,7 +1553,15 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/paper") {
-    await send(chatId, await paperStatusText(row.id));
+    await send(chatId, await paperStatusText(row.id), {
+      inline_keyboard: [[{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
+    });
+    return;
+  }
+  if (command === "/simulator") {
+    await send(chatId, "LIVE-MARKET PAPER SIMULATOR\\n\\nReal Binance Spot candles, ticker and order-book data. Paper orders use virtual cash, visible depth VWAP and estimated fees; no real order is submitted.", {
+      inline_keyboard: [[{ text: "📈 Open 9N8 simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
+    });
     return;
   }
   if (command === "/approvals") {
@@ -1260,9 +1599,12 @@ async function handleCallback(update: any) {
   const chat = q.message?.chat;
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
+  if (q.data === "n8:services") await send(Number(chat.id), serviceOverview(), mainKeyboard());
   if (q.data === "n8:paper_start_crypto") {
     const started = await startCryptoPaper(row.id, Number(chat.id));
-    await send(Number(chat.id), started.message);
+    await send(Number(chat.id), started.message, {
+      inline_keyboard: [[{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
+    });
   }
   if (q.data === "n8:paper_status") await send(Number(chat.id), await paperStatusText(row.id));
   if (q.data === "n8:connections") await send(Number(chat.id), await listConnections(row.id));
@@ -1349,14 +1691,14 @@ async function mainHandler(req: Request): Promise<Response> {
       ok: true,
       walletConnectConfigured: Boolean(REOWN_PROJECT_ID),
       reownProjectId: REOWN_PROJECT_ID || null,
-      supportedNamespaces: ["eip155"],
+      supportedNamespaces: ["eip155", "solana"],
       watchOnlyNamespaces: ["eip155", "solana"],
       liveWalletExecution: false,
     });
   }
   if (req.method === "GET" && url.searchParams.get("view") === "setup") return setupHtml();
   if (req.method === "GET") return response({
-    ok: true, service: "9N8 universal candidate", state: "staging", environment: "demo-testnet-only",
+    ok: true, service: "9N8 trading intelligence", state: "live-market-paper / live-account-connect", environment: "binance-spot-live-connect",
     config: {
       telegramTokenConfigured: Boolean(TOKEN),
       webhookSecretConfigured: Boolean(HOOK_SECRET),
@@ -1372,7 +1714,8 @@ async function mainHandler(req: Request): Promise<Response> {
   if (body?.action === "register_webhook") return await registerWebhook(body);
   // Mini App traffic is authenticated with Telegram-signed initData.
   if (body?.action === "connect_exchange" || body?.action === "watch_wallet" ||
-      ["wallet_challenge", "wallet_verify", "wallet_revoke", "live_connections", "live_status", "live_assess", "live_pause"].includes(String(body?.action))) {
+      ["wallet_challenge", "wallet_verify", "wallet_revoke", "live_connections", "live_status", "live_assess", "live_pause",
+       "paper_terminal", "paper_start", "binance_account", "okx_account"].includes(String(body?.action))) {
     return await handleMiniApp(body);
   }
 
