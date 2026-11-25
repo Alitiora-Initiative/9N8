@@ -191,6 +191,10 @@ begin
   if not exists (select 1 from public.n8_users u where u.id = p_user_id) then
     raise exception 'paper_user_not_found';
   end if;
+  perform pg_advisory_xact_lock(hashtextextended(p_user_id::text, 0));
+  if exists (select 1 from public.n8_risk_policies where user_id=p_user_id and kill_switch=true) then
+    raise exception 'paper_engine_kill_switch_active';
+  end if;
 
   select * into v_session
   from public.n8_paper_sessions
