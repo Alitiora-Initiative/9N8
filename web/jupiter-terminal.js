@@ -105,8 +105,14 @@ async function loadConfig() {
         " · delegated automation: " + (delegated ? "enabled" : "still locked")
       : "LIVE EXECUTION LOCKED · Certification status: " + String(config.certificationStatus || "testing").toUpperCase() +
         ". Live quote review is available, but the wallet-sign/execute action remains disabled until signature, integrity, idempotency, reconciliation and withdrawal tests pass.";
+    if (!config.jupiterApiConfigured) {
+      $("jupiterGetQuote").disabled = true;
+      status("Jupiter API key missing. Add JUPITER_API_KEY to Supabase Edge Function Secrets before requesting live quotes or signing swaps.", "warning");
+    } else {
+      $("jupiterGetQuote").disabled = false;
+    }
     if (!config.triggerApiConfigured) {
-      triggerStatus("Jupiter Trigger automation is not configured yet. Add JUPITER_API_KEY to the Supabase Edge Function Secrets before wallet login or vault creation.", "warning");
+      triggerStatus("Jupiter Trigger automation is not configured yet. Add JUPITER_API_KEY to Supabase Edge Function Secrets. Create the key at https://developers.jup.ag/ .", "warning");
       $("jupiterTriggerLogin").disabled = true;
     } else {
       triggerStatus("Jupiter Trigger API key detected. Vault automation remains " +
