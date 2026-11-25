@@ -156,6 +156,25 @@ class OKXClient:
             raise OKXError(f"{inst_id.upper()} is not currently in the live-trading state.")
         return item
 
+    def tickers(self, inst_ids: list[str] | None = None) -> dict[str, dict[str, Any]]:
+        """Fetch one public SPOT ticker snapshot and optionally filter by instrument."""
+        payload = self._request(
+            "GET", "/api/v5/market/tickers", params={"instType": "SPOT"}
+        )
+        wanted = {str(item).upper() for item in inst_ids or []}
+        rows = payload.get("data") or []
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            inst_id = str(row.get("instId") or "").upper()
+            if inst_id and (not wanted or inst_id in wanted):
+                result[inst_id] = row
+        if wanted:
+            missing = wanted.difference(result)
+            if missing:
+                # Missing symbols are omitted so callers can fail closed per symbol.
+                pass
+        return result
+
     def candles(self, inst_id: str, bar: str = "15m", limit: int = 100) -> list[list[str]]:
         if not 30 <= int(limit) <= 300:
             raise ValueError("Candle limit must be between 30 and 300.")
