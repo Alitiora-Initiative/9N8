@@ -1373,6 +1373,9 @@ async function handleMiniApp(body: any): Promise<Response> {
       "binance_account",
       "okx_account",
       "wallet_revoke",
+      "jupiter_swap_status",
+      "jupiter_trigger_history",
+      "jupiter_trigger_vault",
     ]);
     const maxAge = longLivedReadActions.has(String(body?.action ?? "")) ? 24 * 60 * 60 : 300;
     const user = await verifyInitData(String(body?.initData ?? ""), maxAge);
@@ -1432,6 +1435,18 @@ async function handleMiniApp(body: any): Promise<Response> {
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
     if (body.action === "wallet_revoke") return await revokeWalletSession(user, body);
+    if (body.action === "jupiter_swap_order") return await createJupiterSwapOrder(user, row, body);
+    if (body.action === "jupiter_swap_execute") return await executeJupiterSwap(user, row, body);
+    if (body.action === "jupiter_swap_status") return await getJupiterSwapStatus(user, row, body);
+    if (body.action === "jupiter_trigger_challenge") return await jupiterTriggerChallenge(row, body);
+    if (body.action === "jupiter_trigger_verify") return await jupiterTriggerVerify(row, body);
+    if (body.action === "jupiter_trigger_refresh") return await jupiterTriggerRefresh(row, body);
+    if (body.action === "jupiter_trigger_vault") return await jupiterTriggerVault(row, body);
+    if (body.action === "jupiter_trigger_deposit_craft") return await jupiterTriggerDepositCraft(row, body);
+    if (body.action === "jupiter_trigger_create_dca") return await jupiterTriggerCreateDca(row, body);
+    if (body.action === "jupiter_trigger_history") return await jupiterTriggerHistory(row, body);
+    if (body.action === "jupiter_trigger_cancel_dca") return await jupiterTriggerCancelDca(row, body);
+    if (body.action === "jupiter_trigger_confirm_cancel_dca") return await jupiterTriggerConfirmCancelDca(row, body);
     if (body.action === "live_connections") {
       const exchangeRows = await db(
         "n8_exchange_connections?select=id,provider,environment,label,status&user_id=eq." +
@@ -2334,7 +2349,12 @@ async function mainHandler(req: Request): Promise<Response> {
   // Mini App traffic is authenticated with Telegram-signed initData.
   if (body?.action === "connect_exchange" || body?.action === "watch_wallet" ||
       ["wallet_challenge", "wallet_verify", "wallet_revoke", "live_connections", "live_status", "live_assess", "live_pause",
-       "paper_terminal", "paper_start", "binance_account", "okx_account"].includes(String(body?.action))) {
+       "paper_terminal", "paper_start", "binance_account", "okx_account",
+       "jupiter_swap_order", "jupiter_swap_execute", "jupiter_swap_status",
+       "jupiter_trigger_challenge", "jupiter_trigger_verify", "jupiter_trigger_refresh",
+       "jupiter_trigger_vault", "jupiter_trigger_deposit_craft", "jupiter_trigger_create_dca",
+       "jupiter_trigger_history", "jupiter_trigger_cancel_dca",
+       "jupiter_trigger_confirm_cancel_dca"].includes(String(body?.action))) {
     return await handleMiniApp(body);
   }
 
