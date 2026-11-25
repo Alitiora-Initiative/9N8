@@ -82,9 +82,9 @@ button:disabled{opacity:.55;cursor:wait}
 <main>
   <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">LIVE DATA · VIRTUAL PAPER</div></div>
   <section id="connectPage">
-    <span class="pill">PRIVATE ACCOUNT CONNECTIONS</span>
-    <h1>Connect your accounts.</h1>
-    <p>Connect your Binance Spot account or wallet securely. Your API credentials are checked server-side and stored encrypted; they are never shown again. Your account is private to your Telegram identity.</p>
+    <span class="pill">PRIVATE ACCOUNT & MARKET CONTROL</span>
+    <h1>Trade with live market context.</h1>
+    <p>Connect Binance Spot or a wallet, then switch to the live-market simulator. The simulator uses real market data and virtual trades; it never touches your exchange balance.</p>
     <div class="tabs" role="tablist">
       <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Binance account</button>
       <button class="tab" id="walletTab" role="tab" aria-selected="false" type="button">Wallet watch</button>
@@ -291,7 +291,6 @@ button:disabled{opacity:.55;cursor:wait}
   else selectTab("exchange");
   const provider=document.getElementById("provider");
   const env=document.getElementById("environment");
-  const passphrase=document.getElementById("passphrase");
   async function apiPost(body){
     const response=await fetch(API,{
       method:"POST",
