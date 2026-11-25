@@ -77,8 +77,16 @@ class CCXTConnector(ExecutionConnector):
             raise ConnectorUnavailable(f"Empty order book: {symbol}")
         bid, ask = float(book["bids"][0][0]), float(book["asks"][0][0])
         last = float(ticker.get("last") or (bid+ask)/2)
-        return MarketSnapshot(self.venue,symbol,self.market_type,bid,ask,last,
-                              volume_5m=float(ticker.get("baseVolume") or 0)/288)
+        base_volume = float(ticker.get("baseVolume") or 0)
+        quote_volume = ticker.get("quoteVolume")
+        if quote_volume is None and last > 0:
+            quote_volume = base_volume * last
+        quote_volume = float(quote_volume) if quote_volume is not None else None
+        return MarketSnapshot(
+            self.venue, symbol, self.market_type, bid, ask, last,
+            volume_5m=base_volume / 288,
+            quote_volume_24h_usd=quote_volume,
+        )
 
     @retry_read(attempts=3, timeout_seconds=10)
     async def watch_snapshot(self, symbol: str) -> MarketSnapshot:
@@ -91,8 +99,16 @@ class CCXTConnector(ExecutionConnector):
                     return await self.fetch_snapshot(symbol)
                 ticker = await ex.fetch_ticker(symbol)
                 bid, ask = float(book["bids"][0][0]), float(book["asks"][0][0])
-                return MarketSnapshot(self.venue,symbol,self.market_type,bid,ask,
-                    float(ticker.get("last") or (bid+ask)/2))
+                last = float(ticker.get("last") or (bid+ask)/2)
+                base_volume = float(ticker.get("baseVolume") or 0)
+                quote_volume = ticker.get("quoteVolume")
+                if quote_volume is None and last > 0:
+                    quote_volume = base_volume * last
+                return MarketSnapshot(
+                    self.venue, symbol, self.market_type, bid, ask, last,
+                    volume_5m=base_volume / 288,
+                    quote_volume_24h_usd=float(quote_volume) if quote_volume is not None else None,
+                )
             except (ccxtpro.NetworkError, ccxtpro.ExchangeNotAvailable):
                 log.exception("WebSocket feed failed for %s; falling back to REST snapshot.", symbol)
         return await self.fetch_snapshot(symbol)
