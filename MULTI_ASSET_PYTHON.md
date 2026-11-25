@@ -63,6 +63,15 @@ This document applies to the **multi-asset-python feature branch**. It is a sepa
 
 MT5 is not included; the chosen FX connector is OANDA v20. OANDA uses REST polling in this build, not its streaming endpoint. Configure any additional OANDA instrument names only after confirming that your account exposes them.
 
+
+## Approval and operator controls
+
+Every scanner-generated entry is a stored proposal, not an order. The owner receives an inline Approve Trade / Deny keyboard in the Telegram private chat. An approval expires after 120 seconds by default; when pressed, the bot fetches a fresh quote, rejects excessive price drift (0.50% by default), rechecks position count, account exposure, spread and order-book slippage, then submits only in the configured execution mode. Denied, expired and duplicate signal proposals cannot be submitted.
+
+If a live/testnet provider submission starts but the response cannot be reconciled, 9N8 marks the approval RECONCILIATION_REQUIRED, pauses entries, sets the kill switch and sends an urgent alert. It never automatically retries an uncertain order. Check the provider's order/fill/transaction history and balances manually before taking further action.
+
+Telegram is restricted to numeric IDs in TELEGRAM_ALLOWED_USER_IDS and private chats. /start and /menu open the button dashboard; /pending, /positions, /history, /pause, /resume and /status are also available. /panic asks for a second confirmation before the emergency flatten routine.
+
 ## Hard-coded risk vetoes
 
 The risk manager has veto authority over strategy signals. It enforces a maximum 2% of account equity at risk on one trade, a 5% daily equity drawdown stop, a maximum 3x leverage, a maximum 25% portfolio exposure, a maximum 10-position absolute ceiling (with a lower default of 3), CEX slippage capped at 0.5%, DEX slippage capped at 5%, and forex spreads capped at 2 pips. The JSON configuration may make the limits stricter; it cannot raise the hard ceilings.
