@@ -299,8 +299,9 @@ async def test_restart_recognizes_durably_committed_paper_fill(tmp_path):
         )
         assert await store.claim_pending_approval("PAPEROK001")
         now = datetime.now(timezone.utc).isoformat()
+        signal_key = "okx:BTC/USDT:buy:1002"
         trade = {
-            "client_order_id": "paper-order-approved",
+            "client_order_id": signal_key,
             "venue": "okx",
             "symbol": "BTC/USDT",
             "market_type": "crypto_spot",
@@ -328,11 +329,28 @@ async def test_restart_recognizes_durably_committed_paper_fill(tmp_path):
             "updated_at": now,
         }
         await store.persist_paper_fill(trade, 949.95, position=position)
+
+        # Simulate the position being fully closed before the process crashes.
+        # The entry trade still proves that the paper fill was committed.
+        close = dict(trade)
+        close.update({
+            "client_order_id": "paper-exit-approved",
+            "side": "sell",
+            "status": "closed",
+            "average_price": 50100.0,
+            "exit_timestamp": now,
+            "realized_pnl_usd": 0.1,
+        })
+        await store.persist_paper_fill(
+            close, 1000.0, remove_position_key="okx:BTC/USDT"
+        )
+
         assert await store.recover_interrupted_approvals() == 0
         row = await store.get_pending_approval("PAPEROK001")
         assert row is not None
         assert row["status"] == "APPROVED"
         assert await store.get_control("execution_reconciliation_required", "false") == "false"
-        assert len(await store.positions()) == 1
+        assert await store.positions() == []
+        assert len(await store.query_trades(10)) == 2
     finally:
         await store.close()
