@@ -177,10 +177,10 @@ function mainKeyboard(): Obj {
   return { inline_keyboard: [
     [{ text: "▶ Start / view live-market paper run", callback_data: "n8:paper_start_crypto" }],
     [{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }],
-    [{ text: "Connect Binance Spot LIVE", web_app: { url: MINI_APP_URL } }],
+    [{ text: "Connect exchange · Binance / OKX", web_app: { url: MINI_APP_URL } }],
     [{ text: "Wallet watch / connect", web_app: { url: "https://9n8-secure-connect.vercel.app/connect?view=wallet" } }],
     [{ text: "📚 Services & features", callback_data: "n8:services" }],
-    [{ text: "My Binance connection", callback_data: "n8:connections" }],
+    [{ text: "My exchange connections", callback_data: "n8:connections" }],
     [{ text: "Live status / risk", callback_data: "n8:live_status" }],
   ] };
 }
@@ -858,12 +858,14 @@ async function handleMiniApp(body: any): Promise<Response> {
       binance_transfer_permission_detected: "Disable internal transfers and universal transfers on the Binance API key.",
       binance_non_spot_permission_detected: "This key has margin, futures or options permission. Create a Spot-only key.",
       binance_live_connection_missing: "Connect your Binance Spot Live account first.",
-      okx_passphrase_required: "This 9N8 build accepts Binance Spot Live credentials only.",
+      okx_live_connection_missing: "Connect your OKX Spot Live account first.",
+      okx_api_key_secret_and_passphrase_required: "Enter your OKX API key, secret and API passphrase.",
+      okx_passphrase_required: "Enter the API passphrase configured when you created this OKX API key.",
       withdraw_permission_detected: "This API key has withdrawal permission. Revoke it and create a new key with withdrawals disabled.",
       wallet_transfer_or_withdraw_scope_detected: "This Bybit key has Wallet transfer/withdrawal permissions. Create a key without Wallet permissions.",
       exchange_credentials_rejected: "The exchange rejected the credentials or the key belongs to a different environment.",
       exchange_temporarily_unavailable: "The exchange is temporarily unavailable. Try again shortly.",
-      unsupported_provider_environment: "Choose Binance Spot Live. Demo, testnet, margin and derivatives connectors are not accepted in this release.",
+      unsupported_provider_environment: "Choose Binance Spot or OKX Spot Live. Demo, testnet, margin and derivatives connectors are not accepted in this release.",
       wallet_address_or_network_invalid: "The public address format does not match the selected network.",
       credential_storage_failed: "Credentials were checked but could not be saved. No connection was created.",
       user_registration_failed: "Could not register your Telegram account. Try again.",
@@ -874,7 +876,7 @@ async function handleMiniApp(body: any): Promise<Response> {
 async function listConnections(userId: string): Promise<string> {
   const rows = await db("n8_exchange_connections?select=provider,environment,label,status&user_id=eq." +
     encodeURIComponent(userId) + "&status=neq.revoked&order=created_at.desc");
-  if (!Array.isArray(rows) || rows.length === 0) return "No Binance Spot Live account connected yet. Use /connect to open the secure API-key form.";
+  if (!Array.isArray(rows) || rows.length === 0) return "No exchange accounts connected yet. Use /connect to link Binance Spot or OKX Spot.";
   return "YOUR EXCHANGE CONNECTIONS\n\n" + rows.map((v: any) =>
     String(v.provider).toUpperCase() + " · " + v.environment + "\n" + String(v.label ?? "Account") + " · " + v.status
   ).join("\n\n");
@@ -1366,10 +1368,10 @@ async function setBotProfileAndCommands(): Promise<void> {
   // with the actual deployed feature set. Metadata failure must never block /start.
   try {
     await telegram("setMyDescription", {
-      description: "9N8 combines a live-market crypto paper simulator using Binance real-time candles and order-book depth, Binance Spot Live account connection, wallet watching, trade approvals and risk controls. Paper fills are virtual; real order execution is separately gated."
+      description: "9N8 combines a real-market crypto paper simulator, Binance and OKX Spot account connections, self-custody wallet linking, trade approvals and risk controls. Paper fills are virtual; real order execution is separately gated."
     });
     await telegram("setMyShortDescription", {
-      short_description: "Live Binance market charts, realistic paper trading, Binance Spot account connection and risk controls."
+      short_description: "Binance / OKX account connections, multi-wallet links, live market charts and paper trading."
     });
     await telegram("setMyCommands", {
       commands: [
@@ -1377,7 +1379,7 @@ async function setBotProfileAndCommands(): Promise<void> {
         { command: "services", description: "List features and limits" },
         { command: "paper", description: "Show virtual equity, positions and simulated fills" },
         { command: "simulator", description: "Open live Binance charts and paper simulator" },
-        { command: "connect", description: "Connect Binance Spot Live or wallet" },
+        { command: "connect", description: "Connect Binance, OKX or wallet" },
         { command: "connections", description: "View exchange connections" },
         { command: "wallets", description: "View linked wallets" },
         { command: "live", description: "Show live-trading lock" },
@@ -1498,7 +1500,7 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/connect") {
-    await send(chatId, "Open this private secure form to connect your Binance Spot LIVE account or link a public wallet address. Create the Binance key with Read + Spot Trading only; keep withdrawals and transfers disabled. Never send API credentials in Telegram chat.", {
+    await send(chatId, "Open this private secure form to connect Binance Spot or OKX Spot, or link a self-custody wallet. Use restricted API keys with withdrawals and transfers disabled. Never send API credentials, private keys or seed phrases in Telegram chat.", {
       inline_keyboard: [[{ text: "Open secure connections", web_app: { url: MINI_APP_URL } }]],
     });
     return;
