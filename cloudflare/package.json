@@ -1,0 +1,19 @@
+{
+  "name": "9n8-cloudflare-worker",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "node --test",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create 9n8-db",
+    "db:migrate:local": "wrangler d1 migrations apply 9n8-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply 9n8-db --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.149.0"
+  }
+}
