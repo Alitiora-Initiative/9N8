@@ -105,10 +105,64 @@ async function telegram(method: string, payload: Obj): Promise<any> {
   if (!r.ok || j?.ok !== true) throw new Error("telegram_action_failed");
   return j.result;
 }
+function escapeRichHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function richHtmlFromPlainText(value: string): string {
+  return value.split(/\r?\n/).map((line) => "<p>" + (escapeRichHtml(line) || "&nbsp;") + "</p>").join("");
+}
+function splitText(value: string, maxCodePoints: number): string[] {
+  const points = Array.from(value);
+  const chunks: string[] = [];
+  for (let i = 0; i < points.length; i += maxCodePoints) {
+    chunks.push(points.slice(i, i + maxCodePoints).join(""));
+  }
+  return chunks.length ? chunks : [""];
+}
 async function send(chatId: number, text: string, markup?: Obj) {
-  const payload: Obj = { chat_id: chatId, text, disable_web_page_preview: true };
+  const value = String(text ?? "");
+  const length = Array.from(value).length;
+  if (length <= 4096) {
+    const payload: Obj = { chat_id: chatId, text: value, disable_web_page_preview: true };
+    if (markup) payload.reply_markup = markup;
+    await telegram("sendMessage", payload);
+    return;
+  }
+  const richChunks = splitText(value, 32000);
+  try {
+    for (let i = 0; i < richChunks.length; i++) {
+      const payload: Obj = {
+        chat_id: chatId,
+        rich_message: { html: richHtmlFromPlainText(richChunks[i]) },
+      };
+      if (markup && i === richChunks.length - 1) payload.reply_markup = markup;
+      await telegram("sendRichMessage", payload);
+    }
+    return;
+  } catch {
+    // Older Bot API deployments may not expose rich messages; never silently truncate.
+    const plainChunks = splitText(value, 3900);
+    for (let i = 0; i < plainChunks.length; i++) {
+      const payload: Obj = { chat_id: chatId, text: plainChunks[i], disable_web_page_preview: true };
+      if (markup && i === plainChunks.length - 1) payload.reply_markup = markup;
+      await telegram("sendMessage", payload);
+    }
+  }
+}
+async function sendReportPhoto(chatId: number, signedUrl: string, caption: string, markup?: Obj) {
+  const url = new URL(signedUrl);
+  const backend = new URL(SUPABASE_URL);
+  if (url.protocol !== "https:" || url.hostname !== backend.hostname ||
+      !url.pathname.startsWith("/storage/v1/object/sign/")) {
+    throw new Error("report_image_url_not_allowed");
+  }
+  const payload: Obj = {
+    chat_id: chatId,
+    photo: signedUrl,
+    caption: Array.from(String(caption ?? "")).slice(0, 1024).join(""),
+  };
   if (markup) payload.reply_markup = markup;
-  await telegram("sendMessage", payload);
+  await telegram("sendPhoto", payload);
 }
 function mainKeyboard(): Obj {
   return { inline_keyboard: [
