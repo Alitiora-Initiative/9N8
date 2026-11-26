@@ -142,27 +142,32 @@ class LaunchpadSniper:
         try:
             if not candidate.bonding_curve:
                 return
-            async for account in self.helius.account_changes(candidate.bonding_curve.address):
-                if self._stop.is_set():
-                    return
-                data = account.get("data")
-                if not isinstance(data, list) or not data:
-                    continue
-                try:
-                    raw = base64.b64decode(data[0], validate=True)
-                    state = self._curve_from_raw(candidate.bonding_curve.address, raw)
-                except Exception:
-                    continue
-                updated = LaunchCandidate(
-                    candidate.mint, candidate.launchpad, candidate.signature,
-                    candidate.slot, candidate.created_at_slot,
-                    candidate.developer_buy_sol, candidate.source_logs, state,
-                )
-                await callback(updated)
-                if state.complete:
-                    return
+            # Avoid leaving an account subscription alive forever if a curve is
+            # abandoned or the token never migrates.
+            async with asyncio.timeout(600):
+                async for account in self.helius.account_changes(candidate.bonding_curve.address):
+                    if self._stop.is_set():
+                        return
+                    data = account.get("data")
+                    if not isinstance(data, list) or not data:
+                        continue
+                    try:
+                        raw = base64.b64decode(data[0], validate=True)
+                        state = self._curve_from_raw(candidate.bonding_curve.address, raw)
+                    except Exception:
+                        continue
+                    updated = LaunchCandidate(
+                        candidate.mint, candidate.launchpad, candidate.signature,
+                        candidate.slot, candidate.created_at_slot,
+                        candidate.developer_buy_sol, candidate.source_logs, state,
+                    )
+                    await callback(updated)
+                    if state.complete:
+                        return
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            logger.info("Bonding curve watcher expired for %s", candidate.mint)
         except Exception as exc:
             logger.debug("Bonding curve watcher %s ended: %s", candidate.mint, type(exc).__name__)
         finally:
