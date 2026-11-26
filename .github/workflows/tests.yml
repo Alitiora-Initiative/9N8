@@ -59,6 +59,7 @@ jobs:
       - name: Type-check Supabase edge functions
         run: deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts
 
+  # Runs only on the dedicated one-time sync commit; never prints or exports secret values.
   sync-production-runtime:
     name: Sync existing production secrets to Vercel
     if: github.event_name == 'push' && github.event.head_commit.message == 'Sync 9N8 production runtime environment'
