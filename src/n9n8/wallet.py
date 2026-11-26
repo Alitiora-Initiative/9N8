@@ -121,6 +121,11 @@ class WalletManager:
         raise WalletError("Transaction was submitted but confirmation timed out. Check the signature before retrying.")
 
     async def transfer_usd_fee(self, telegram_id: int, usd: str, fee_type: str, idempotency_key: str) -> tuple[int, str]:
+        # A completed fee transfer must not be charged again when Telegram retries
+        # a callback or the process restarts after persisting the receipt.
+        existing = await self.db.fee_receipt(idempotency_key)
+        if existing:
+            return int(existing["amount_lamports"]), str(existing["tx_signature"])
         price = await self.oracle.sol_usd(force=True)
         lamports = usd_to_lamports(usd, price)
         if lamports <= 0:
