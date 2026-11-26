@@ -134,9 +134,12 @@
   function connectSocket() {
     if (socket || !initData) return;
     const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const url = scheme + "://" + location.host + "/ws/telemetry?initData=" + encodeURIComponent(initData);
+    const url = scheme + "://" + location.host + "/ws/telemetry";
     socket = new WebSocket(url);
-    socket.onopen = () => { $("connectionText").textContent = "LIVE"; };
+    socket.onopen = () => {
+      socket.send(JSON.stringify({initData:initData}));
+      $("connectionText").textContent = "LIVE";
+    };
     socket.onmessage = (message) => {
       let event;
       try { event = JSON.parse(message.data); } catch (_) { return; }
