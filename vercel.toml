@@ -1,0 +1,21 @@
+"$schema" = "https://openapi.vercel.sh/vercel.json"
+
+[services.api]
+root = "."
+entrypoint = "index:app"
+
+[daemons.sniper]
+root = "."
+entrypoint = "worker/Dockerfile"
+command = ["python", "-m", "src.n9n8.worker"]
+instances.iad1 = 1
+
+[[daemons.sniper.bindings]]
+type = "service"
+service = "api"
+format = "url"
+env = "N9N8_API_URL"
+
+[[rewrites]]
+source = "/(.*)"
+destination = { service = "api" }

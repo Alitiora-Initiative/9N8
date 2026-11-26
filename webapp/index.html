@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0B0E14">
+  <title>9N8 Live Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark">9<span>N</span>8</div>
+        <div>
+          <div class="brand-name">NINE EIGHT</div>
+          <div class="brand-sub">SOLANA AUTONOMOUS TERMINAL</div>
+        </div>
+      </div>
+      <div class="connection"><span class="pulse-dot"></span><span id="connectionText">CONNECTING</span></div>
+    </header>
+
+    <main>
+      <section class="telemetry-grid">
+        <article class="metric-card">
+          <div class="metric-label">SOL / USD <span class="mini-tag">ORACLE</span></div>
+          <div class="metric-value" id="solPrice">—</div>
+          <div class="metric-foot" id="priceSource">Oracle connecting</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">BOT WALLET</div>
+          <div class="metric-value mono" id="walletBalance">—</div>
+          <div class="metric-foot">SOL available</div>
+        </article>
+        <article class="metric-card">
+          <div class="metric-label">DAILY REALIZED PNL</div>
+          <div class="metric-value mono" id="dailyPnl">—</div>
+          <div class="metric-foot">Closed-trade ledger</div>
+        </article>
+        <article class="metric-card state-card">
+          <div class="metric-label">AUTONOMOUS ENGINE</div>
+          <div class="status-value" id="engineStatus"><span class="status-dot"></span> PAUSED</div>
+          <div class="metric-foot" id="modeLabel">PAPER MODE</div>
+        </article>
+      </section>
+
+      <section class="control-panel panel">
+        <div class="section-heading">
+          <div><span class="eyebrow">01 / CONTROL ROOM</span><h2>Master control</h2></div>
+          <span class="mode-pill" id="modePill">PAPER</span>
+        </div>
+        <div class="action-grid">
+          <button class="primary-action" id="engineToggle"><i data-lucide="zap"></i><span>START SNIPER</span></button>
+          <button class="secondary-action" id="copyAddress"><i data-lucide="copy"></i><span>COPY DEPOSIT</span></button>
+          <button class="secondary-action" id="withdrawOpen"><i data-lucide="arrow-up-right"></i><span>WITHDRAW ALL</span></button>
+          <button class="danger-action" id="wipeOpen"><i data-lucide="refresh-ccw"></i><span>WIPE & ROTATE</span></button>
+        </div>
+        <div class="wallet-address-row">
+          <span class="address-label">SOLANA WALLET</span>
+          <code id="walletAddress">Wallet not created</code>
+        </div>
+      </section>
+
+      <section class="radar-panel panel">
+        <div class="section-heading">
+          <div><span class="eyebrow">02 / LAUNCH MONITOR</span><h2>Launchpad radar</h2></div>
+          <span class="live-indicator"><span class="pulse-dot"></span> LIVE FEED</span>
+        </div>
+        <div class="radar-head"><span>LAUNCHPAD / TOKEN</span><span>CURVE</span><span>EVENT</span></div>
+        <div id="radarFeed" class="radar-feed">
+          <div class="empty-state"><i data-lucide="radar"></i><span>Waiting for Pump.fun and Raydium launch events</span></div>
+        </div>
+      </section>
+
+      <section class="positions-panel panel">
+        <div class="section-heading">
+          <div><span class="eyebrow">03 / LIVE EXPOSURE</span><h2>Active positions</h2></div>
+          <span class="count-pill" id="positionCount">0 OPEN</span>
+        </div>
+        <div id="positionsList" class="positions-list">
+          <div class="empty-state"><i data-lucide="layers-3"></i><span>No open positions</span></div>
+        </div>
+      </section>
+
+      <section class="settings-panel panel">
+        <div class="section-heading">
+          <div><span class="eyebrow">04 / EXECUTION RULES</span><h2>Sniper parameters</h2></div>
+          <span class="saved-state" id="settingsState">SYNCED</span>
+        </div>
+        <form id="settingsForm">
+          <div class="form-grid">
+            <label class="field"><span>Launchpad target</span><select name="launchpad"><option value="both">Pump.fun + Raydium</option><option value="pump.fun">Pump.fun only</option><option value="raydium">Raydium only</option></select></label>
+            <label class="field"><span>Pump.fun trigger</span><select name="pump_mode"><option value="fresh">Fresh launch</option><option value="migration">Migration momentum</option></select></label>
+            <label class="field"><span>Buy size (SOL)</span><input name="buy_amount_sol" type="number" min="0.001" max="0.25" step="0.001"></label>
+            <label class="field"><span>Slippage (%)</span><input name="slippage_pct" type="number" min="0.1" max="50" step="0.1"></label>
+            <label class="field"><span>Priority fee (μLamports/CU)</span><input name="priority_fee_lamports" type="number" min="0" step="1"></label>
+            <label class="field"><span>Jito tip (lamports)</span><input name="jito_tip_lamports" type="number" min="0" step="1000"></label>
+            <label class="field"><span>Take profit (%)</span><input name="take_profit_pct" type="number" min="0.5" step="0.5"></label>
+            <label class="field"><span>Stop loss (%)</span><input name="stop_loss_pct" type="number" min="0.5" step="0.5"></label>
+            <label class="field"><span>Max hold (seconds)</span><input name="max_hold_seconds" type="number" min="5" max="3600" step="1"></label>
+            <label class="field"><span>Moon bag (%)</span><input name="moon_bag_pct" type="number" min="0" max="90" step="1"></label>
+            <label class="field"><span>Daily trade cap</span><input name="daily_position_limit" type="number" min="1" max="100" step="1"></label>
+            <label class="field"><span>Daily drawdown (%)</span><input name="max_daily_drawdown_pct" type="number" min="1" max="50" step="1"></label>
+            <label class="field"><span>Migration trigger (%)</span><input name="pump_migration_progress_pct" type="number" min="1" max="99" step="1"></label>
+            <label class="field"><span>Minimum pool liquidity (USD)</span><input name="min_liquidity_usd" type="number" min="0" step="100"></label>
+            <label class="field"><span>Top-10 holder cap (%)</span><input name="max_top10_concentration_pct" type="number" min="1" max="100" step="1"></label>
+          </div>
+          <div class="switch-row">
+            <div><strong>Jito MEV shield</strong><small>Private atomic bundle submission with validator tip</small></div>
+            <label class="switch"><input id="mevToggle" type="checkbox" name="mev_shield"><span></span></label>
+          </div>
+          <button class="save-button" type="submit"><i data-lucide="save"></i> SAVE PARAMETERS</button>
+        </form>
+      </section>
+
+      <section class="fees-panel panel">
+        <div class="section-heading">
+          <div><span class="eyebrow">05 / TREASURY</span><h2>Transparent fee schedule</h2></div>
+        </div>
+        <div class="fee-grid">
+          <div><strong>$1.00</strong><span>One-time activation</span></div>
+          <div><strong>0.1%</strong><span>Positive realized profit only</span></div>
+          <div><strong>$1.00</strong><span>Full withdrawal</span></div>
+          <div><strong>$1.00</strong><span>Stop & key rotation</span></div>
+        </div>
+      </section>
+    </main>
+    <footer><span>9N8 · SELF-CUSTODY RISK NOTICE</span><span>ON-CHAIN EXECUTION IS IRREVERSIBLE</span></footer>
+  </div>
+
+  <div class="modal-backdrop" id="actionModal" aria-hidden="true">
+    <div class="modal">
+      <button class="modal-close" id="modalClose" aria-label="Close">×</button>
+      <div class="modal-kicker" id="modalKicker">CONFIRM ACTION</div>
+      <h2 id="modalTitle">Withdraw funds</h2>
+      <p id="modalDescription">This action submits an on-chain transaction.</p>
+      <label class="field" id="destinationField"><span>External Solana payout address</span><input id="destinationAddress" autocomplete="off" spellcheck="false" placeholder="Paste your Solana address"></label>
+      <label class="confirm-check"><input type="checkbox" id="confirmCheck"><span id="confirmText">I understand this transaction is irreversible.</span></label>
+      <button class="modal-submit" id="modalSubmit">CONFIRM</button>
+      <div class="modal-message" id="modalMessage"></div>
+    </div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

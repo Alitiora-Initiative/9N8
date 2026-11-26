@@ -1,137 +1,181 @@
-# 9N8 — Telegram Trading Intelligence and Live-Market Paper Simulator
+# 9N8 — Solana Telegram Launchpad Bot
 
-9N8 is a Telegram-first trading intelligence workspace with a private web app, a real-market paper simulator, Binance/Bybit/OKX account connections, self-custody wallet sessions, and risk controls. The current crypto paper pilot uses public Binance Spot data. Paper trades use virtual balances and never submit exchange orders.
+9N8 is a Telegram-first Solana launchpad monitoring and trading application. Telegram runs command handling and notifications; Vercel serves the FastAPI Mini App/API; a Vercel Daemon runs the continuous Python trading worker; a dedicated Neon PostgreSQL project stores encrypted wallets, settings, positions, receipts, risk records, telemetry and worker jobs. The worker connects to Helius RPC/WebSockets, Pump.fun/Raydium detection, Jupiter Swap API v2 and Jito bundles.
 
-**Current release state:** real-market paper trading and Binance/OKX account-connection APIs are deployed in Supabase. OKX account reads are validated, but OKX trade/withdraw/transfer permissions are not certified. The hosted web preview is behind the latest working branch while the Vercel Hobby deployment quota is exhausted. Real Binance or OKX order placement is not enabled in this release.
+**The OKX application has been removed from `main`.** PR #8 merged the Solana-first bot; PR #10 merged Jupiter/Jito and wallet-lifecycle corrections. The Neon/Vercel worker split is being developed separately on `feature/9n8-neon-platform-split`.
 
-## What works
+## Current implementation status
 
-### Live-market paper simulator
+Implemented in `main` and the current platform branch:
 
-- Reads genuine Binance Spot 1-minute candles, ticker data and order-book depth.
-- Displays live candles and volume with EMA/RSI overlays.
-- The current strategy is EMA 9 / EMA 21 crossover with RSI 14 confirmation.
-- Paper trades use a virtual $1,000 starting balance, a $50 maximum entry, up to three open paper positions, an estimated 0.1% fee, and spread/slippage guards.
-- Simulated fills consume visible bid/ask depth and calculate an estimated VWAP. This is a model based on the visible book, not a promise of the exchange's eventual fill.
-- The paper engine is server-side and continues scanning while a session is running. The web app is a view and control surface.
-- Paper results and positions are stored separately from live exchange balances and orders.
+- Per-Telegram-user Solana Ed25519 wallet generation/import, encrypted-at-rest key storage, balance queries, and 60-second key-message deletion attempt.
+- Aiogram dashboard, parameter FSM, activation/withdrawal/rotation confirmation flows, and status notifications.
+- Exact Decimal/SOL/lamport helpers, slippage bounds, position sizing, PnL, moon-bag split, realized-profit fee calculation, and daily risk persistence.
+- Helius JSON-RPC client and reconnecting per-program `logsSubscribe` WebSocket subscriptions for Pump.fun and Raydium program addresses.
+- Pump.fun bonding-curve PDA derivation, reserve parsing, and account-change monitoring.
+- Mint/freeze authority checks, top-holder concentration screen, indexed liquidity check, and fail-closed Raydium LP-lock screening.
+- Jupiter Swap API v2 raw instruction builder and Jito atomic bundle submission with landing-status checks.
+- Background position supervision, TP/SL/max-hold and daily risk controls.
+- FastAPI Mini App endpoints with Telegram `initData` HMAC validation and per-user WebSocket telemetry.
+- Dedicated Neon PostgreSQL schema and a Postgres adapter for user records, Fernet-encrypted wallet secrets, settings, positions, fee/risk ledgers, receipts, telemetry and worker jobs.
+- Vercel root FastAPI entrypoint plus a Vercel Daemon Dockerfile running `python -m src.n9n8.worker`; request handlers enqueue panic-sell, withdrawal and wallet-rotation operations for the persistent worker.
+- Worker heartbeat and durable telemetry polling for the Mini App.
+- Dark-mode responsive Telegram Mini App.
+- Dockerfile and Docker Compose configuration with persistent SQLite storage.
 
-### Binance, Bybit and OKX exchange account connections
+Not yet certified or fully implemented:
 
-- The Telegram Mini App accepts live account API keys for Binance, Bybit and OKX. Users select the markets they want the key to cover: Spot, Margin, USDT/USDC Futures, Coin-M Futures and Options. Binance additionally offers eligible stock-linked products under its combined Spot & Margin & Stock Trading permission.
-- **Binance:** the validator reads the signed API restrictions endpoint. Spot and eligible stock-linked products use `enableSpotAndMarginTrading`; Margin additionally requires the reported margin flag; USDT-M and COIN-M Futures use the reported Futures flag; Options uses the Vanilla Options flag. A key is no longer rejected merely because it has Futures or Margin enabled when those products are selected. Withdrawals, internal transfers and universal transfers are still rejected.
-- **Bybit:** the connector supports the V5 `query-api` endpoint on the selected regional host. Spot, Contract/Derivatives and Options permissions are checked separately. Bybit does not return a distinct Margin API-key scope, so Margin is recorded as requiring the correct Unified Account setting. Any Wallet transfer or withdrawal scope is rejected. The connector uses system-generated HMAC API keys.
-- **OKX:** the connector signs the account configuration request against the selected Global, US/Australia or EEA host. OKX has broad `Read` / `Trade` / `Withdraw` scopes rather than one API-key permission per product. A Trade key is required for selected trading markets, Withdraw is rejected, and the selected account mode is recorded. OKX Trade may also permit internal funding transfers; 9N8 does not call transfer or withdrawal endpoints.
-- The form reports which selected permissions were verified and which depend on account mode or regional product availability. It never claims that an unsupported or unreported scope is verified.
-- Exchange credentials are stored server-side in Supabase Vault. They are not returned to the browser or posted into Telegram. Never send keys or secrets in Telegram chat.
-- The existing balance view can read Binance Spot, OKX account balance and Bybit Unified Account balances. The current readiness/risk gate still uses its existing USDT account evidence and does not certify every derivatives product.
-- **Connecting an account does not place an order.** Spot, Margin, Futures, Options and stock-linked live order execution remain separately locked; no live orders are enabled by this connection change.
+- EVM/BNB/Base/Robinhood-chain wallet generation, deposit monitoring, and automatic cross-chain bridging are not wired in this branch. Do not send EVM assets to the Solana deposit address.
+- Pump.fun direct buy/sell instruction construction and a complete direct Raydium AMM V4/CPMM swap builder are not yet implemented. Detection uses on-chain data; execution routes through Jupiter.
+- Developer initial-buy min/max filtering is not yet implemented.
+- The Raydium LP-lock parser is deliberately fail-closed, but its RugCheck schema needs live integration tests against representative pools.
+- The requested 250 ms exit quote interval is not used. Quote polling is rate-limited to stay within upstream API quotas; actual decision latency depends on quote provider, RPC, and chain conditions.
+- Profit fee is included in the exit transaction based on a conservative minimum-output estimate; exact finalized net profit reconciliation and ledger settlement still require an additional post-confirmation accounting pass.
+- The application has not been independently audited, tested with real mainnet funds, or certified for unattended trading. Live mode is disabled by default.
 
-### Jupiter live swaps and Trigger automation
-
-- The private wallet panel includes a Solana BUY/SELL terminal backed by Jupiter Swap API V2. Quotes use the connected, verified Solana-mainnet wallet as the taker.
-- The manual terminal uses Jupiter order/execute, checks the exact unsigned transaction and wallet fee payer, and requires the wallet to sign the transaction. The server verifies the signed transaction message hash and Ed25519 owner signature before provider submission.
-- Transactions are limited to version 0 in this release. Unsupported version 1 transactions are rejected rather than sent to a wallet.
-- Conservative terminal limits are 0.05 SOL-equivalent per swap, 0.10 SOL-equivalent per rolling 24 hours, and 2% maximum price impact. Only one unresolved quote or execution can exist per wallet at a time.
-- A provider timeout after a transaction is claimed is recorded as `unknown`; 9N8 checks Solana signature status and never blindly resubmits it.
-- **Manual live execution remains locked** until the Jupiter connector certification record is passed with message-integrity, owner-signature, idempotency and unknown-outcome reconciliation checks. Live quotes also remain unavailable until the Jupiter API key is configured.
-- Jupiter Swap V2 and Trigger V2 require a `JUPITER_API_KEY` Edge Function secret from the Jupiter developer portal. The key must be set as a Supabase secret for `telegram-bot-next`; it is never sent to the browser. Trigger tokens are held in module memory only and refreshed through the access/refresh flow; they are not stored in Postgres or browser local storage.
-- DCA funds are deposited into a Jupiter/Privy-managed vault and are no longer in the original wallet while scheduled orders are active. The owner must sign the deposit and any cancellation/withdrawal transaction.
-- 9N8 caps DCA deposits at 0.50 SOL per rolling 24 hours per wallet and requires at least $10 estimated value per scheduled DCA round. The create and cancel flows verify the exact wallet-signed transaction.
-- **Delegated automation remains locked** until vault registration/deposit integrity, DCA creation, cancellation, withdrawal and unknown-outcome tests have been certified.
-
-### Telegram and wallets
-
-- Telegram commands include `/start`, `/paper`, `/simulator`, `/connect`, `/connections`, `/wallets`, `/migrate`, `/approvals`, `/status`, `/risk`, `/pause` and `/stop`.
-- The private Mini App has separate exchange-account, wallet-session/watch and paper-simulator sections.
-- Wallet sessions support EVM and Solana mainnets through Reown AppKit/WalletConnect, including MetaMask, Trust Wallet, Phantom and compatible providers. If Reown QR is not configured, injected wallet browsers can connect directly where the wallet exposes an injected provider.
-- Wallet ownership is verified by a one-time message signature. That signature is not a swap, token approval, transfer or trading authorization. A watch-only public address also remains read-only.
-
-## What is not enabled yet
-
-- **No real Binance, Bybit or OKX order is submitted by the exchange connection flow.** The connection layer checks key access and reads account information; it is not a released order executor.
-- The standalone Binance order helper module validates Spot market-order parameters and signs requests, but it is not the same as a fully released, approval-to-order execution and reconciliation service.
-- Exchange withdrawals and account transfers are not supported. Futures, Margin and Options API permissions can be checked and stored, but their real order submission is not enabled. Unattended wallet signing remains disabled. Jupiter transactions require owner wallet signing; Trigger automation uses its separate managed-vault model and remains disabled until certification.
-- The 9N8 paper run must not be treated as a live account or a guarantee of profitability.
-
-Do not deposit funds on the assumption that real trading is ready. Do not share an API secret, private key or seed phrase in Telegram, GitHub issues, source code or this chat.
-
-## Live-trading eligibility gates
-
-The database has a server-side eligibility assessment and an exact-payload approval preflight. They are safeguards, not proof that a user is eligible. The 30-day review currently requires:
-
-1. A completed 30-day forward paper session using genuine market data.
-2. At least 100 closed paper exits per enabled strategy, with realized P&L and recorded fees/slippage.
-3. Positive net expectancy, drawdown within the configured policy, at least three profitable chronological folds, and a profitable final out-of-sample segment.
-4. No open virtual positions, unresolved live orders or pending live proposals.
-5. A current Binance Spot LIVE connection, a fresh account-balance check and a connector-readiness record that has passed security and reconciliation checks.
-6. At least $10 of available USDT quote balance in the selected exchange account, where provider-specific balance evidence and live connector checks have passed. This minimum is enforced by the database, not inferred from a separate self-custody wallet balance.
-
-A seven-day review is only a progress checkpoint. The 30-day finalizer refuses to complete a session before the window expires, while a worker tick is active, when the worker is stale/unhealthy, or while virtual positions remain open. Live trading stays disabled until a separate owner-confirmed release is correctly implemented and the connector is certified.
-
-A few dollars in Trust Wallet are not an exchange Spot balance. Exchange-based live execution would require assets to be available on the connected exchange and the provider-specific balance gate to be satisfied. Wallet balances are not automatically treated as exchange collateral.
+A launch detector finding a token is not proof that it is safe or tradeable. Liquidity can disappear, quotes can become stale, token programs may be unusual, transactions can fail or land late, and slippage/MEV can make outcomes differ from estimates. Never assume a 10% target is guaranteed.
 
 ## Architecture
 
-- **Frontend:** Vite app in `web/`, Lightweight Charts, Telegram Web App integration, wallet watch/connect surface.
-- **Telegram API:** Supabase Edge Function `telegram-bot-next`.
-- **Paper worker:** Supabase Edge Function `n8-paper-worker`, using Binance public Spot market data.
-- **Database:** Supabase Postgres for users, paper sessions/trades, exchange connection metadata, risk gates and audit events.
-- **Credential vault:** Supabase Vault stores per-user Binance or OKX API credentials. The browser receives connection status and balance information, not the secret. Wallet private keys remain in the wallet provider.
-- **Hosting:** Vercel project `9n8-secure-connect`; primary domain `https://9n8-secure-connect.vercel.app`.
-- **Working branch:** `universal-multi-user`.
-
-## Local web build
-
-Use Node.js 22 or newer:
-
-```bash
-cd web
-npm install
-npm run dev
+```text
+Telegram user
+   ├── aiogram 3.x dashboard + FSM
+   └── Telegram Mini App (HTML/CSS/JS)
+          │ Telegram initData HMAC
+          ▼
+       FastAPI REST + WebSocket
+          │
+   ┌──────┴──────────────────────────────────────────────┐
+   │ Encrypted SQLite │ Decimal risk engine │ Telemetry │
+   └──────┬───────────────────────┬─────────────────────┘
+          │                       │
+   Helius RPC / WS          Jupiter Swap API v2
+   Pump.fun / Raydium       Jito Block Engine bundles
+          │                       │
+          └──── Solana mainnet ───┘
 ```
 
-Create a production build with:
+## Wallet-data durability warning
 
-```bash
-npm run build
+The default implementation stores encrypted wallet records in a local SQLite database at `data/9n8-solana.sqlite3`. Encryption does not protect against the database file being deleted by the hosting platform.
+
+**Do not host funded/live user wallets on a free Render Web Service or a free Koyeb instance using this local SQLite configuration.** Render Free Web Services have an ephemeral filesystem and lose SQLite files on restart, redeploy, or scale-down; Free Render Web Services do not support persistent disks. Koyeb Free Instances cannot attach persistent volumes. A lost SQLite file means the bot loses its encrypted private-key records, even if the Fernet key still exists.
+
+Safe current options:
+- Run locally on a computer with reliable storage and keep encrypted backups of both the SQLite database and Fernet key.
+- Use a hosting plan that provides a durable mounted disk for the SQLite database, with secure backups.
+- Before using an ephemeral free host for live users, implement and test a durable external database (for example PostgreSQL) for encrypted keys, users, trades, and fee ledger. This repository currently does not have a production-tested PostgreSQL wallet-vault adapter.
+
+Do not treat UptimeRobot pings as storage durability. Keeping a free instance awake does not turn its filesystem into persistent storage.
+
+## Deployment topology
+
+- **Telegram:** the persistent worker runs aiogram polling for commands, approvals, wallet actions and notifications. Telegram Mini App `initData` is validated by the FastAPI service.
+- **Vercel request app:** root `index.py` exposes FastAPI routes for the Mini App, settings, status and queue submission. It does not run Helius subscriptions or trade-monitor loops.
+- **Neon:** use the separate `9n8-trading` project and `n9n8` database. Do not point 9N8 at the unrelated `vyra-markets` brokerage database. Apply `migrations/001_n9n8_postgres.sql` before runtime initialization.
+- **Vercel Daemon:** `worker/Dockerfile` runs `python -m src.n9n8.worker`. It polls the `9n8-worker` Vercel Queue topic for wake-up messages, then reads/claims the durable job from Neon. It keeps Helius subscriptions and position monitors in memory while the process is running; no durable state is stored on its filesystem.
+
+The Daemon is a Vercel public-beta product and starts only on production deployments. It is configured for one `iad1` instance. The Vercel request service sends queue wake-ups using `x-vercel-oidc-token`; the Daemon uses its runtime `VERCEL_OIDC_TOKEN` to poll and acknowledge messages. The Daemon must fail closed if no valid OIDC token is exposed to its container. Vercel Queues delivers at least once, so Neon job rows and their claim state remain authoritative and prevent repeat execution. Vercel bills Daemon CPU and provisioned memory beyond plan inclusions; Queues is metered separately. Review current project usage and pricing before starting it. See <https://vercel.com/docs/queues>, <https://vercel.com/changelog/vercel-daemons-is-now-in-public-beta> and <https://vercel.com/pricing>. Do not start the daemon until runtime secrets and billing are reviewed.
+
+## Windows setup
+
+Requirements: Python 3.11+, a Telegram bot token, a Helius API key, a Solana treasury address, and a persistent local database folder.
+
+1. Download this branch:
+   https://github.com/Alitiora-Initiative/9N8/tree/feature/solana-telegram-sniper
+2. Run `setup_windows.bat`.
+3. Open `.env` and fill in the required values below.
+4. Start the bot with `start_9n8.bat`.
+5. Send `/start` to your Telegram bot.
+
+Required environment settings:
+
+```env
+TELEGRAM_BOT_TOKEN=your_botfather_token
+HELIUS_API_KEY=your_helius_api_key
+MASTER_TREASURY_ADDRESS=your_solana_treasury_public_key
+ENCRYPTION_MASTER_KEY=your_fernet_key
+DATABASE_URL=your_9n8_neon_postgresql_url
+N9N8_REQUIRE_POSTGRES=true
+N9N8_TRADING_MODE=paper
+LIVE_TRADING_ENABLED=false
+WEBAPP_URL=https://your-https-host.example
 ```
 
-## Backend tests
+Generate the Fernet encryption key once:
 
-Install Deno 2 and run the focused tests:
-
-```bash
-deno test supabase/functions/n8-paper-worker/paper-engine_test.ts
-deno test supabase/functions/telegram-bot-next/binance-live_test.ts
-deno test supabase/functions/telegram-bot-next/okx-live_test.ts
-deno test supabase/functions/telegram-bot-next/jupiter-live_test.ts
+```powershell
+py -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Type-check the Edge Functions:
+Store the generated key in a password manager and keep a separate offline backup. If it is lost, the encrypted wallet records cannot be decrypted. Changing it after users have wallets will make old encrypted secrets unreadable unless you perform a deliberate key migration.
 
-```bash
-deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts
+**Deployed Vercel API and Daemon:** configure the same production `DATABASE_URL`, `ENCRYPTION_MASTER_KEY`, `TELEGRAM_BOT_TOKEN`, `HELIUS_API_KEY`, `MASTER_TREASURY_ADDRESS`, `WEBAPP_URL`, `N9N8_REQUIRE_POSTGRES=true`, `N9N8_TRADING_MODE=paper` and `LIVE_TRADING_ENABLED=false` in the Vercel production environment. Do not use the SQLite file on Vercel. The Neon connection string is a secret and must not be committed or printed.\n\nHelius endpoints are derived automatically from `HELIUS_API_KEY`. You can instead set both `SOLANA_RPC_URL` and `SOLANA_WSS_URL` explicitly.
+
+## GitHub Secrets vs runtime environment
+
+Adding `HELIUS_API_KEY` under **GitHub Actions Secrets** does not automatically make it available to a bot running on a Windows laptop or on Render/Koyeb/Fly.io.
+
+- For GitHub Actions, explicitly map it into the workflow step's `env:` block if a workflow needs to access it.
+- For a hosted service, add `HELIUS_API_KEY` to that provider's service environment variables.
+- For local Windows, add it to the untracked `.env` file in the repository root.
+
+Never print secrets in logs or commit `.env`.
+
+## Paper and live modes
+
+Paper mode is the default. The persistent worker listens to real launchpad events and reports discoveries, but it does not claim to fill simulated positions or manufacture PnL.
+
+Live mode requires both:
+
+```env
+N9N8_TRADING_MODE=live
+LIVE_TRADING_ENABLED=true
 ```
 
-GitHub Actions runs the Python regression suite, web production build, Deno tests and Edge Function type-check on `universal-multi-user`.
+Do not enable these flags until you have tested wallet creation/import, key backups, token-risk screens, Jupiter transaction construction, Jito bundle landing, partial exits, stop-loss/max-hold exits, account closure, daily circuit breakers, withdrawals, and key rotation with a dedicated small-value test wallet. Live execution can irreversibly lose funds.
 
-## Deployment notes
+## Local Docker
 
-The Supabase functions and database migrations are deployed. The Vercel team is currently on the Hobby plan and hit the 100-deployments-per-24-hour limit. That stopped the latest branch build from becoming the active website. The current stable Vercel URL therefore may not include the newest UI changes until the deployment quota resets or the project owner changes the Vercel plan.
+```bash
+docker compose up --build -d
+docker compose logs -f
+```
 
-Do not bypass this deployment restriction by promoting an unrelated branch or an unverified build. Deploy the `universal-multi-user` branch after Vercel accepts another build, confirm it reaches READY, then assign the stable domain alias.
+SQLite data is stored in the Docker named volume `9n8-data`. Back up this volume securely. The app exposes `/health` on port 8080.
 
-## Safety and operational rules
-
-- Keep API credentials out of source control and Telegram messages.
-- Use a dedicated Binance API key; disable withdrawals and all transfers.
-- Use IP allowlisting where possible.
-- Treat HTTP timeouts and Binance 5XX order responses as **unknown execution state**, not as proof the order failed. Reconcile by client order ID before any retry.
-- Do not turn on live trading or connector readiness manually to bypass the database gates.
-- Paper P&L is virtual and does not predict live profitability.
+**Persistent storage warning:** SQLite contains encrypted wallet recovery keys and bot state. Many free web-service tiers use ephemeral filesystems or sleep/restart containers; the SQLite database can be lost unless a persistent disk or durable database is attached. Back up the SQLite file and Fernet master key separately before accepting deposits. Do not assume a free instance's local filesystem is persistent.
 
 
-## Universal exchange-key permission update
+## Tests
 
-The branch `feature/universal-exchange-api-permissions` adds market selection and provider-specific checks for Binance, Bybit and OKX. It also adds regional Bybit API hosts and rewrites the Telegram `/start` and bot descriptions in plain language. Apply `supabase/migrations/20261126222000_n8_universal_exchange_api_permissions.sql` before deploying the edge function; otherwise the database provider constraint will reject Bybit connections. This work does not enable live exchange order placement.
+```bash
+python -m pip install -r requirements.txt pytest pytest-asyncio httpx
+python -m compileall -q src tests
+python -m pytest -q
+```
+
+The test suite should use mocked network calls. Never put private keys, real wallet funds, Helius API keys, or a live treasury private key into test fixtures.
+
+## Telegram Mini App
+
+Telegram Mini Apps require an HTTPS URL. Set `WEBAPP_URL` to the public HTTPS base URL of the FastAPI service. Configure the same URL as the bot's Web App domain in Telegram's bot settings where required.
+
+## Treasury fees
+
+- $1.00 equivalent activation fee (first live activation).
+- 0.1% fee on positive realized trade profit estimates.
+- $1.00 equivalent full withdrawal fee.
+- $1.00 equivalent stop-and-rotate fee.
+- Network fees and Jito tips are separate.
+
+The $1 equivalent is converted from a fresh SOL/USD oracle observation. If a trustworthy fresh price is unavailable or the wallet cannot cover the fee and network cost, the operation must fail rather than use a hard-coded exchange rate.
+
+## Security
+
+- Per-user private keys are Fernet-encrypted in SQLite.
+- Telegram recovery-key messages are scheduled for deletion after 60 seconds, but deletion cannot remove screenshots, notification previews, backups or messages already copied elsewhere.
+- Use dedicated wallets. Do not import a wallet holding long-term savings.
+- The Mini App validates Telegram `initData`; do not expose unauthenticated wallet endpoints behind a reverse proxy.
+- Use an HTTPS host, persistent disk, restricted access to environment variables, regular encrypted backups and key rotation procedures.
+- Do not treat a clean test run as an audit or guarantee of trading safety.
