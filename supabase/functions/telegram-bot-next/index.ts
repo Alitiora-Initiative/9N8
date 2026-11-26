@@ -26,6 +26,7 @@ import {
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
 import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
+import { buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard } from "./telegram-ui.ts";
 
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
@@ -171,6 +172,51 @@ async function send(chatId: number, text: string, markup?: Obj) {
     await telegram("sendMessage", payload);
   }
 }
+
+async function editDashboardMessage(chatId: number, messageId: number, text: string, markup?: Obj): Promise<boolean> {
+  if (!TOKEN || !Number.isSafeInteger(messageId) || messageId <= 0) return false;
+  try {
+    const payload: Obj = { chat_id: chatId, message_id: messageId, text: String(text ?? ""), disable_web_page_preview: true };
+    if (markup) payload.reply_markup = markup;
+    const r = await fetch("https://api.telegram.org/bot" + TOKEN + "/editMessageText", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+    });
+    const result = await r.json().catch(() => ({}));
+    if (r.ok && result?.ok === true) return true;
+    return String(result?.description ?? "").toLowerCase().includes("message is not modified");
+  } catch { return false; }
+}
+
+async function sendPanel(userId: string, chatId: number, text: string, markup?: Obj, preferredMessageId?: number): Promise<number | null> {
+  let messageId = Number(preferredMessageId) > 0 ? Number(preferredMessageId) : 0;
+  if (!messageId) {
+    try {
+      const rows = await db("n8_users?select=telegram_dashboard_message_id&id=eq." + encodeURIComponent(userId));
+      const stored = Array.isArray(rows) ? Number(rows[0]?.telegram_dashboard_message_id) : 0;
+      if (Number.isSafeInteger(stored) && stored > 0) messageId = stored;
+    } catch { /* A stale dashboard pointer must not block opening the bot. */ }
+  }
+  if (messageId && await editDashboardMessage(chatId, messageId, text, markup)) {
+    try {
+      await db("n8_users?id=eq." + encodeURIComponent(userId), "PATCH",
+        { telegram_dashboard_message_id: messageId }, "return=minimal");
+    } catch { /* The edit succeeded; persistence can be repaired on the next interaction. */ }
+    return messageId;
+  }
+  const payload: Obj = { chat_id: chatId, text: String(text ?? ""), disable_web_page_preview: true };
+  if (markup) payload.reply_markup = markup;
+  const sent = await telegram("sendMessage", payload);
+  const newMessageId = Number(sent?.message_id);
+  if (Number.isSafeInteger(newMessageId) && newMessageId > 0) {
+    try {
+      await db("n8_users?id=eq." + encodeURIComponent(userId), "PATCH",
+        { telegram_dashboard_message_id: newMessageId }, "return=minimal");
+    } catch { /* Keep the visible panel usable if persistence is briefly unavailable. */ }
+    return newMessageId;
+  }
+  return null;
+}
+
 async function sendReportPhoto(chatId: number, signedUrl: string, caption: string, markup?: Obj) {
   const url = new URL(signedUrl);
   const backend = new URL(SUPABASE_URL);
@@ -215,37 +261,15 @@ function solanaPanelKeyboard(section = "dashboard"): Obj {
 }
 
 function networkSelectorText(): string {
-  return [
-    "🌐 9N8 NETWORK SELECTOR", "",
-    "Active execution network: Solana Mainnet",
-    "Solana is the only connected on-chain execution path. Its existing Paper and Live safety controls remain separate.", "",
-    "BASE · NOT CONNECTED", NETWORKS.base.note, "",
-    "ETHEREUM · NOT CONNECTED", NETWORKS.ethereum.note, "",
-    "BNB CHAIN · NOT CONNECTED", NETWORKS.bnb.note, "",
-    "Selecting an unsupported chain never connects a wallet, requests a quote, or submits a transaction. Do not deposit funds on an unsupported network.",
-  ].join("\n");
+  return buildNetworkSelectorText(NETWORKS);
 }
 
 function networkSelectorKeyboard(): Obj {
-  return { inline_keyboard: [
-    [{ text: "✅ Solana Mainnet · Active", callback_data: "n8:network:solana" }],
-    [{ text: "Base · Not connected", callback_data: "n8:network:base" }],
-    [{ text: "Ethereum · Not connected", callback_data: "n8:network:ethereum" }],
-    [{ text: "BNB Chain · Not connected", callback_data: "n8:network:bnb" }],
-    [{ text: "↩ Back to 9N8 dashboard", callback_data: "n8:services" }],
-  ] };
+  return buildNetworkSelectorKeyboard(MINI_APP_URL);
 }
 
 function mainKeyboard(): Obj {
-  return { inline_keyboard: [
-    [{ text: "🚀 OPEN SOLANA SNIPER CONTROL", web_app: { url: SOLANA_SNIPER_URL } }],
-    [{ text: "🧪 Paper Trading", callback_data: "n8:solana_paper" }, { text: "🔴 Live Controls", callback_data: "n8:solana_live" }],
-    [{ text: "📊 Positions", callback_data: "n8:solana_positions" }, { text: "⚙️ Trading Settings", callback_data: "n8:solana_settings" }],
-    [{ text: "🛡 Safety Filters", callback_data: "n8:solana_safety" }],
-    [{ text: "🌐 Networks / Chains", callback_data: "n8:networks" }],
-    [{ text: "Connect Exchanges", web_app: { url: MINI_APP_URL } }, { text: "Wallet Watch", web_app: { url: SOLANA_SNIPER_URL + "#live" } }],
-    [{ text: "📚 Services", callback_data: "n8:services" }, { text: "📡 Live Status", callback_data: "n8:live_status" }],
-  ] };
+  return buildMainKeyboard(SOLANA_SNIPER_URL, MINI_APP_URL);
 }
 
 async function verifyInitData(raw: string, maxAgeSeconds = 300): Promise<any> {
@@ -2558,6 +2582,9 @@ async function setBotProfileAndCommands(): Promise<void> {
       commands: [
         { command: "start", description: "Open the 9N8 Solana Sniper dashboard" },
         { command: "sniper", description: "Open the complete Solana Sniper control panel" },
+        { command: "snipe", description: "Open manual Solana quick-snipe" },
+        { command: "history", description: "View recorded Jupiter swap receipts" },
+        { command: "withdraw", description: "Show safe self-custody withdrawal guidance" },
         { command: "solana_paper", description: "Open separate Solana Paper Trading controls" },
         { command: "solana_live", description: "Open gated Solana Live Trading controls" },
         { command: "networks", description: "Show connected and unavailable blockchains" },
@@ -2615,6 +2642,131 @@ function serviceOverview(): string {
   ].join("\n");
 }
 
+
+async function dashboardText(userId: string): Promise<string> {
+  let state: any = null;
+  try { state = await getLiveStatus(userId); } catch { /* Report conservative defaults. */ }
+  return [
+    "⚡ 9N8 — SOLANA SNIPER DASHBOARD", "",
+    "🟣 Active network: Solana Mainnet",
+    "🔵 Base · 🔷 Ethereum · 🟡 BNB Chain: NOT CONNECTED", "",
+    "🧪 Paper: separate virtual ledger; no real SOL is spent.",
+    "🔴 Live: " + (state?.killSwitch ? "STOPPED BY KILL SWITCH" : "GATED — readiness and execution checks required"),
+    "Execution policy: " + String(state?.executionMode ?? "approval"),
+    "Owner approval: " + (state?.ownerApprovalRequired === false ? "not required by stored policy" : "required"),
+    "Emergency stop: " + (state?.killSwitch ? "ACTIVE" : "not active"), "",
+    "Wallet balance and Python-worker PnL are not reported by this Telegram webhook. Open the secure app for wallet sessions and Jupiter quotes.",
+    "Menu navigation edits this dashboard message. Opening a screen does not enable autonomous execution or place a trade.",
+  ].join("\n");
+}
+
+async function positionsScreen(userId: string): Promise<string> {
+  try {
+    const rows = await db("n8_positions?select=symbol,venue,environment,quantity,average_entry_price,mark_price,unrealized_pnl_usd,status,opened_at&user_id=eq." +
+      encodeURIComponent(userId) + "&status=eq.open&order=opened_at.desc&limit=10");
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return [
+        "📊 9N8 ACTIVE POSITIONS", "",
+        "No open positions are recorded in this Telegram account's position ledger.",
+        "The separate Python Solana worker and its Neon position ledger are not yet synchronized to this webhook, so those holdings cannot be reported here.",
+        "Paper and Live remain separate.",
+      ].join("\n");
+    }
+    return "📊 9N8 ACTIVE POSITIONS\n\n" + rows.map((item: any, index: number) => [
+      (index + 1) + ". " + String(item.symbol ?? "Unknown asset"),
+      String(item.venue ?? "Unknown venue") + " · " + String(item.environment ?? "unknown").toUpperCase(),
+      "Quantity: " + String(item.quantity ?? "—"),
+      "Entry: " + String(item.average_entry_price ?? "—") + " · Mark: " + String(item.mark_price ?? "—"),
+      "Unrealized PnL: $" + String(item.unrealized_pnl_usd ?? "—"),
+      "Status: " + String(item.status ?? "unknown"),
+    ].join("\n")).join("\n\n");
+  } catch {
+    return "📊 9N8 ACTIVE POSITIONS\n\nThe position ledger could not be queried. No position or PnL value is being guessed.";
+  }
+}
+
+async function historyScreen(userId: string): Promise<string> {
+  try {
+    const rows = await db("n8_jupiter_swaps?select=input_mint,output_mint,status,signature,created_at&user_id=eq." +
+      encodeURIComponent(userId) + "&order=created_at.desc&limit=10");
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return [
+        "📜 9N8 TRADE HISTORY", "",
+        "No Jupiter swap receipts are recorded for this Telegram account yet.",
+        "The separate Python worker's Neon trade history is not currently mirrored into this Telegram ledger.",
+        "Paper fills and signed Live transactions remain separately labelled.",
+      ].join("\n");
+    }
+    return "📜 RECENT JUPITER SWAP RECEIPTS\n\n" + rows.map((item: any, index: number) => [
+      (index + 1) + ". " + String(item.status ?? "unknown").toUpperCase(),
+      "Input mint: " + String(item.input_mint ?? "—"),
+      "Output mint: " + String(item.output_mint ?? "—"),
+      "Signature: " + String(item.signature ?? "not submitted"),
+      "Created: " + String(item.created_at ?? "—"),
+    ].join("\n")).join("\n\n");
+  } catch {
+    return "📜 9N8 TRADE HISTORY\n\nThe swap-receipt ledger could not be queried. No fills, profits or rejection counts are being guessed.";
+  }
+}
+
+async function settingsScreen(userId: string): Promise<string> {
+  try {
+    const state = await getLiveStatus(userId);
+    return [
+      "⚙️ 9N8 RISK & EXECUTION SETTINGS", "",
+      "Stored account risk policy",
+      "Execution mode: " + String(state.executionMode),
+      "Owner approval: " + (state.ownerApprovalRequired ? "required" : "not required"),
+      "Minimum live balance: $" + Number(state.minimumLiveBalanceUsd).toFixed(2),
+      "Maximum order: $" + Number(state.maxOrderUsd).toFixed(2),
+      "Daily notional cap: $" + Number(state.maxDailyNotionalUsd).toFixed(2),
+      "Maximum open positions: " + String(state.maxOpenPositions),
+      "Maximum slippage: " + String(state.maxSlippageBps) + " bps",
+      "Minimum liquidity: $" + Number(state.minimumLiquidityUsd).toLocaleString("en-US"),
+      "Emergency kill switch: " + (state.killSwitch ? "ACTIVE" : "OFF"), "",
+      "Solana buy size, buy/sell slippage, Jito tip, TP1/TP2, trailing stop, hard stop and max hold are in the separate Python/Neon runtime. Those values are not synchronized to this Telegram webhook.",
+    ].join("\n");
+  } catch {
+    return "⚙️ 9N8 SETTINGS\n\nThe stored risk policy could not be queried. The Python worker's detailed Solana settings are not synchronized to this webhook; no values are assumed or changed.";
+  }
+}
+
+function safetyScreen(): string {
+  return [
+    "🛡 9N8 ANTI-RUG GATEKEEPER", "",
+    "Solana engine target checks",
+    "• Mint authority: must be revoked",
+    "• Freeze authority: must be revoked",
+    "• Liquidity: at least 80% burned or locked",
+    "• Minimum pool liquidity: 5 SOL",
+    "• Top-10 holder concentration: at most 25%",
+    "• Single developer wallet: at most 5%", "",
+    "Runtime status: this Telegram webhook is not connected to the Python Solana engine's scanner and settings store. These are target requirements, not a claim that a token has passed a live scan.",
+    "Unverified LP-lock and holder data must fail closed. This screen cannot weaken a server-side hard reject.",
+  ].join("\n");
+}
+
+function manualSnipeScreen(address = ""): string {
+  return [
+    "🎯 MANUAL QUICK-SNIPE", "",
+    address ? "Target mint: " + address : "Paste a Solana token mint address into this private chat.",
+    "Address format: " + (address ? "valid Solana public-key format" : "awaiting token mint"),
+    "On-chain safety scan: NOT RUN by this Telegram webhook",
+    "Jupiter quote: NOT REQUESTED",
+    "Transaction: NOT SIGNED OR SUBMITTED", "",
+    "Continue in the secure wallet/Jupiter app to connect a wallet, inspect a live quote and sign any transaction yourself. Never send a seed phrase or private key in Telegram.",
+  ].join("\n");
+}
+
+function withdrawalScreen(): string {
+  return [
+    "💸 SOLANA WITHDRAWAL GUIDANCE", "",
+    "This Telegram webhook does not custody SOL or expose a transfer-signing action. A connected-wallet session is not transfer authorization.",
+    "Withdraw directly from your self-custody wallet using its own Send flow, and verify the destination address on-device.",
+    "No balance, withdrawable amount, gas reserve or transfer has been fabricated. Never paste a private key or recovery phrase into chat.",
+  ].join("\n");
+}
+
 async function handleMessage(update: any) {
   const m = update?.message ?? update?.edited_message;
   if (!m?.chat?.id || !m?.from?.id) return;
@@ -2624,20 +2776,18 @@ async function handleMessage(update: any) {
   if (!text.startsWith("/")) {
     if (chatType !== "private") return;
     if (isEvmAddressCandidate(text)) {
-      await userRow(m.from);
-      await send(chatId,
-        "EVM address format detected. Base, Ethereum and BNB Chain are not connected to 9N8 execution, so no wallet lookup, quote or trade was attempted. Use /networks to see the current chain status.",
-        networkSelectorKeyboard());
+      const row = await userRow(m.from);
+      await sendPanel(row.id, chatId,
+          "EVM address format detected. Base, Ethereum and BNB Chain are not connected to 9N8 execution, so no wallet lookup, quote or trade was attempted.",
+          networkSelectorKeyboard());
       return;
     }
     if (isSolanaAddressCandidate(text)) {
       try {
         const address = new PublicKey(text);
         if (address.toBase58() === text) {
-          await userRow(m.from);
-          await send(chatId,
-            "Solana address format detected. Pasting an address never starts a buy or signs a transaction. Open the Solana Sniper dashboard to review its supported scanner and keep Paper and Live controls separate.",
-            solanaPanelKeyboard("dashboard"));
+          const row = await userRow(m.from);
+          await sendPanel(row.id, chatId, manualSnipeScreen(address.toBase58()), buildManualQuickSnipeKeyboard(MINI_APP_URL));
           return;
         }
       } catch {
@@ -2662,82 +2812,82 @@ async function handleMessage(update: any) {
   if (command === "/start" || command === "/menu") {
     await setBotProfileAndCommands();
     await audit(row.id, chatId, "private_start");
-    await send(chatId,
-      "🚀 WELCOME TO 9N8 — SOLANA SNIPER\n\n" +
-      "Your Telegram control panel separates Solana Paper Trading from Live Sniper controls.\n\n" +
-      "🧪 PAPER MODE\n" +
-      "Uses live Solana market data with virtual SOL. Paper orders, balances, positions and PnL are separate and never sign or broadcast a blockchain transaction.\n\n" +
-      "🔴 LIVE MODE\n" +
-      "Uses a separate real-wallet control panel. Live trading stays locked until the server-side wallet, risk, operator and activation checks pass. Opening the panel does not place an order.\n\n" +
-      "Use the buttons below for the complete dashboard, positions, settings and anti-rug filters. The exchange simulator and account connections remain available under /simulator and /connect.",
-      mainKeyboard());
+    await sendPanel(row.id, chatId, await dashboardText(row.id), mainKeyboard());
     return;
   }
     if (command === "/services") {
-    await send(chatId, serviceOverview(), mainKeyboard());
+    await sendPanel(row.id, chatId, serviceOverview(), mainKeyboard());
     return;
   }
   if (command === "/networks" || command === "/chains" || command === "/network") {
-    await send(chatId, networkSelectorText(), networkSelectorKeyboard());
+    await sendPanel(row.id, chatId, networkSelectorText(), networkSelectorKeyboard());
     return;
   }
   if (command === "/help") {
-    await send(chatId,
-      "9N8 COMMANDS\n" +
-      "/services — what 9N8 does and current feature status\n" +
-      "/start — open private control panel\n" +
-      "/status — inspect account and system state\n" +
-      "/connect — connect Binance, Bybit, OKX or a wallet\n" +
-      "/connections — list your exchange connections\n" +
-      "/wallets — list your verified wallets\n" +
-      "/migrate — assess live eligibility (does not enable live trading)\n" +
-      "/live — live lock and risk status\n" +
-      "/risk — current account risk limits\n" +
-      "/approvals — pending trade proposals\n" +
-      "/sniper — open complete Solana Sniper dashboard\n" +
-      "/solana_paper — separate virtual Solana trading\n" +
-      "/solana_live — gated Solana live-wallet controls\n" +
-       "/networks — show supported and unavailable chains\n" +
-      "/positions — open Paper and Live positions\n" +
-      "/settings — open sniper trade settings\n" +
-      "/safety — open anti-rug filters\n" +
-      "/paper — open Solana Paper Trading\n" +
-      "/pause — pause strategies and block new execution\n" +
-      "/stop — emergency stop and kill switch\n" +
-      "/resume — request to resume paper scanning; live stays off\n\n" +
-      "GROUP COMMANDS\n/n8setup, /n8admin, /n8moderator\n/n8delete and /n8ban — reply to a member message\n/n8unban TELEGRAM_USER_ID\n\n" +
-      "Never send exchange API secrets, private keys or seed phrases in chat."
-    );
+    await sendPanel(row.id, chatId,
+      "9N8 COMMANDS\n\n/start — main dashboard\n/sniper — control app\n/snipe [MINT] — manual quick-snipe guidance\n" +
+      "/networks — chain status\n/positions — recorded positions\n/history — Jupiter receipts\n/settings — stored risk policy\n" +
+      "/safety — anti-rug requirements\n/withdraw — self-custody withdrawal guidance\n/paper — isolated virtual trading\n" +
+      "/live — gated live status\n/connect — wallet and exchange links\n/pause — pause activity\n/stop — emergency stop\n/resume — paper only\n\n" +
+      "Pasting a token address does not execute a buy. Never send private keys, seed phrases or exchange secrets in Telegram.",
+      mainKeyboard());
+    return;
+  }
+  if (command === "/snipe") {
+    const candidate = clean(args[0] ?? "", 64);
+    if (!candidate) {
+      await sendPanel(row.id, chatId, manualSnipeScreen(), buildManualQuickSnipeKeyboard(MINI_APP_URL));
+      return;
+    }
+    let valid = false;
+    try { valid = new PublicKey(candidate).toBase58() === candidate; } catch { valid = false; }
+    await sendPanel(row.id, chatId,
+      valid ? manualSnipeScreen(candidate) :
+        "🎯 MANUAL QUICK-SNIPE\n\nThat is not a valid Solana public-key format. Paste a 32–44 character base58 token mint. No quote or transaction was attempted.",
+      buildManualQuickSnipeKeyboard(MINI_APP_URL));
+    return;
+  }
+  if (command === "/history") {
+    await sendPanel(row.id, chatId, await historyScreen(row.id), buildReturnKeyboard());
+    return;
+  }
+  if (command === "/withdraw") {
+    await sendPanel(row.id, chatId, withdrawalScreen(), buildReturnKeyboard());
     return;
   }
   if (command === "/sniper" || command === "/dashboard") {
-    await send(chatId,
-      "🚀 SOLANA SNIPER CONTROL\n\nPaper and Live are separate. Use the dashboard for engine controls, positions, exit rules, safety filters and wallet actions.",
-      solanaPanelKeyboard("dashboard"));
+    await sendPanel(row.id, chatId,
+      "🚀 9N8 SOLANA CONTROL APP\n\nOpen the secure 9N8 app for wallet connections, live market context and supported manual Jupiter quotes. Paper and Live remain separate; opening the app does not enable autonomous execution.",
+      { inline_keyboard: [
+        [{ text: "🚀 Open 9N8 Control App", web_app: { url: SOLANA_SNIPER_URL } }],
+        [{ text: "💼 Wallet & Jupiter", web_app: { url: MINI_APP_URL } }],
+        [{ text: "↩ Back to Dashboard", callback_data: "n8:services" }],
+      ] });
     return;
   }
   if (command === "/solana_live") {
-    await send(chatId,
-      "🔴 SOLANA LIVE CONTROLS\n\nLive trading is a separate real-wallet mode. The dashboard shows the current operator switch and activation, wallet, Paper-practice and balance readiness gates. The panel itself does not submit an order.",
-      solanaPanelKeyboard("live"));
+    await sendPanel(row.id, chatId, await liveStatusText(row.id), solanaPanelKeyboard("live"));
     return;
   }
   if (command === "/positions") {
-    await send(chatId, "📊 SOLANA POSITIONS\n\nOpen the dashboard to inspect Paper positions and separately recorded Live positions and receipts.", solanaPanelKeyboard("positions"));
+    await sendPanel(row.id, chatId, await positionsScreen(row.id), solanaPanelKeyboard("positions"));
     return;
   }
   if (command === "/settings") {
-    await send(chatId, "⚙️ SOLANA SNIPER SETTINGS\n\nOpen the dashboard to edit paper buy size, slippage, take-profit, trailing-stop, hard-stop and holding-time settings. Live controls remain subject to server-side limits.", solanaPanelKeyboard("settings"));
+    await sendPanel(row.id, chatId, await settingsScreen(row.id), buildReturnKeyboard());
     return;
   }
   if (command === "/safety") {
-    await send(chatId, "🛡️ SOLANA SAFETY FILTERS\n\nOpen the dashboard to review mint/freeze authority, liquidity-lock and holder-concentration gates. Unverified safety data must fail closed.", solanaPanelKeyboard("safety"));
+    await sendPanel(row.id, chatId, safetyScreen(), buildReturnKeyboard());
     return;
   }
     if (command === "/connect") {
-    await send(chatId, "Open this private secure form to connect Binance, Bybit or OKX. Choose the markets you want to use. Keep Withdraw and account transfers disabled. Never send API credentials, private keys or seed phrases in Telegram chat.", {
-      inline_keyboard: [[{ text: "Open secure connections", web_app: { url: MINI_APP_URL } }]],
-    });
+    await sendPanel(row.id, chatId,
+      "Open the private 9N8 connection app to link a wallet or exchange. Connecting does not approve a trade or transfer. Keep exchange Withdraw and transfer permissions OFF.",
+      { inline_keyboard: [
+        [{ text: "🔐 Open secure connections", web_app: { url: MINI_APP_URL } }],
+        [{ text: "↩ Back to Dashboard", callback_data: "n8:services" }],
+      ] });
     return;
   }
   if (command === "/migrate") {
@@ -2749,7 +2899,7 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/live") {
-    await send(chatId, await liveStatusText(row.id));
+    await sendPanel(row.id, chatId, await liveStatusText(row.id), buildReturnKeyboard());
     return;
   }
   if (command === "/risk") {
@@ -2784,14 +2934,14 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/status") {
-    await send(chatId, await liveStatusText(row.id));
+    await sendPanel(row.id, chatId, await liveStatusText(row.id), buildReturnKeyboard());
     return;
   }
   if (command === "/paper" || command === "/solana_paper") {
-    await send(chatId,
+    await sendPanel(row.id, chatId,
       "🧪 SOLANA PAPER TRADING\n\n" +
-      "This is the isolated virtual account. It reads live Solana market data but does not sign, submit or broadcast real transactions. Paper balance, fills, positions and PnL are kept separate from Live.\n\n" +
-      "Open the Paper section to start or pause the paper engine, edit buy size and exit rules, inspect positions and review simulated fills.",
+      "The isolated virtual account reads live market data but does not sign or broadcast transactions. Paper balances, fills, positions and PnL are separate from Live.\n\n" +
+      "The Python worker's Paper ledger is separate from Live; worker-to-webhook synchronization is not yet enabled in production.",
       solanaPanelKeyboard("paper"));
     return;
   }
@@ -2836,41 +2986,50 @@ async function handleCallback(update: any) {
   const chat = q.message?.chat;
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
-  if (q.data === "n8:services") await send(Number(chat.id), serviceOverview(), mainKeyboard());
+  if (q.data === "n8:services") await sendPanel(row.id, Number(chat.id), await dashboardText(row.id), mainKeyboard(), Number(q.message?.message_id));
   if (q.data === "n8:networks") {
-    await send(Number(chat.id), networkSelectorText(), networkSelectorKeyboard());
+    await sendPanel(row.id, Number(chat.id), networkSelectorText(), networkSelectorKeyboard(), Number(q.message?.message_id));
   }
   if (String(q.data ?? "").startsWith("n8:network:")) {
     const networkCode = String(q.data).slice("n8:network:".length);
     const network = getNetwork(networkCode);
     if (!network) {
-      await send(Number(chat.id), "Unknown network. Solana Mainnet remains the only supported execution path.", networkSelectorKeyboard());
+      await sendPanel(row.id, Number(chat.id), "Unknown network. Solana Mainnet remains the only supported execution path.", networkSelectorKeyboard(), Number(q.message?.message_id));
     } else if (!networkExecutionEnabled(network.code)) {
       await audit(row.id, Number(chat.id), "unsupported_network_selection_blocked", "rejected", { network: network.code });
-      await send(Number(chat.id),
+      await sendPanel(row.id, Number(chat.id),
         network.label.toUpperCase() + " IS NOT CONNECTED\n\n" + network.note +
         "\n\nSolana Mainnet remains the only active execution network. No RPC, wallet, quote or transaction was attempted.",
-        networkSelectorKeyboard());
+        networkSelectorKeyboard(), Number(q.message?.message_id));
     } else {
-      await send(Number(chat.id),
+      await sendPanel(row.id, Number(chat.id),
         "✅ SOLANA MAINNET REMAINS ACTIVE\n\nPaper and Live remain separate. Live trading is still governed by the existing operator, wallet, risk and activation gates.",
-        mainKeyboard());
+        mainKeyboard(), Number(q.message?.message_id));
     }
   }
   if (q.data === "n8:solana_paper") {
-    await send(Number(chat.id), "🧪 SOLANA PAPER TRADING\n\nLive market data · virtual SOL · separate practice ledger · no blockchain transaction is signed or broadcast.", solanaPanelKeyboard("paper"));
+    await sendPanel(row.id, Number(chat.id), "🧪 SOLANA PAPER TRADING\n\nLive market data · virtual SOL · separate practice ledger · no blockchain transaction is signed or broadcast.", solanaPanelKeyboard("paper"), Number(q.message?.message_id));
   }
   if (q.data === "n8:solana_live") {
-    await send(Number(chat.id), "🔴 SOLANA LIVE CONTROLS\n\nReal-wallet trading remains gated by the readiness checks displayed in the Live panel. Opening the panel does not enable live orders.", solanaPanelKeyboard("live"));
+    await sendPanel(row.id, Number(chat.id), await liveStatusText(row.id), solanaPanelKeyboard("live"), Number(q.message?.message_id));
   }
   if (q.data === "n8:solana_positions") {
-    await send(Number(chat.id), "📊 Open Paper and Live positions in the Solana dashboard.", solanaPanelKeyboard("positions"));
+    await sendPanel(row.id, Number(chat.id), await positionsScreen(row.id), solanaPanelKeyboard("positions"), Number(q.message?.message_id));
   }
   if (q.data === "n8:solana_settings") {
-    await send(Number(chat.id), "⚙️ Open sniper settings and exit rules in the Solana dashboard.", solanaPanelKeyboard("settings"));
+    await sendPanel(row.id, Number(chat.id), await settingsScreen(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
   }
   if (q.data === "n8:solana_safety") {
-    await send(Number(chat.id), "🛡 Open the anti-rug safety gatekeeper in the Solana dashboard.", solanaPanelKeyboard("safety"));
+    await sendPanel(row.id, Number(chat.id), safetyScreen(), buildReturnKeyboard(), Number(q.message?.message_id));
+  }
+  if (q.data === "n8:snipe") {
+    await sendPanel(row.id, Number(chat.id), manualSnipeScreen(), buildManualQuickSnipeKeyboard(MINI_APP_URL), Number(q.message?.message_id));
+  }
+  if (q.data === "n8:history") {
+    await sendPanel(row.id, Number(chat.id), await historyScreen(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
+  }
+  if (q.data === "n8:withdraw") {
+    await sendPanel(row.id, Number(chat.id), withdrawalScreen(), buildReturnKeyboard(), Number(q.message?.message_id));
   }
   if (q.data === "n8:paper_start_crypto") {
     const started = await startCryptoPaper(row.id, Number(chat.id));
@@ -2878,9 +3037,9 @@ async function handleCallback(update: any) {
       inline_keyboard: [[{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
     });
   }
-  if (q.data === "n8:paper_status") await send(Number(chat.id), await paperStatusText(row.id));
-  if (q.data === "n8:connections") await send(Number(chat.id), await listConnections(row.id));
-  if (q.data === "n8:live_status") await send(Number(chat.id), await liveStatusText(row.id));
+  if (q.data === "n8:paper_status") await sendPanel(row.id, Number(chat.id), await paperStatusText(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
+  if (q.data === "n8:connections") await sendPanel(row.id, Number(chat.id), await listConnections(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
+  if (q.data === "n8:live_status") await sendPanel(row.id, Number(chat.id), await liveStatusText(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
   if (q.data === "n8:resume_confirm") {
     const now = new Date().toISOString();
     await db("n8_risk_policies?user_id=eq." + encodeURIComponent(row.id), "PATCH", {
