@@ -52,6 +52,19 @@ Telegram user
           └──── Solana mainnet ───┘
 ```
 
+## Wallet-data durability warning
+
+The default implementation stores encrypted wallet records in a local SQLite database at `data/9n8-solana.sqlite3`. Encryption does not protect against the database file being deleted by the hosting platform.
+
+**Do not host funded/live user wallets on a free Render Web Service or a free Koyeb instance using this local SQLite configuration.** Render Free Web Services have an ephemeral filesystem and lose SQLite files on restart, redeploy, or scale-down; Free Render Web Services do not support persistent disks. Koyeb Free Instances cannot attach persistent volumes. A lost SQLite file means the bot loses its encrypted private-key records, even if the Fernet key still exists.
+
+Safe current options:
+- Run locally on a computer with reliable storage and keep encrypted backups of both the SQLite database and Fernet key.
+- Use a hosting plan that provides a durable mounted disk for the SQLite database, with secure backups.
+- Before using an ephemeral free host for live users, implement and test a durable external database (for example PostgreSQL) for encrypted keys, users, trades, and fee ledger. This repository currently does not have a production-tested PostgreSQL wallet-vault adapter.
+
+Do not treat UptimeRobot pings as storage durability. Keeping a free instance awake does not turn its filesystem into persistent storage.
+
 ## Windows setup
 
 Requirements: Python 3.11+, a Telegram bot token, a Helius API key, a Solana treasury address, and a persistent local database folder.
