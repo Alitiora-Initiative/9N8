@@ -263,7 +263,7 @@ def create_webapp(
             await db.update_settings(telegram_id, {"enabled": False})
             job = await db.enqueue_job(
                 telegram_id, "withdraw_all", {"destination": destination},
-                f"webapp:withdraw:{telegram_id}:{await db.get_wallet_address(telegram_id)}",
+                f"webapp:withdraw:{telegram_id}:{await db.get_wallet_address(telegram_id)}:{await wallet.balance(telegram_id)}:{destination}",
             )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Withdrawal queued. The bot will send its result in Telegram."}
         except Exception as exc:
@@ -277,6 +277,8 @@ def create_webapp(
         telegram_id = await authorize_header(x_telegram_init_data)
         if not action.confirm:
             raise HTTPException(status_code=400, detail="Explicit confirmation is required.")
+        if await db.active_positions(telegram_id):
+            raise HTTPException(status_code=409, detail="Close all open positions before rotating the wallet.")
         try:
             destination = str(Pubkey.from_string(action.destination or ""))
             if engine is not None:
