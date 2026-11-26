@@ -123,6 +123,22 @@ button:disabled{opacity:.55;cursor:wait}
           <div><label for="okxPassphrase">OKX API passphrase</label><input id="okxPassphrase" type="password" maxlength="256" autocomplete="off"></div>
           <div><label for="okxRegion">OKX account region</label><select id="okxRegion"><option value="global">Global · openapi.okx.com</option><option value="us">US / Australia · us.okx.com</option><option value="eea">European Economic Area · eea.okx.com</option></select></div>
         </div>
+        <div class="grid hidden" id="bybitRegionFields">
+          <div>
+            <label for="bybitRegion">Bybit account region</label>
+            <select id="bybitRegion">
+              <option value="global">Global · api.bybit.com</option>
+              <option value="eea">European Economic Area · api.bybit.eu</option>
+              <option value="uae">United Arab Emirates · api.bybit.ae</option>
+              <option value="turkey">Turkey · api.bybit.tr</option>
+              <option value="kazakhstan">Kazakhstan · api.bybit.kz</option>
+              <option value="georgia">Georgia · api.bybitgeorgia.ge</option>
+              <option value="indonesia">Indonesia · api.bybit.id</option>
+              <option value="hongkong">Hong Kong · api.spark-fintech.com</option>
+              <option value="japan">Japan · api.manepa.jp</option>
+            </select>
+          </div>
+        </div>
         <button id="saveExchange" type="submit">🔐 Verify exchange LIVE key & save securely</button>
         <div class="status" id="exchangeStatus" role="status"></div>
         <div class="divider"></div>
