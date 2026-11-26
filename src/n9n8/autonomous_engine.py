@@ -351,7 +351,11 @@ class AutonomousEngine:
         )
         # Read transaction metadata first: confirmed account indexing can lag the
         # successful swap by a few RPC updates.
-        tx_data = await self.helius.transaction(result.signature)
+        try:
+            tx_data = await self.helius.transaction(result.signature)
+        except Exception:
+            tx_data = None
+            logger.warning("Could not fetch confirmed transaction metadata for %s", result.signature)
         tx_meta = (tx_data or {}).get("meta") or {}
         network_fee = int(tx_meta.get("fee") or 5000)
         wallet_address = str(wallet_key.pubkey())
