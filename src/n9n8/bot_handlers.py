@@ -1872,7 +1872,7 @@ def _validated_setting(field: str, raw: str):
         if value != value.to_integral_value():
             raise ValueError("This setting must be a whole number.")
         return int(value)
-    return str(value.normalize())
+    return format(value.normalize(), "f")
 
 
 @router.message(ParameterFlow.value)
