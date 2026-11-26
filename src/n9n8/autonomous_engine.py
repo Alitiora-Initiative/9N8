@@ -50,12 +50,14 @@ class AutonomousEngine:
         security: TokenSecurity,
         notify: Notify,
         telemetry: Callable[[int, dict], Awaitable[None]] | None = None,
+        paper_engine: Any | None = None,
     ):
         self.settings = settings
         self.db, self.helius, self.wallet = db, helius, wallet
         self.oracle, self.executor = oracle, executor
         self.sniper, self.security, self.notify = sniper, security, notify
         self.telemetry = telemetry
+        self.paper_engine = paper_engine
         self._scanner_task: asyncio.Task | None = None
         self._position_tasks: dict[int, asyncio.Task] = {}
         self._wallet_watch_tasks: dict[int, asyncio.Task] = {}
@@ -68,53 +70,127 @@ class AutonomousEngine:
 
     @property
     def live_enabled(self) -> bool:
-        return self.settings.trading_mode == "live" and self.settings.live_trading_enabled
+        # This is the operator-wide kill switch. Per-user live consent is stored
+        # separately and checked for every candidate.
+        return bool(self.settings.live_trading_enabled)
 
-    async def start_user(self, telegram_id: int) -> str:
-        await self.db.ensure_user(telegram_id)
+    async def start_paper_user(self, telegram_id: int) -> dict[str, Any]:
+        if self.paper_engine is None:
+            raise ExecutionError("Paper trading engine is not configured.")
+        account = await self.paper_engine.start_user(telegram_id)
+        self._enabled_users.add(int(telegram_id))
+        await self._ensure_scanner()
+        await self.db.security_event(telegram_id, "paper_engine_started", "Independent virtual account started; no wallet signer is used.")
+        return account
+
+    async def stop_paper_user(self, telegram_id: int) -> None:
+        if self.paper_engine is None:
+            raise ExecutionError("Paper trading engine is not configured.")
+        await self.paper_engine.stop_user(telegram_id)
+        if not await self.db.mode_enabled(telegram_id, "live"):
+            self._enabled_users.discard(int(telegram_id))
+        await self.db.security_event(telegram_id, "paper_engine_stopped", "New virtual entries disabled; virtual positions remain monitored.")
+        await self._stop_scanner_if_idle()
+
+    async def live_readiness(self, telegram_id: int) -> dict[str, Any]:
         user = await self.db.get_user(telegram_id)
-        if not user or not user.get("solana_address"):
-            raise WalletError("Create or import a Solana wallet before executing the bot.")
-        if self.settings.trading_mode == "live":
-            if not self.settings.live_trading_enabled:
-                raise ExecutionError("Live execution is locked by LIVE_TRADING_ENABLED.")
-            if not user.get("activation_paid"):
-                raise ExecutionError("The $1 activation fee has not been confirmed.")
-        await self.db.update_settings(telegram_id, {"enabled": True})
+        checks: dict[str, Any] = {
+            "operator_live_switch": self.live_enabled,
+            "wallet_connected": bool(user and user.get("solana_address")),
+            "activation_confirmed": bool(user and user.get("activation_paid")),
+            "paper_days": 0,
+            "wallet_balance_sol": "0",
+            "wallet_balance_usd": "0",
+            "minimum_wallet_usd": "10",
+            "ready": False,
+            "blockers": [],
+        }
+        if not self.live_enabled:
+            checks["blockers"].append("The operator has not enabled LIVE_TRADING_ENABLED.")
+        if not checks["wallet_connected"]:
+            checks["blockers"].append("Create or import a Solana trading wallet.")
+        if not checks["activation_confirmed"]:
+            checks["blockers"].append("Complete the account activation check.")
+        if self.paper_engine is None:
+            checks["blockers"].append("The separate paper engine is unavailable.")
+        else:
+            checks["paper_days"] = await self.paper_engine.store.active_days(telegram_id)
+            if checks["paper_days"] < 7:
+                checks["blockers"].append(
+                    f"Complete paper practice on at least 7 different UTC days ({checks['paper_days']}/7 recorded)."
+                )
+        if checks["wallet_connected"]:
+            try:
+                lamports = await self.wallet.balance(telegram_id)
+                price = await self.oracle.sol_usd()
+                checks["wallet_balance_sol"] = str(from_lamports(lamports))
+                value = from_lamports(lamports) * price
+                checks["wallet_balance_usd"] = str(value.quantize(Decimal("0.01")))
+                if value < Decimal("10"):
+                    checks["blockers"].append("The connected Solana wallet must hold at least $10 of SOL.")
+            except Exception as exc:
+                checks["blockers"].append("Wallet balance could not be verified: " + type(exc).__name__)
+        checks["ready"] = not checks["blockers"]
+        return checks
+
+    async def start_live_user(self, telegram_id: int) -> dict[str, Any]:
+        await self.db.ensure_user(telegram_id)
+        readiness = await self.live_readiness(telegram_id)
+        if not readiness["ready"]:
+            raise ExecutionError("LIVE MODE NOT READY: " + " ".join(readiness["blockers"]))
+        await self.db.update_settings(telegram_id, {
+            "live_enabled": True,
+            "enabled": True,
+        })
         self._enabled_users.add(int(telegram_id))
         balance = await self.wallet.balance(telegram_id)
         await self.db.start_daily_risk(telegram_id, utc_day(), balance)
         await self.watch_wallet(telegram_id)
         await self._ensure_scanner()
-        # Resume monitoring previously stored positions after a process restart.
         for position in await self.db.active_positions(telegram_id):
             position_id = int(position["id"])
             if position_id not in self._position_tasks or self._position_tasks[position_id].done():
                 self._position_tasks[position_id] = asyncio.create_task(
-                    self._monitor_position(position_id), name=f"9n8-position-{position_id}"
+                    self._monitor_position(position_id), name=f"9n8-live-position-{position_id}"
                 )
-        await self.db.security_event(telegram_id, "engine_started", self.settings.trading_mode)
-        return "LIVE autonomous execution" if self.live_enabled else "PAPER detection only (no simulated fills)"
-
-    async def stop_user(self, telegram_id: int) -> None:
-        await self.db.update_settings(telegram_id, {"enabled": False})
-        self._enabled_users.discard(int(telegram_id))
         await self.db.security_event(
-            telegram_id, "engine_stopped",
-            "New entries disabled; open position monitors remain active.",
+            telegram_id, "live_engine_armed",
+            "User confirmed live mode after global kill switch, wallet, activation, $10 balance and seven paper days passed.",
+        )
+        return readiness
+
+    async def stop_live_user(self, telegram_id: int) -> None:
+        await self.db.update_settings(telegram_id, {"live_enabled": False, "enabled": False})
+        if self.paper_engine is None or not await self.paper_engine.store.mode_enabled(telegram_id, "paper"):
+            self._enabled_users.discard(int(telegram_id))
+        await self.db.security_event(
+            telegram_id, "live_engine_stopped",
+            "New live entries disabled; confirmed on-chain positions remain under exit monitoring.",
         )
         await self.notify(
             telegram_id,
-            "9N8 paused. New entries are disabled; existing positions remain under exit monitoring.",
+            "LIVE SNIPER PAUSED. No new live entries will be opened. Existing on-chain positions remain under exit monitoring.",
         )
-        if not self._enabled_users and self._scanner_task is not None:
-            await self.sniper.stop()
-            scanner = self._scanner_task
-            self._scanner_task = None
-            if not scanner.done():
-                scanner.cancel()
-                await asyncio.gather(scanner, return_exceptions=True)
+        await self._stop_scanner_if_idle()
 
+    async def start_user(self, telegram_id: int) -> str:
+        # Backwards-compatible alias: legacy Execute Bot now means the explicit
+        # live path, never the paper practice engine.
+        await self.start_live_user(telegram_id)
+        return "LIVE Solana sniper armed. Paper account remains separate."
+
+    async def stop_user(self, telegram_id: int) -> None:
+        await self.stop_live_user(telegram_id)
+
+    async def _stop_scanner_if_idle(self) -> None:
+        if self._enabled_users or self._scanner_task is None:
+            return
+        await self.sniper.stop()
+        scanner = self._scanner_task
+        self._scanner_task = None
+        if not scanner.done():
+            scanner.cancel()
+            await asyncio.gather(scanner, return_exceptions=True)
 
     async def watch_wallet(self, telegram_id: int) -> None:
         """Start one Helius accountSubscribe listener to push SOL deposit alerts."""
@@ -202,46 +278,33 @@ class AutonomousEngine:
         if self._stopping or not self._enabled_users:
             return
         async with self._candidate_lock:
-            users = await self.db.all_users_with_wallets()
+            users = await self.paper_engine.store.users() if self.paper_engine is not None else await self.db.all_users_with_wallets()
             for user in users:
                 telegram_id = int(user["telegram_id"])
-                config = await self.db.get_settings(telegram_id)
-                if not config.get("enabled"):
-                    continue
-                selected = str(config.get("launchpad", "both")).lower()
                 source = candidate.launchpad.lower()
-                if selected != "both" and selected != source:
-                    continue
-                if not self.live_enabled:
-                    key = (telegram_id, candidate.mint)
-                    if key not in self._paper_notified:
-                        self._paper_notified.add(key)
-                        if len(self._paper_notified) > 10000:
-                            self._paper_notified.clear()
-                            self._paper_notified.add(key)
-                        await self.notify(
-                            telegram_id,
-                            f"LAUNCH DETECTED · {candidate.launchpad}\\n"
-                            f"Mint: {candidate.mint}\\nSlot: {candidate.slot or 'unknown'}\\n"
-                            "PAPER MODE: detected only. No order or simulated fill was created.",
-                        )
-                    if self.telemetry:
-                        await self.telemetry(telegram_id, {
-                            "type": "launch_detected", "launchpad": candidate.launchpad,
-                            "mint": candidate.mint, "signature": candidate.signature,
-                            "slot": candidate.slot, "mode": "paper",
-                            "curve_progress_pct": str(candidate.bonding_curve.progress_pct)
-                                if candidate.bonding_curve else None,
-                            "curve_complete": candidate.bonding_curve.complete
-                                if candidate.bonding_curve else None,
-                        })
-                    continue
                 try:
-                    await self._consider_entry(telegram_id, candidate, config)
+                    # Paper and live are separate account modes with separate settings,
+                    # balances, positions and entry gates. They can both observe one event.
+                    if self.paper_engine is not None and await self.paper_engine.store.mode_enabled(telegram_id, "paper"):
+                        paper_config = await self.paper_engine.store.settings(telegram_id, "paper")
+                        paper_source = str(paper_config.get("launchpad", "both")).lower()
+                        if paper_source in {"both", source}:
+                            await self.paper_engine.on_candidate(telegram_id, candidate)
+
+                    if not self.live_enabled or not await self.db.mode_enabled(telegram_id, "live"):
+                        continue
+                    user_row = await self.db.get_user(telegram_id)
+                    if not user_row or not user_row.get("solana_address"):
+                        continue
+                    live_config = await self.db.get_settings(telegram_id)
+                    live_source = str(live_config.get("launchpad", "both")).lower()
+                    if live_source not in {"both", source}:
+                        continue
+                    await self._consider_entry(telegram_id, candidate, live_config)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.exception("Entry evaluation failed for Telegram account %s", telegram_id)
+                    logger.exception("Candidate evaluation failed for Telegram account %s", telegram_id)
                     await self.notify(
                         telegram_id,
                         f"9N8 skipped {candidate.mint[:8]}…: {type(exc).__name__}: {str(exc)[:180]}",
