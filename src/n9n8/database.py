@@ -254,6 +254,50 @@ class Database:
             )
             await db.commit()
 
+
+    async def enabled_users(self) -> list[int]:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT telegram_id FROM users WHERE enabled=1 AND solana_address IS NOT NULL")
+            return [int(row[0]) for row in await cur.fetchall()]
+
+    async def count_positions_since(self, telegram_id: int, since_iso: str) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT COUNT(*) FROM positions WHERE telegram_id=? AND opened_at>=?",
+                (telegram_id, since_iso),
+            )
+            row = await cur.fetchone()
+            return int(row[0] if row else 0)
+
+    async def has_open_mint(self, telegram_id: int, mint: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT 1 FROM positions WHERE telegram_id=? AND mint=? AND status='open' LIMIT 1",
+                (telegram_id, mint),
+            )
+            return await cur.fetchone() is not None
+
+    async def get_position(self, position_id: int, telegram_id: int | None = None) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            if telegram_id is None:
+                cur = await db.execute("SELECT * FROM positions WHERE id=?", (position_id,))
+            else:
+                cur = await db.execute(
+                    "SELECT * FROM positions WHERE id=? AND telegram_id=?",
+                    (position_id, telegram_id),
+                )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def all_users_with_wallets(self) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT telegram_id, solana_address, activation_paid, enabled FROM users WHERE solana_address IS NOT NULL"
+            )
+            return [dict(row) for row in await cur.fetchall()]
+
     async def delete_wallet_secret(self, telegram_id: int) -> None:
         async with self._lock, aiosqlite.connect(self.path) as db:
             await db.execute("PRAGMA secure_delete=ON")
