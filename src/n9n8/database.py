@@ -114,6 +114,8 @@ class Database:
                     buy_signature TEXT,
                     sell_signature TEXT,
                     peak_value_lamports INTEGER NOT NULL DEFAULT 0,
+                    last_value_lamports INTEGER NOT NULL DEFAULT 0,
+                    last_pnl_pct TEXT NOT NULL DEFAULT '0',
                     tp1_done INTEGER NOT NULL DEFAULT 0,
                     tp2_done INTEGER NOT NULL DEFAULT 0
                 );
@@ -212,6 +214,8 @@ class Database:
             }
             for column, definition in (
                 ("peak_value_lamports", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_value_lamports", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_pnl_pct", "TEXT NOT NULL DEFAULT '0'"),
                 ("tp1_done", "INTEGER NOT NULL DEFAULT 0"),
                 ("tp2_done", "INTEGER NOT NULL DEFAULT 0"),
             ):
