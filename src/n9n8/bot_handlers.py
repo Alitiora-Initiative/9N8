@@ -1519,7 +1519,7 @@ async def cb_fees(callback: CallbackQuery) -> None:
         "9N8 TREASURY FEES\n\n"
         "Activation: $1.00 once before first live execution\n"
         "Winning trade performance: 0.1% of conservative positive realized-profit estimate\n"
-        "Full SOL withdrawal: $1.00\n"
+        "Selected SOL withdrawal: no platform fee; the real Solana network fee applies\n"
         "Stop & delete / key rotation: $1.00\n"
         "Losing trades: no performance fee\n\n"
         + fee_conversion
