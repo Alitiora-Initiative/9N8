@@ -1139,9 +1139,17 @@ class AutonomousEngine:
         )
         await self.db.record_daily_pnl(telegram_id, utc_day(), net_realized_lamports)
         rent_reclaimed = await self._reclaim_empty_accounts(telegram_id, mint, fully_closed)
+        exit_title = {
+            "take_profit_1": "💰 AUTO TAKE-PROFIT 1 TRIGGERED",
+            "take_profit_2": "🎯 AUTO TAKE-PROFIT 2 TRIGGERED",
+            "trailing_stop": "🛡️ TRAILING STOP TRIGGERED",
+            "hard_stop": "🛑 HARD STOP-LOSS TRIGGERED",
+            "manual_panic_sell": "🚨 PANIC SELL CONFIRMED",
+        }.get(reason, f"EXIT CONFIRMED · {reason.upper()}")
         await self.notify(
             telegram_id,
-            f"EXIT CONFIRMED · {reason.upper()}\n"
+            f"{exit_title}\n"
+            f"Position: #{position_id}\n"
             f"Mint: {mint}\nSold: {sell_amount} raw units\n"
             f"Expected SOL out: {from_lamports(expected_out)}\n"
             f"Observed wallet delta: {from_lamports(actual_wallet_delta)} SOL\n"
