@@ -111,7 +111,7 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📜 Trade History", callback_data="history:show"),
         ],
         [
-            InlineKeyboardButton(text="⚙️ Paper Settings", callback_data="paper:settings"),
+            InlineKeyboardButton(text="⚙️ Live Settings", callback_data="settings:show"),
             InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show"),
         ],
         [
@@ -1743,7 +1743,6 @@ def _validated_setting(field: str, raw: str):
         "moon_bag_pct": (Decimal("0"), Decimal("90")),
         "take_profit_2_pct": (Decimal("1"), Decimal("1000")),
         "take_profit_2_sell_pct": (Decimal("1"), Decimal("90")),
-        "trailing_stop_pct": (Decimal("1"), Decimal("80")),
         "min_liquidity_sol": (Decimal("0.1"), Decimal("100000")),
         "min_lp_locked_pct": (Decimal("50"), Decimal("100")),
         "max_dev_wallet_pct": (Decimal("0.1"), Decimal("100")),
