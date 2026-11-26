@@ -399,13 +399,14 @@ class Database:
         async with self._lock, aiosqlite.connect(self.path) as db:
             await db.execute("PRAGMA secure_delete=ON")
             await db.execute(
-                "UPDATE users SET encrypted_secret=NULL, solana_address=NULL, enabled=0, updated_at=? WHERE telegram_id=?",
+                "UPDATE users SET encrypted_secret=NULL, solana_address=NULL, activation_paid=0, enabled=0, updated_at=? WHERE telegram_id=?",
                 (utc_now(), telegram_id),
             )
             await db.commit()
         # SQLite secure_delete plus WAL checkpoint/VACUUM is best-effort database hygiene,
         # not a promise of forensic erasure on SSD, cloud snapshots, or filesystem backups.
         async with aiosqlite.connect(self.path) as db:
-            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            checkpoint = await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            await checkpoint.fetchall()
+            await checkpoint.close()
             await db.execute("VACUUM")
-            await db.commit()

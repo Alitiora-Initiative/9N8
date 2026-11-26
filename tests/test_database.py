@@ -61,3 +61,19 @@ async def test_fee_receipt_is_idempotency_lookup_and_daily_baseline_can_initiali
     await db.start_daily_risk(22, "2026-11-26", 700_000)
     snapshot = await db.daily_risk_snapshot(22, "2026-11-26")
     assert snapshot["starting_equity_lamports"] == 700_000
+
+
+@pytest.mark.asyncio
+async def test_wallet_retirement_clears_activation_and_key(tmp_path):
+    db = Database(str(tmp_path / "db.sqlite3"), Fernet.generate_key())
+    await db.initialize()
+    await db.ensure_user(77)
+    await db.save_wallet(77, "11111111111111111111111111111111", "secret-material")
+    await db.set_activation_paid(77, True)
+    await db.delete_wallet_secret(77)
+
+    user = await db.get_user(77)
+    assert user["solana_address"] is None
+    assert user["encrypted_secret"] is None
+    assert user["activation_paid"] == 0
+    assert user["enabled"] == 0

@@ -2,11 +2,11 @@
 
 9N8 is a Telegram-first Solana launchpad monitoring and trading application. It combines an aiogram bot, a FastAPI Telegram Mini App, Helius RPC/WebSockets, Pump.fun/Raydium launch detection, Jupiter Swap API v2 routing, Jito bundle submission, encrypted per-user Solana wallets, and a Decimal-based risk/exit engine.
 
-**The current feature branch removes the old OKX spot application.** It is intentionally being developed on `feature/solana-telegram-sniper`; it does not replace `main` until a pull request is reviewed and merged.
+**The OKX application has been removed from `main`.** PR #8 merged the Solana-first bot into the default branch. Follow-up execution hardening is being delivered separately in PR #10.
 
 ## Current implementation status
 
-Implemented in this branch:
+Implemented in `main` and the current follow-up branch:
 
 - Per-Telegram-user Solana Ed25519 wallet generation/import, encrypted-at-rest key storage, balance queries, and 60-second key-message deletion attempt.
 - Aiogram dashboard, parameter FSM, activation/withdrawal/rotation confirmation flows, and status notifications.
@@ -28,7 +28,7 @@ Not yet certified or fully implemented:
 - The Raydium LP-lock parser is deliberately fail-closed, but its RugCheck schema needs live integration tests against representative pools.
 - The requested 250 ms exit quote interval is not used. Quote polling is rate-limited to stay within upstream API quotas; actual decision latency depends on quote provider, RPC, and chain conditions.
 - Profit fee is included in the exit transaction based on a conservative minimum-output estimate; exact finalized net profit reconciliation and ledger settlement still require an additional post-confirmation accounting pass.
-- This branch has not been independently audited, tested with real mainnet funds, or certified for unattended trading. Live mode is disabled by default.
+- The application has not been independently audited, tested with real mainnet funds, or certified for unattended trading. Live mode is disabled by default.
 
 A launch detector finding a token is not proof that it is safe or tradeable. Liquidity can disappear, quotes can become stale, token programs may be unusual, transactions can fail or land late, and slippage/MEV can make outcomes differ from estimates. Never assume a 10% target is guaranteed.
 
@@ -51,6 +51,19 @@ Telegram user
           │                       │
           └──── Solana mainnet ───┘
 ```
+
+## Wallet-data durability warning
+
+The default implementation stores encrypted wallet records in a local SQLite database at `data/9n8-solana.sqlite3`. Encryption does not protect against the database file being deleted by the hosting platform.
+
+**Do not host funded/live user wallets on a free Render Web Service or a free Koyeb instance using this local SQLite configuration.** Render Free Web Services have an ephemeral filesystem and lose SQLite files on restart, redeploy, or scale-down; Free Render Web Services do not support persistent disks. Koyeb Free Instances cannot attach persistent volumes. A lost SQLite file means the bot loses its encrypted private-key records, even if the Fernet key still exists.
+
+Safe current options:
+- Run locally on a computer with reliable storage and keep encrypted backups of both the SQLite database and Fernet key.
+- Use a hosting plan that provides a durable mounted disk for the SQLite database, with secure backups.
+- Before using an ephemeral free host for live users, implement and test a durable external database (for example PostgreSQL) for encrypted keys, users, trades, and fee ledger. This repository currently does not have a production-tested PostgreSQL wallet-vault adapter.
+
+Do not treat UptimeRobot pings as storage durability. Keeping a free instance awake does not turn its filesystem into persistent storage.
 
 ## Windows setup
 
@@ -116,6 +129,9 @@ docker compose logs -f
 ```
 
 SQLite data is stored in the Docker named volume `9n8-data`. Back up this volume securely. The app exposes `/health` on port 8080.
+
+**Persistent storage warning:** SQLite contains encrypted wallet recovery keys and bot state. Many free web-service tiers use ephemeral filesystems or sleep/restart containers; the SQLite database can be lost unless a persistent disk or durable database is attached. Back up the SQLite file and Fernet master key separately before accepting deposits. Do not assume a free instance's local filesystem is persistent.
+
 
 ## Tests
 

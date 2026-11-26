@@ -8,8 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
-from base58 import b58decode
-from solders.address_lookup_table_account import AddressLookupTable, AddressLookupTableAccount
+from solders.address_lookup_table_account import AddressLookupTableAccount
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
@@ -105,7 +104,14 @@ class JupiterJitoExecutor:
         await self.start()
         assert self._session
         payload = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params}
-        url = (base_url or self.settings.jito_base_url) + "/api/v1/bundles"
+        paths = {
+            "sendBundle": "/api/v1/bundles",
+            "getInflightBundleStatuses": "/api/v1/getInflightBundleStatuses",
+            "getBundleStatuses": "/api/v1/getBundleStatuses",
+        }
+        if method not in paths:
+            raise ExecutionError(f"Unsupported Jito method: {method}")
+        url = (base_url or self.settings.jito_base_url) + paths[method]
         try:
             async with self._session.post(url, json=payload) as response:
                 data = await response.json(content_type=None)
@@ -139,7 +145,7 @@ class JupiterJitoExecutor:
         for item in items:
             try:
                 program = Pubkey.from_string(item["programId"])
-                data = b58decode(item["data"])
+                data = base64.b64decode(item["data"], validate=True)
                 accounts = [
                     AccountMeta(
                         Pubkey.from_string(x["pubkey"]),
@@ -153,19 +159,21 @@ class JupiterJitoExecutor:
             result.append(Instruction(program, data, accounts))
         return result
 
-    async def _lookup_tables(self, tables_by_address: dict[str, Any]) -> list[AddressLookupTableAccount]:
+    async def _lookup_tables(
+        self, tables_by_address: dict[str, list[str]] | None
+    ) -> list[AddressLookupTableAccount]:
+        # Jupiter v2 /build returns the loaded lookup-table address lists. Use
+        # that response directly rather than fetching/deserializing a different
+        # on-chain snapshot after the quote was assembled.
         tables: list[AddressLookupTableAccount] = []
-        for address in tables_by_address:
-            info = await self.helius.account_info(address, "base64")
-            if not info:
-                raise ExecutionError(f"Address lookup table {address} could not be loaded.")
+        for address, addresses in (tables_by_address or {}).items():
             try:
-                import base64 as _base64
-                raw = _base64.b64decode(info["data"][0], validate=True)
-                decoded = AddressLookupTable.deserialize(raw)
-                tables.append(AddressLookupTableAccount(Pubkey.from_string(address), list(decoded.addresses)))
+                tables.append(AddressLookupTableAccount(
+                    Pubkey.from_string(address),
+                    [Pubkey.from_string(item) for item in addresses],
+                ))
             except Exception as exc:
-                raise ExecutionError(f"Could not decode lookup table {address}.") from exc
+                raise ExecutionError(f"Jupiter returned an invalid lookup table {address}.") from exc
         return tables
 
     async def _submit_bundle(self, signed_transactions: list[str]) -> str:
@@ -214,9 +222,7 @@ class JupiterJitoExecutor:
             "amount": str(amount_raw),
             "taker": str(wallet.pubkey()),
             "slippageBps": str(slippage_bps),
-            "computeUnitPricePercentile": "veryHigh",
             "forJitoBundle": "true" if use_jito else "false",
-            "maxBytes": "1180",
         })
         expected_out = int(quote.get("outAmount") or 0)
         if expected_out <= 0:
@@ -239,13 +245,14 @@ class JupiterJitoExecutor:
         swap = await self._instructions([swap_item])
         cleanup_item = quote.get("cleanupInstruction")
         cleanup = await self._instructions([cleanup_item]) if cleanup_item else []
-        instructions = compute + setup + other + swap + cleanup
+        instructions = compute + setup + swap
         if treasury_fee_lamports:
             instructions.append(transfer(TransferParams(
                 from_pubkey=wallet.pubkey(),
                 to_pubkey=Pubkey.from_string(self.settings.treasury),
                 lamports=treasury_fee_lamports,
             )))
+        instructions += cleanup + other
         alts = await self._lookup_tables(quote.get("addressesByLookupTableAddress") or {})
         try:
             message = MessageV0.try_compile(wallet.pubkey(), instructions, alts, blockhash)
@@ -314,7 +321,7 @@ class JupiterJitoExecutor:
                 status = str(values[0].get("status", "Pending"))
                 if status in {"Landed", "Failed", "Invalid"}:
                     return status
-            await asyncio.sleep(0.75)
+            await asyncio.sleep(1.05)
         result = await self._jito_rpc("getBundleStatuses", [[bundle_id]])
         values = (result or {}).get("value") or []
         if values:

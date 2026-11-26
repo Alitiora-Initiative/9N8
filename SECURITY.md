@@ -35,7 +35,7 @@
 
 - FastAPI verifies Telegram WebApp `initData` using HMAC-SHA256 and rejects expired sessions.
 - REST requests send the signed payload in the `X-Telegram-Init-Data` header.
-- WebSocket connections send signed `initData` in the connection query string.
+- WebSocket connections send signed `initData` in the first WebSocket frame, not the URL query string.
 - Serve the Mini App only over HTTPS and keep the bot token private.
 
 ## Secret handling and deployment
@@ -44,4 +44,5 @@
 - GitHub Actions Secrets are not automatically available to a Windows process or to a hosted web service. Map secrets explicitly into the runtime that actually starts the bot.
 - Never log Helius credentials, Fernet keys, private keys, signed transactions or Telegram initData.
 - Back up the SQLite volume and encryption key separately, securely. Loss of the encryption key makes existing encrypted private keys unrecoverable.
+- Do not host the encrypted wallet database on an ephemeral filesystem. Use a persistent disk or durable database and verify restore procedures before accepting deposits.
 - Do not enable live mode until tests, mainnet transaction construction, Jito bundle landing, withdrawal recovery and security review are complete.
