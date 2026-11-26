@@ -814,6 +814,10 @@ class AutonomousEngine:
             f"Position: #{position_id}\n"
             f"Spend: {from_lamports(trade_lamports)} SOL\n"
             f"Tokens: {token_amount} raw units\nEntry: {entry_price:.12f} USD\n"
+            f"Safety: mint revoked={risk.mint_authority_disabled}, freeze revoked={risk.freeze_authority_disabled}, "
+            f"LP locked={risk.lp_locked_pct}%, top-10={risk.top10_concentration_pct}%, dev={risk.developer_concentration_pct}%\n"
+            f"Exit rules: TP1 +{config.get('take_profit_pct','100')}% sell 50%; "
+            f"trailing {config.get('trailing_stop_pct','20')}%; hard stop -{config.get('stop_loss_pct','30')}%\n"
             f"Signature: https://solscan.io/tx/{result.signature}\n"
             f"MEV: {'Jito bundle landed' if result.bundle_id else 'RPC confirmed'}",
         )
