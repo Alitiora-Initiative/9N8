@@ -1157,14 +1157,7 @@ async def cb_history_live(callback: CallbackQuery) -> None:
 async def cmd_withdraw(message: Message) -> None:
     if not _is_private(message):
         return
-    await message.answer(
-        "Wallet withdrawals move real SOL only. Virtual Paper funds cannot be withdrawn. "
-        "Close all open real-wallet positions before withdrawing.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Open Wallet Withdrawal",callback_data="wallet:exit")],
-            [InlineKeyboardButton(text="Back",callback_data="home:show")],
-        ]),
-    )
+    await _show_withdraw_options(message, message.from_user.id)
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
@@ -1524,70 +1517,202 @@ async def cb_stop(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "wallet:exit")
 async def cb_wallet_exit(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.answer(
-        "WALLET EXIT\n\n"
-        "Withdraw All sends the remaining SOL, after the $1 platform fee and actual network fee, "
-        "to your external Solana address. Open SPL-token positions must be closed first.\n\n"
-        "Stop & Delete charges a $1 termination fee, pays the remaining SOL to your external "
-        "address, retires the old key and creates a new paused wallet.",
+    await callback.message.edit_text(
+        "REAL WALLET CONTROLS\n\n"
+        "Withdraw a chosen part of your real SOL balance after closing all live positions. "
+        "Paper balances are virtual and cannot be withdrawn.\n\n"
+        "Stop & Delete remains a separate wallet-rotation operation.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Withdraw All", callback_data="wallet:withdraw")],
-            [InlineKeyboardButton(text="Stop & Delete / Rotate Key", callback_data="wallet:wipe")],
+            [InlineKeyboardButton(text="Choose SOL Withdrawal Amount", callback_data="withdraw:menu")],
+            [InlineKeyboardButton(text="Stop & Delete / Rotate Wallet", callback_data="wallet:wipe")],
             [InlineKeyboardButton(text="Back", callback_data="home:show")],
         ]),
     )
 
 
+async def _show_withdraw_options(message: Message, telegram_id: int) -> None:
+    svc = _svc()
+    if await svc.db.active_positions(telegram_id):
+        await message.answer(
+            "WITHDRAWAL PAUSED\nClose all live token positions first. Paper positions do not affect real wallet withdrawals.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Open Live Positions", callback_data="positions:live")],
+                [InlineKeyboardButton(text="Back", callback_data="home:show")],
+            ]),
+        )
+        return
+    balance = await svc.wallet.balance(telegram_id)
+    # Keep 0.00002 SOL aside until the exact network fee is quoted for the signed transfer.
+    withdrawable = max(0, balance - 20_000)
+    if withdrawable <= 0:
+        await message.answer("No SOL is available to withdraw after keeping a network-fee reserve.")
+        return
+    amount_text = format_sol(withdrawable)
+    await message.answer(
+        "💸 WITHDRAW LIVE SOL\n\n"
+        f"Wallet balance: {format_sol(balance)} SOL\n"
+        f"Maximum selectable payout: {amount_text} SOL\n"
+        "A network-fee reserve is kept. No platform fee is added to these withdrawals.\n\n"
+        "Paper funds are virtual and cannot be withdrawn.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Withdraw 25%", callback_data="withdraw:percent:25"),
+             InlineKeyboardButton(text="Withdraw 50%", callback_data="withdraw:percent:50")],
+            [InlineKeyboardButton(text="Withdraw 100%", callback_data="withdraw:percent:100"),
+             InlineKeyboardButton(text="Custom SOL", callback_data="withdraw:custom")],
+            [InlineKeyboardButton(text="Cancel", callback_data="home:show")],
+        ]),
+    )
+
+
+@router.callback_query(F.data == "withdraw:menu")
 @router.callback_query(F.data == "wallet:withdraw")
-async def cb_withdraw(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_withdraw_menu(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    await state.set_state(WithdrawFlow.destination)
-    await callback.message.answer("Enter your external Solana payout address. Check it carefully.")
+    await state.clear()
+    await _show_withdraw_options(callback.message, callback.from_user.id)
+
+
+@router.callback_query(F.data.startswith("withdraw:percent:"))
+async def cb_withdraw_percent(callback: CallbackQuery, state: FSMContext) -> None:
+    svc = _svc()
+    await callback.answer()
+    try:
+        percent = int(callback.data.rsplit(":", 1)[-1])
+        if percent not in {25, 50, 100}:
+            raise ValueError("Select 25%, 50% or 100%.")
+        if await svc.db.active_positions(callback.from_user.id):
+            raise ValueError("Close all live positions before withdrawing.")
+        balance = await svc.wallet.balance(callback.from_user.id)
+        available = max(0, balance - 20_000)
+        amount = (available * percent) // 100
+        if amount <= 0:
+            raise ValueError("There is no withdrawable SOL after the network-fee reserve.")
+        await state.clear()
+        await state.update_data(amount_lamports=amount, submitting=False)
+        await state.set_state(WithdrawFlow.destination)
+        await callback.message.answer(
+            f"Selected payout: {format_sol(amount)} SOL ({percent}% of available wallet balance).\n"
+            "Now paste your destination Solana wallet address."
+        )
+    except Exception as exc:
+        await callback.message.answer(f"Withdrawal amount not available: {str(exc)[:200]}")
+
+
+@router.callback_query(F.data == "withdraw:custom")
+async def cb_withdraw_custom(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    await state.set_state(WithdrawFlow.amount)
+    await callback.message.answer("Enter the exact SOL amount to withdraw, for example 0.025. The bot will check the current balance and fee reserve.")
+
+
+@router.message(WithdrawFlow.amount)
+async def handle_withdraw_custom_amount(message: Message, state: FSMContext) -> None:
+    svc = _svc()
+    try:
+        amount_value = Decimal((message.text or "").strip())
+        if not amount_value.is_finite() or amount_value <= 0:
+            raise ValueError("Enter a positive SOL amount.")
+        amount = to_lamports(str(amount_value))
+        if await svc.db.active_positions(message.from_user.id):
+            raise ValueError("Close all live positions before withdrawing.")
+        balance = await svc.wallet.balance(message.from_user.id)
+        maximum = max(0, balance - 20_000)
+        if amount > maximum:
+            raise ValueError(f"Maximum available right now is {format_sol(maximum)} SOL.")
+        await state.update_data(amount_lamports=amount, submitting=False)
+        await state.set_state(WithdrawFlow.destination)
+        await message.answer(
+            f"Selected payout: {format_sol(amount)} SOL.\n"
+            "Paste your destination Solana wallet address."
+        )
+    except Exception as exc:
+        await message.answer(f"Custom withdrawal amount rejected: {str(exc)[:200]}")
 
 
 @router.message(WithdrawFlow.destination)
 async def handle_withdraw_destination(message: Message, state: FSMContext) -> None:
+    svc = _svc()
     try:
         destination = str(Pubkey.from_string((message.text or "").strip()))
     except Exception:
         await message.answer("Invalid Solana address. No transfer was made. Send a valid base58 address.")
         return
-    await state.update_data(destination=destination)
+    data = await state.get_data()
+    amount = int(data.get("amount_lamports") or 0)
+    if amount <= 0:
+        await message.answer("Withdrawal amount expired. Start again with /withdraw.")
+        await state.clear()
+        return
+    if await svc.db.active_positions(message.from_user.id):
+        await message.answer("Close all live positions before withdrawing. No transfer was made.")
+        await state.clear()
+        return
+    balance = await svc.wallet.balance(message.from_user.id)
+    maximum = max(0, balance - 20_000)
+    if amount > maximum:
+        await message.answer("Your wallet balance changed. Start /withdraw again to refresh the available amount.")
+        await state.clear()
+        return
+    await state.update_data(destination=destination, submitting=False)
     await state.set_state(None)
     await message.answer(
-        f"Confirm full SOL withdrawal to:\n{destination}\n\n"
-        "This charges the $1 platform fee plus the actual Solana transaction fee.",
+        "CONFIRM REAL SOL WITHDRAWAL\n\n"
+        f"Destination:\n{destination}\n\n"
+        f"Payout amount: {format_sol(amount)} SOL\n"
+        "The network fee is quoted again before signing. Paper funds are never used.\n"
+        "This transaction is submitted only after you press Confirm.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Confirm Withdraw All", callback_data="wallet:withdraw:confirm"),
+            InlineKeyboardButton(text="Confirm SOL Withdrawal", callback_data="withdraw:confirm"),
             InlineKeyboardButton(text="Cancel", callback_data="home:show"),
         ]]),
     )
 
 
-@router.callback_query(F.data == "wallet:withdraw:confirm")
+@router.callback_query(F.data == "withdraw:confirm")
 async def cb_withdraw_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     svc = _svc()
-    await callback.answer()
-    data = await state.get_data()
-    destination = data.get("destination")
-    if not destination:
-        await callback.message.answer("Withdrawal address expired. Start again.")
-        return
-    if await svc.db.active_positions(callback.from_user.id):
-        await callback.message.answer("Close all open positions before withdrawing the wallet balance.")
-        return
-    try:
-        await svc.engine.stop_user(callback.from_user.id)
-        amount, signature = await svc.wallet.withdraw_all(callback.from_user.id, destination)
-        await svc.db.set_payout_address(callback.from_user.id, destination)
-        await callback.message.answer(
-            f"Withdrawal confirmed.\nSent: {format_sol(amount)} SOL\n"
-            f"Solscan: https://solscan.io/tx/{signature}"
-        )
-    except Exception as exc:
-        await callback.message.answer(f"Withdrawal was not completed: {exc}")
-    finally:
-        await state.clear()
+    telegram_id = callback.from_user.id
+    lock = _withdraw_locks.setdefault(telegram_id, asyncio.Lock())
+    await callback.answer("Checking balance and network fee…")
+    async with lock:
+        data = await state.get_data()
+        amount = int(data.get("amount_lamports") or 0)
+        destination = str(data.get("destination") or "")
+        if not amount or not destination or data.get("submitting"):
+            await callback.message.answer("This withdrawal confirmation is expired or already being processed. Use /withdraw to start again.")
+            return
+        await state.update_data(submitting=True)
+        try:
+            if await svc.db.active_positions(telegram_id):
+                raise ValueError("Close all live positions before withdrawing.")
+            balance = await svc.wallet.balance(telegram_id)
+            if amount > max(0, balance - 10_000):
+                raise ValueError("The real wallet balance changed. No transfer was made; refresh /withdraw.")
+            # Stop new live entries but leave existing exits monitored.
+            await svc.engine.stop_live_user(telegram_id)
+            sent, network_fee, signature = await svc.wallet.withdraw_amount(telegram_id, destination, amount)
+            await callback.message.answer(
+                "✅ WITHDRAWAL CONFIRMED\n"
+                f"Sent: {format_sol(sent)} SOL\n"
+                f"Network fee: {format_sol(network_fee)} SOL\n"
+                f"Destination: {destination}\n"
+                f"Solscan: https://solscan.io/tx/{signature}"
+            )
+        except Exception as exc:
+            await callback.message.answer(
+                "WITHDRAWAL NOT COMPLETED / CHECK STATUS\n"
+                f"{type(exc).__name__}: {str(exc)[:500]}\n\n"
+                "Do not repeat a withdrawal when a transaction signature is shown with an unknown outcome."
+            )
+        finally:
+            await state.clear()
+
+
+@router.callback_query(F.data == "wallet:withdraw:confirm")
+async def cb_legacy_withdraw_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer("This older withdrawal preview has expired. Use /withdraw to choose an amount.", show_alert=True)
+    await state.clear()
 
 
 @router.callback_query(F.data == "wallet:wipe")
