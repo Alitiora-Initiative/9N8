@@ -118,6 +118,9 @@ def create_webapp(
         try:
             parsed = verify_telegram_init_data(init_data or "", settings.telegram_bot_token)
             telegram_id = int(parsed["id"])
+            existing = await db.get_user(telegram_id)
+            if not existing and await db.user_count() >= settings.max_users:
+                raise HTTPException(status_code=429, detail="9N8 onboarding capacity is currently full.")
             await db.ensure_user(telegram_id)
             return telegram_id
         except ValueError as exc:
@@ -267,6 +270,10 @@ def create_webapp(
             init_data = str(payload.get("initData") or "")
             parsed = verify_telegram_init_data(init_data, settings.telegram_bot_token)
             telegram_id = int(parsed["id"])
+            existing = await db.get_user(telegram_id)
+            if not existing and await db.user_count() >= settings.max_users:
+                await websocket.close(code=4429)
+                return
             await db.ensure_user(telegram_id)
             queue = await telemetry.subscribe(telegram_id)
             await websocket.send_json({"type": "connected", "telegram_id": telegram_id})
