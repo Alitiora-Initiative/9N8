@@ -283,6 +283,21 @@
         : "Panic sell submitted; awaiting confirmation");
     } catch (error) { toast(error.message); }
   });
+  // Telegram menu deep-links scroll to the matching control panel section.
+  const panelTargets = {
+    paper: "paperModeCard",
+    live: "liveModeCard",
+    positions: "paperPositionsSection",
+    settings: "paperSettingsSection",
+    safety: "safetyGatekeeperSection"
+  };
+  const panelTarget = panelTargets[String(location.hash || "").replace(/^#/, "")];
+  if (panelTarget) {
+    window.setTimeout(() => {
+      const target = $(panelTarget);
+      if (target) target.scrollIntoView({behavior:"smooth", block:"start"});
+    }, 300);
+  }
   if (tg) {
     refresh();
     window.setInterval(refresh, 15000);
