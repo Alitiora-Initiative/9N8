@@ -60,6 +60,7 @@ class AutonomousEngine:
         self.paper_engine = paper_engine
         self._scanner_task: asyncio.Task | None = None
         self._position_tasks: dict[int, asyncio.Task] = {}
+        self._exit_locks: dict[int, asyncio.Lock] = {}
         self._wallet_watch_tasks: dict[int, asyncio.Task] = {}
         self._stopping = False
         self._quote_lock = asyncio.Lock()
@@ -440,7 +441,12 @@ class AutonomousEngine:
             metadata=metadata or {},
         )
 
-    async def _consider_entry(self, telegram_id: int, candidate: LaunchCandidate, config: dict) -> None:
+    async def _consider_entry(
+        self, telegram_id: int, candidate: LaunchCandidate, config: dict,
+        buy_amount_override_sol: str | None = None,
+    ) -> None:
+        if not self.live_enabled or not bool(config.get("live_enabled", config.get("enabled", False))):
+            return
         user = await self.db.get_user(telegram_id)
         if not user or not user.get("activation_paid"):
             return
@@ -461,10 +467,18 @@ class AutonomousEngine:
             estimate = max(0, baseline - realized_loss)
             dd = drawdown_pct(estimate, baseline)
             if dd >= max_drawdown:
-                await self.db.update_settings(telegram_id, {"enabled": False})
+                await self.db.update_settings(
+                    telegram_id,
+                    {"enabled": False, "live_enabled": False},
+                )
+                await self.db.security_event(
+                    telegram_id,
+                    "live_daily_circuit_breaker",
+                    f"Realized drawdown {dd:.2f}% reached the {max_drawdown}% daily limit. New live entries were paused.",
+                )
                 await self.notify(
                     telegram_id,
-                    f"DAILY CIRCUIT BREAKER\nRealized drawdown {dd:.2f}% reached the {max_drawdown}% limit. New entries paused.",
+                    f"DAILY CIRCUIT BREAKER\nRealized drawdown {dd:.2f}% reached the {max_drawdown}% limit. New live entries are OFF; existing positions remain under exit monitoring.",
                 )
                 return
 
@@ -512,6 +526,11 @@ class AutonomousEngine:
             excluded_token_accounts=excluded_token_accounts,
         )
         if not risk.passed:
+            await self.db.security_event(
+                telegram_id,
+                "live_entry_rejected",
+                candidate.mint + ": " + "; ".join(risk.reasons[:8]),
+            )
             await self.notify(
                 telegram_id,
                 f"SECURITY FILTER REJECTED {candidate.mint[:8]}…\n"
@@ -519,7 +538,11 @@ class AutonomousEngine:
             )
             return
 
-        amount_sol = dec(config.get("buy_amount_sol", self.settings.default_buy_sol))
+        amount_sol = dec(
+            buy_amount_override_sol
+            if buy_amount_override_sol is not None
+            else config.get("buy_amount_sol", self.settings.default_buy_sol)
+        )
         if amount_sol <= 0 or amount_sol > dec(self.settings.max_position_sol):
             await self.notify(telegram_id, "Entry blocked: buy amount exceeds the hard position cap.")
             return
@@ -546,8 +569,14 @@ class AutonomousEngine:
             )
             return
 
+        # Re-read the operator/user switches immediately before building the
+        # signed transaction. The scanner and manual Telegram paths share this gate.
+        latest_config = await self.db.get_settings(telegram_id)
+        if not self.live_enabled or not bool(latest_config.get("live_enabled", latest_config.get("enabled", False))):
+            raise ExecutionError("Live mode was switched off before the buy could be signed.")
+        config = latest_config
         wallet_key = await self.wallet.keypair_for(telegram_id)
-        slippage_bps = int(dec(config.get("slippage_pct", "5")) * Decimal(100))
+        slippage_bps = int(dec(config.get("buy_slippage_pct", config.get("slippage_pct", "15"))) * Decimal(100))
         result = await self.executor.build_swap(
             wallet=wallet_key,
             input_mint=SOL_MINT,
@@ -680,8 +709,14 @@ class AutonomousEngine:
         await self.notify(
             telegram_id,
             f"ENTRY CONFIRMED · {candidate.launchpad}\n"
-            f"Mint: {candidate.mint}\nSpend: {from_lamports(trade_lamports)} SOL\n"
+            f"Mint: {candidate.mint}\n"
+            f"Position: #{position_id}\n"
+            f"Spend: {from_lamports(trade_lamports)} SOL\n"
             f"Tokens: {token_amount} raw units\nEntry: {entry_price:.12f} USD\n"
+            f"Safety: mint revoked={risk.mint_authority_disabled}, freeze revoked={risk.freeze_authority_disabled}, "
+            f"LP locked={risk.lp_locked_pct}%, top-10={risk.top10_concentration_pct}%, dev={risk.developer_concentration_pct}%\n"
+            f"Exit rules: TP1 +{config.get('take_profit_pct','100')}% sell 50%; "
+            f"trailing {config.get('trailing_stop_pct','20')}%; hard stop -{config.get('stop_loss_pct','30')}%\n"
             f"Signature: https://solscan.io/tx/{result.signature}\n"
             f"MEV: {'Jito bundle landed' if result.bundle_id else 'RPC confirmed'}",
         )
@@ -826,6 +861,19 @@ class AutonomousEngine:
         self, position_id: int, reason: str, actual_amount: int,
         originally_recorded_amount: int, config: dict,
     ) -> None:
+        lock = self._exit_locks.setdefault(int(position_id), asyncio.Lock())
+        async with lock:
+            position = await self.db.get_position(position_id)
+            if not position or position.get("status") != "open":
+                return
+            await self._execute_exit_once(
+                position_id, reason, actual_amount, originally_recorded_amount, config
+            )
+
+    async def _execute_exit_once(
+        self, position_id: int, reason: str, actual_amount: int,
+        originally_recorded_amount: int, config: dict,
+    ) -> None:
         position = await self.db.get_position(position_id)
         if not position:
             return
@@ -836,7 +884,7 @@ class AutonomousEngine:
         if current_balance <= 0:
             await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
             return
-        partial = reason in {"take_profit_1", "take_profit_2"}
+        partial = reason in {"take_profit_1", "take_profit_2", "manual_sell_50"}
         if reason == "take_profit_1":
             # First target: return half the position and keep the other half running.
             sell_amount, _retained = moon_bag_split(
@@ -846,6 +894,8 @@ class AutonomousEngine:
             # Second target: sell 25% of the remaining bag.
             sell_fraction = dec(config.get("take_profit_2_sell_pct", "25")) / Decimal(100)
             sell_amount = int((Decimal(current_balance) * sell_fraction).to_integral_value(rounding="ROUND_DOWN"))
+        elif reason == "manual_sell_50":
+            sell_amount = max(1, current_balance // 2)
         else:
             sell_amount = current_balance
         if sell_amount <= 0:
@@ -873,7 +923,7 @@ class AutonomousEngine:
             input_mint=mint,
             output_mint=SOL_MINT,
             amount_raw=sell_amount,
-            slippage_bps=int(dec(config.get("slippage_pct", "5")) * Decimal(100)),
+            slippage_bps=int(dec(config.get("sell_slippage_pct", config.get("slippage_pct", "20"))) * Decimal(100)),
             priority_fee_micro_lamports=priority_micro,
             jito_tip_lamports=jito_tip,
             treasury_fee_lamports=treasury_lamports,
@@ -977,9 +1027,18 @@ class AutonomousEngine:
         )
         await self.db.record_daily_pnl(telegram_id, utc_day(), net_realized_lamports)
         rent_reclaimed = await self._reclaim_empty_accounts(telegram_id, mint, fully_closed)
+        exit_title = {
+            "take_profit_1": "💰 AUTO TAKE-PROFIT 1 TRIGGERED",
+            "take_profit_2": "🎯 AUTO TAKE-PROFIT 2 TRIGGERED",
+            "trailing_stop": "🛡️ TRAILING STOP TRIGGERED",
+            "hard_stop": "🛑 HARD STOP-LOSS TRIGGERED",
+            "manual_panic_sell": "🚨 PANIC SELL CONFIRMED",
+            "manual_sell_50": "💰 MANUAL 50% SELL CONFIRMED",
+        }.get(reason, f"EXIT CONFIRMED · {reason.upper()}")
         await self.notify(
             telegram_id,
-            f"EXIT CONFIRMED · {reason.upper()}\n"
+            f"{exit_title}\n"
+            f"Position: #{position_id}\n"
             f"Mint: {mint}\nSold: {sell_amount} raw units\n"
             f"Expected SOL out: {from_lamports(expected_out)}\n"
             f"Observed wallet delta: {from_lamports(actual_wallet_delta)} SOL\n"
@@ -1040,5 +1099,25 @@ class AutonomousEngine:
             return
         await self._execute_exit(
             position_id, "manual_panic_sell", balance,
+            int(position["token_amount_raw"]), config,
+        )
+    async def sell_position_percent(self, telegram_id: int, position_id: int, percent: int) -> None:
+        if percent not in {50, 100}:
+            raise ValueError("Supported manual sell percentages are 50% and 100%.")
+        if percent == 100:
+            await self.panic_sell(telegram_id, position_id)
+            return
+        position = await self.db.get_position(position_id, telegram_id)
+        if not position or position.get("status") != "open":
+            raise ValueError("Open live position not found.")
+        config = await self.db.get_settings(telegram_id)
+        address = await self.db.get_wallet_address(telegram_id)
+        if not address:
+            raise WalletError("No active wallet.")
+        actual_balance = await self.helius.token_balance_raw(address, str(position["mint"]))
+        if actual_balance <= 1:
+            raise ValueError("There is not enough token balance for a partial sell.")
+        await self._execute_exit(
+            position_id, "manual_sell_50", actual_balance,
             int(position["token_amount_raw"]), config,
         )

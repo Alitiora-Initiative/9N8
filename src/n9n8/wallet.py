@@ -144,6 +144,120 @@ class WalletManager:
         await self.db.record_fee(telegram_id, fee_type, lamports, signature, idempotency_key)
         return lamports, signature
 
+    async def withdraw_amount(
+        self, telegram_id: int, destination: str, amount_lamports: int,
+    ) -> tuple[int, int, str]:
+        """Send a user-approved SOL amount, retaining the exact network-fee reserve.
+
+        This path has no platform fee. The signed transaction is sent once only.
+        A confirmation timeout returns the signature and must never trigger an
+        automatic retry because the first transaction may still land.
+        """
+        try:
+            recipient = Pubkey.from_string(destination)
+        except Exception as exc:
+            raise WalletError("Destination is not a valid Solana address.") from exc
+        amount = int(amount_lamports)
+        if amount <= 0:
+            raise WalletError("Withdrawal amount must be greater than zero.")
+
+        keypair = await self.keypair_for(telegram_id)
+        source = keypair.pubkey()
+        if recipient == source:
+            raise WalletError("Destination must be a different wallet from your 9N8 trading wallet.")
+        balance = await self.balance(telegram_id)
+        blockhash = await self._latest_hash()
+        instruction = transfer(TransferParams(
+            from_pubkey=source,
+            to_pubkey=recipient,
+            lamports=amount,
+        ))
+        message = Message.new_with_blockhash([instruction], source, blockhash)
+        fee_quote = await self.helius.rpc(
+            "getFeeForMessage",
+            [base64.b64encode(bytes(message)).decode("ascii"), {"commitment": "confirmed"}],
+        )
+        fee_value = (fee_quote or {}).get("value")
+        if fee_value is None:
+            raise WalletError("Solana could not quote the network fee. No withdrawal was sent.")
+        network_fee = int(fee_value)
+        reserve = 10_000
+        if network_fee <= 0 or balance < amount + network_fee + reserve:
+            maximum = max(0, balance - network_fee - reserve)
+            raise WalletError(
+                "Insufficient available SOL after the current network fee and safety reserve. "
+                f"Maximum now: {maximum} lamports. No withdrawal was sent."
+            )
+
+        transaction = Transaction.new_signed_with_payer(
+            [instruction], source, [keypair], blockhash
+        )
+        encoded = base64.b64encode(bytes(transaction)).decode("ascii")
+        signature = await self.helius.rpc(
+            "sendTransaction",
+            [encoded, {
+                "encoding": "base64",
+                "skipPreflight": False,
+                "preflightCommitment": "confirmed",
+                "maxRetries": 3,
+            }],
+        )
+        if not isinstance(signature, str) or not signature:
+            raise WalletError(
+                "Solana did not return a transaction signature. Check wallet history before retrying."
+            )
+        try:
+            await self.confirm(signature)
+        except WalletError as exc:
+            failed = "failed on-chain" in str(exc)
+            try:
+                await self.db.record_trade_receipt(
+                    telegram_id,
+                    "withdrawal",
+                    signature,
+                    "failed" if failed else "unknown",
+                    amount_lamports=amount,
+                    metadata={
+                        "destination": str(recipient),
+                        "network_fee_lamports": network_fee,
+                        "source": "telegram_percent_withdrawal",
+                        "confirmation_error": str(exc)[:300],
+                    },
+                )
+            except Exception:
+                logger.exception("Could not persist withdrawal outcome for signature %s", signature)
+            if failed:
+                raise WalletError(
+                    f"Withdrawal failed on-chain. Signature: {signature}. No automatic retry was made."
+                ) from exc
+            raise WalletError(
+                "Withdrawal was submitted but confirmation is still unknown. "
+                f"Check this signature before doing anything else: {signature}. "
+                "9N8 recorded the unknown outcome where possible and will not submit it again automatically."
+            ) from exc
+
+        try:
+            await self.db.record_trade_receipt(
+                telegram_id,
+                "withdrawal",
+                signature,
+                "confirmed",
+                amount_lamports=amount,
+                metadata={
+                    "destination": str(recipient),
+                    "network_fee_lamports": network_fee,
+                    "source": "telegram_percent_withdrawal",
+                },
+            )
+            await self.db.set_payout_address(telegram_id, str(recipient))
+        except Exception as exc:
+            raise WalletError(
+                "The withdrawal is confirmed on-chain, but the local receipt could not be saved. "
+                f"Check this signature: {signature}. Do not send another withdrawal. "
+                f"Receipt error: {type(exc).__name__}"
+            ) from exc
+        return amount, network_fee, signature
+
     async def withdraw_all(self, telegram_id: int, destination: str) -> tuple[int, str]:
         try:
             recipient = Pubkey.from_string(destination)

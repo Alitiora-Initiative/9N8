@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import signal
 from contextlib import suppress
 
 import uvicorn
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
 
 from .autonomous_engine import AutonomousEngine
@@ -20,7 +22,7 @@ from .mev_executor import JupiterJitoExecutor
 from .oracle import PriceOracle
 from .postgres_database import PostgresDatabase
 from .paper_store import PaperStore
-from .paper_engine import PaperTradingEngine
+from .paper_engine import PaperQuoteOnlyClient, PaperTradingEngine
 from .security import TokenSecurity
 from .telemetry import TelemetryHub
 from .wallet import WalletManager
@@ -77,11 +79,117 @@ async def run(worker_only: bool = False) -> None:
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
 
+    # Keep Telegram's native command menu and public description in sync with
+    # the two separate trading modes.
+    try:
+        await bot.set_my_description(
+            "9N8 lets you practise with virtual SOL or manage a separate live Solana wallet. "
+            "Paper funds never move on-chain. Live trading needs safety checks, a separate "
+            "start switch and confirmation before manual buys."
+        )
+        await bot.set_my_short_description(
+            "Solana paper trading and a separately controlled live sniper."
+        )
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Open your 9N8 dashboard"),
+            BotCommand(command="chains", description="Select Solana or view EVM network status"),
+            BotCommand(command="network", description="Open the network selector"),
+            BotCommand(command="paper", description="Open virtual practice mode"),
+            BotCommand(command="paper_on", description="Start paper trading"),
+            BotCommand(command="paper_off", description="Pause paper entries"),
+            BotCommand(command="paper_snipe", description="Preview a virtual buy"),
+            BotCommand(command="paper_positions", description="View virtual positions"),
+            BotCommand(command="paper_history", description="View paper trade history"),
+            BotCommand(command="paper_settings", description="Edit paper rules"),
+            BotCommand(command="live", description="Check live trading readiness"),
+            BotCommand(command="live_on", description="Request live mode"),
+            BotCommand(command="live_off", description="Stop new live entries"),
+            BotCommand(command="snipe", description="Preview a real-wallet buy"),
+            BotCommand(command="live_snipe", description="Alias for live snipe preview"),
+            BotCommand(command="settings", description="Open trading settings"),
+            BotCommand(command="live_positions", description="View real positions"),
+            BotCommand(command="live_history", description="View on-chain receipts"),
+            BotCommand(command="live_settings", description="Edit live risk rules"),
+            BotCommand(command="safety", description="View anti-rug rules"),
+            BotCommand(command="positions", description="Choose paper or live positions"),
+            BotCommand(command="history", description="Choose paper or live history"),
+            BotCommand(command="withdraw", description="Withdraw real SOL"),
+            BotCommand(command="stop", description="Stop new live entries"),
+            BotCommand(command="help", description="Show all commands"),
+        ])
+    except Exception:
+        logger.exception("Could not update Telegram bot description/command menu.")
+
+
     async def notify(telegram_id: int, message: str) -> None:
         try:
-            await bot.send_message(telegram_id, message, disable_web_page_preview=True)
+            markup = None
+            is_entry = message.startswith("ENTRY CONFIRMED")
+            is_exit = (
+                message.startswith("💰 AUTO TAKE-PROFIT")
+                or message.startswith("🎯 AUTO TAKE-PROFIT")
+                or message.startswith("🛡️ TRAILING STOP")
+                or message.startswith("🛑 HARD STOP")
+                or message.startswith("🚨 PANIC SELL")
+                or message.startswith("💰 MANUAL 50% SELL")
+                or message.startswith("EXIT CONFIRMED")
+            )
+            if is_entry or is_exit:
+                position_match = re.search(r"Position:\s*#?(\d+)", message)
+                mint_match = re.search(r"Mint:\s*([1-9A-HJ-NP-Za-km-z]{32,44})", message)
+                signature_match = re.search(r"Signature:\s*https://solscan\.io/tx/([1-9A-Za-z]+)", message)
+                remaining_match = re.search(r"Remaining tokens:\s*(\d+)", message)
+                if position_match and mint_match:
+                    position_id = int(position_match.group(1))
+                    mint = mint_match.group(1)
+                    rows = [
+                        [InlineKeyboardButton(
+                            text="📈 View DexScreener",
+                            url="https://dexscreener.com/solana/" + mint,
+                        )],
+                    ]
+                    if signature_match:
+                        rows.append([InlineKeyboardButton(
+                            text="🔍 View Solscan",
+                            url="https://solscan.io/tx/" + signature_match.group(1),
+                        )])
+                    if is_entry:
+                        rows.append([
+                            InlineKeyboardButton(
+                                text="💰 Sell 50%",
+                                callback_data=f"position:sell50:{position_id}",
+                            ),
+                            InlineKeyboardButton(
+                                text="🚨 Panic Sell 100%",
+                                callback_data=f"position:panic:{position_id}",
+                            ),
+                        ])
+                    elif remaining_match and int(remaining_match.group(1)) > 0:
+                        rows.append([InlineKeyboardButton(
+                            text="🚨 Sell Remaining 100%",
+                            callback_data=f"position:panic:{position_id}",
+                        )])
+                    rows.append([InlineKeyboardButton(
+                        text="📊 Refresh Live Positions",
+                        callback_data="positions:live",
+                    )])
+                    rows.append([InlineKeyboardButton(
+                        text="🧨 Panic Sell All",
+                        callback_data="positions:panic_all:ask",
+                    )])
+                    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+            await bot.send_message(
+                telegram_id,
+                message,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
         except Exception as exc:
-            logger.warning("Could not send Telegram notification to %s (%s)", telegram_id, type(exc).__name__)
+            logger.warning(
+                "Could not send Telegram notification to %s (%s)",
+                telegram_id,
+                type(exc).__name__,
+            )
 
     async def publish(telegram_id: int, event: dict) -> None:
         if hasattr(db, "publish_event"):
@@ -95,7 +203,7 @@ async def run(worker_only: bool = False) -> None:
         store=paper_store,
         helius=helius,
         oracle=oracle,
-        executor=executor,
+        executor=PaperQuoteOnlyClient(executor.quote),
         security=security,
         notify=notify,
         telemetry=publish,

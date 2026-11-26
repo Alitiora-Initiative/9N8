@@ -21,6 +21,7 @@ def _bool(name: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
+    authorized_user_id: int
     helius_api_key: str
     solana_rpc_url: str
     solana_wss_url: str
@@ -49,6 +50,13 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        authorized_raw = os.getenv("AUTHORIZED_USER_ID", "").strip()
+        try:
+            authorized_user_id = int(authorized_raw)
+            if authorized_user_id <= 0:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("AUTHORIZED_USER_ID must be a positive Telegram user ID.") from exc
         helius_key = os.getenv("HELIUS_API_KEY", "").strip()
         supplied_rpc = os.getenv("SOLANA_RPC_URL", "").strip()
         supplied_wss = os.getenv("SOLANA_WSS_URL", "").strip()
@@ -92,6 +100,7 @@ class Settings:
             raise RuntimeError("Live mode requires LIVE_TRADING_ENABLED=true as a second lock.")
         return cls(
             telegram_bot_token=token,
+            authorized_user_id=authorized_user_id,
             helius_api_key=helius_key,
             solana_rpc_url=rpc,
             solana_wss_url=wss,

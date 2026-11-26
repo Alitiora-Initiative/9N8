@@ -79,19 +79,45 @@ The Daemon is a Vercel public-beta product and starts only on production deploym
 
 ## Windows setup
 
-Requirements: Python 3.11+, a Telegram bot token, a Helius API key, a Solana treasury address, and a persistent local database folder.
+Requirements: Python 3.11+, a Telegram bot token, the one authorized Telegram numeric user ID, a Helius API key, a Solana treasury address, a stable Fernet encryption key, and durable database storage.
 
 1. Download this branch:
-   https://github.com/Alitiora-Initiative/9N8/tree/feature/solana-telegram-sniper
+   https://github.com/Alitiora-Initiative/9N8/tree/feature/solana-live-controls-completion
 2. Run `setup_windows.bat`.
 3. Open `.env` and fill in the required values below.
 4. Start the bot with `start_9n8.bat`.
 5. Send `/start` to your Telegram bot.
 
+For a manual install without the batch file:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+Copy-Item .env.example .env
+# Edit .env and set TELEGRAM_BOT_TOKEN, AUTHORIZED_USER_ID,
+# HELIUS_API_KEY, MASTER_TREASURY_ADDRESS, ENCRYPTION_MASTER_KEY.
+python -m src.n9n8.main
+```
+
+On macOS/Linux:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env and set the same required values.
+python -m src.n9n8.main
+```
+
 Required environment settings:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_botfather_token
+AUTHORIZED_USER_ID=your_telegram_numeric_user_id
 HELIUS_API_KEY=your_helius_api_key
 MASTER_TREASURY_ADDRESS=your_solana_treasury_public_key
 ENCRYPTION_MASTER_KEY=your_fernet_key
@@ -165,7 +191,7 @@ Telegram Mini Apps require an HTTPS URL. Set `WEBAPP_URL` to the public HTTPS ba
 
 - $1.00 equivalent activation fee (first live activation).
 - 0.1% fee on positive realized trade profit estimates.
-- $1.00 equivalent full withdrawal fee.
+- Selected 25% / 50% / 100% / custom withdrawals charge no platform fee; the actual network fee is quoted before signing.
 - $1.00 equivalent stop-and-rotate fee.
 - Network fees and Jito tips are separate.
 
@@ -179,3 +205,92 @@ The $1 equivalent is converted from a fresh SOL/USD oracle observation. If a tru
 - The Mini App validates Telegram `initData`; do not expose unauthenticated wallet endpoints behind a reverse proxy.
 - Use an HTTPS host, persistent disk, restricted access to environment variables, regular encrypted backups and key rotation procedures.
 - Do not treat a clean test run as an audit or guarantee of trading safety.
+
+## Separate Paper and Live Solana trading
+
+9N8 keeps practice trading and real-wallet trading in separate services and tables.
+
+### Paper mode — virtual funds only
+
+- Start and stop with `/paper_on` and `/paper_off`; review the account with `/paper`.
+- New practice accounts start with a **$1,000 virtual value** converted to SOL at the current SOL/USD quote.
+- Paper settings, balances, positions, practice-day records and trade history are stored in the separate `n9n8_paper_*` tables (or local `paper_*` SQLite tables).
+- Paper quotes use a restricted quote-only adapter. The PaperTradingEngine receives no swap signer, transaction builder, send method or Jito submission method.
+- `/paper_snipe MINT` creates a security/quote preview and records virtual trades only. Paper positions can be closed with virtual quotes; they cannot withdraw SOL.
+
+### Live mode — real wallet and real transactions
+
+- `/live` displays the global operator switch, user activation, wallet balance and seven-day paper-practice requirement.
+- `/live_on` opens the live readiness/activation flow. Live mode is not enabled just because a wallet exists. The global `LIVE_TRADING_ENABLED` switch must also be explicitly enabled by the operator.
+- `/live_off` or `/stop` prevents new live entries; the existing live position watchdog remains active so open positions can still be exited.
+- `/snipe MINT` and `/live_snipe MINT` create a real-wallet preview. The bot rechecks the live switch, wallet, risk limits, mint safety, liquidity, holders, rent/fee reserve and Jupiter quote before a separate Confirm Live Buy action can submit anything.
+- Pasting a valid public Solana mint address in the private chat shows separate Paper Preview and Live Preview choices. Pasting an address alone never buys a token.
+- `/positions` shows two separate sections; `/paper_positions` and `/live_positions` show one book at a time. Live positions include Sell 50% and Panic Sell 100% controls. Paper sell buttons only change virtual positions.
+- `/paper_settings` / `/live_settings` keep the parameter stores separate. Critical mint/freeze authority checks are locked ON; an unavailable or unverified required safety result blocks the entry.
+- `/paper_history` lists simulated fills; `/live_history` lists on-chain receipts. A signature with an unknown confirmation state must be checked before any manual retry.
+- `/withdraw` offers 25%, 50%, 100% or a custom SOL amount from the real wallet. All live positions must be closed first. The network fee is quoted and reserved before the exact amount is signed. Withdrawals have no platform fee in this version; Paper balances are never withdrawable.
+
+### Default live risk parameters
+
+| Rule | Default |
+|---|---:|
+| Buy amount | 0.05 SOL |
+| Buy slippage | 15% |
+| Sell slippage | 20% |
+| Jito tip | 0.002 SOL |
+| Minimum pool liquidity | 5 SOL equivalent |
+| Minimum LP locked/burned | 80% |
+| Maximum top-10 holder share | 25% |
+| Maximum developer wallet share | 5% |
+| Take Profit 1 | +100%, sell 50% |
+| Take Profit 2 | +300%, sell 25% of remaining |
+| Trailing stop | 20% after the profit phase starts |
+| Hard stop | -30% |
+| Maximum hold | 4 hours |
+
+The settings screen allows buy and sell slippage to be changed separately, and adjusts the corresponding Jupiter v2 `slippageBps` parameter. A fixed slippage override changes Jupiter from its default automatic slippage mode. All numeric limits are bounded by hard-coded caps. Mint/freeze authority revocation requirements cannot be switched off.
+
+### Telegram command reference
+
+| Command | Purpose |
+|---|---|
+| `/start` | Main dashboard: virtual account and real wallet shown separately |
+| `/paper`, `/paper_on`, `/paper_off` | View/start/stop virtual practice |
+| `/paper_snipe MINT` | Security and quote preview for a virtual buy |
+| `/paper_positions`, `/paper_history`, `/paper_settings` | Paper-only positions, history and rules |
+| `/live`, `/live_on`, `/live_off` | Readiness, arm after checks, or stop new entries |
+| `/snipe MINT`, `/live_snipe MINT` | Guarded real-wallet preview and separate buy confirmation |
+| `/live_positions`, `/live_history`, `/live_settings` | Live positions, on-chain receipts and live risk limits |
+| `/settings`, `/safety`, `/positions`, `/history` | Menus and combined views |
+| `/withdraw` | Confirmed real-wallet SOL withdrawal |
+| `/stop` | Stop new live entries; existing exits continue |
+| `/help` | Command guide |
+
+### Single-user deployment gate
+
+Set `AUTHORIZED_USER_ID` to the numeric Telegram user ID that is permitted to use the bot. It is required at startup and checked by both the Aiogram router and Mini App HTTP/WebSocket authentication. The Telegram bot token is not an access-control substitute. Do not share API keys, wallet private keys or seed phrases in Telegram.
+
+### Important live-trading limitations
+
+- Live trading remains disabled by default. The operator must configure the global switch, and the user must pass the separate live readiness and confirmation steps.
+- The listener subscribes to Helius program logs for Pump.fun and Raydium-related launch programs. Pump.fun buys wait for migration/completion; live execution routes through Jupiter rather than using bespoke direct Pump.fun or direct Raydium instruction builders.
+- Launch detection, quote response, Jito bundle landing and exit timing are affected by provider latency and Solana network conditions. The application does not guarantee detection or execution in 300 ms, transaction inclusion, or profitable fills.
+- The exit watchdog is rate-limited against upstream quote/RPC availability. It is not a promise of exactly one-second execution.
+- The current readiness gate includes a $1 first-live activation transfer, at least seven recorded UTC practice days, a connected live wallet, an operator-enabled live switch and at least $10 approximate SOL wallet value.
+- This change has not been independently audited or certified with real mainnet funds. Do not enable live trading until a dedicated test wallet has been used to verify buy, partial sell, full sell, auto-exit, unknown-outcome reconciliation, withdrawal and recovery procedures.
+
+## Telegram network selector and onboarding update
+
+The `feature/9n8-telegram-network-controls` branch builds the network selector and guarded onboarding on top of the current Solana-live implementation.
+
+- `/chains` and `/network` open a Telegram selector for Solana, Base, Ethereum and BNB Chain.
+- Solana Mainnet is the only execution-enabled network. Base, Ethereum and BNB Chain are explicitly marked **NOT CONNECTED** and rejected server-side until their own wallet vaults, RPC/pool listeners, token-risk checks, swap routers, receipt reconciliation and position watchdogs exist.
+- EVM contract addresses are recognized and ask the user to identify Base, Ethereum or BNB Chain. The bot shows the selected network's disabled status and does not query that network, request an approval, obtain a quote or submit a transaction.
+- First `/start` creates the per-user Solana wallet, shows the address, current balance and Helius response time, and presents a deliberate one-time key-reveal step. The key remains Fernet-encrypted at rest; reveal usage is recorded against the wallet address in both SQLite and Neon/Postgres adapters. The delivered key message is auto-deleted after 60 seconds, but deletion cannot remove screenshots or notification copies.
+- Wallet import and wallet rotation return to the same explicit key-reveal step instead of automatically sending the private key.
+- The main Telegram commands and quick-snipe previews reuse the active control-panel message while the bot process is running. Transaction receipts, sensitive key delivery, numeric input prompts and explicit confirmations remain separate messages where required.
+- Live positions show the current marked value when available, realized PnL, estimated net PnL, TP1/moonbag phase, individual 50% and 100% exits, refresh, and confirmed panic-sell-all controls.
+- Manual exits are serialized per position against the automatic watchdog. Automatic TP1/TP2, trailing-stop, hard-stop and panic-exit alerts include the position ID, chart/explorer links and remaining-bag exit action when tokens remain.
+- The existing Paper/Live separation, daily risk circuit breakers, separate buy/sell slippage settings, withdrawal controls, and live activation gates from the Solana-live base are preserved.
+
+This branch does not generate EVM wallets, does not implement EVM trading, does not enable live trading by default, and does not certify unattended mainnet trading. The single-message panel ID is held in process memory; after a worker restart, a new panel is created when the user next opens a command.

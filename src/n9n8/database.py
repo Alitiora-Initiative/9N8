@@ -14,6 +14,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "launchpad": "both",
     "buy_amount_sol": "0.05",
     "slippage_pct": "15",
+    "buy_slippage_pct": "15",
+    "sell_slippage_pct": "20",
     "priority_fee_lamports": 10000,
     "jito_tip_lamports": 2000000,
     "take_profit_pct": "100",
@@ -45,6 +47,8 @@ PAPER_DEFAULT_SETTINGS: dict[str, Any] = {
     "launchpad": "both",
     "buy_amount_sol": "0.05",
     "slippage_pct": "15",
+    "buy_slippage_pct": "15",
+    "sell_slippage_pct": "20",
     "priority_fee_lamports": 10000,
     "jito_tip_lamports": 2000000,
     "take_profit_pct": "100",
@@ -522,6 +526,26 @@ class Database:
                 (telegram_id, event_type, detail[:1000], utc_now()),
             )
             await db.commit()
+
+    async def list_security_events(self, telegram_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT event_type,detail,created_at FROM security_events "
+                "WHERE telegram_id=? ORDER BY id DESC LIMIT ?",
+                (int(telegram_id), max(1, min(int(limit), 100))),
+            )
+            return [dict(row) for row in await cur.fetchall()]
+
+    async def wallet_key_was_revealed(self, telegram_id: int, address: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                """SELECT 1 FROM security_events
+                   WHERE telegram_id=? AND event_type='wallet_key_revealed' AND detail=?
+                   LIMIT 1""",
+                (int(telegram_id), str(address)),
+            )
+            return await cur.fetchone() is not None
 
     async def set_payout_address(self, telegram_id: int, address: str) -> None:
         async with self._lock, aiosqlite.connect(self.path) as db:
