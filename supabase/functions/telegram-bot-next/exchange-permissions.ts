@@ -34,8 +34,8 @@ export function assessBinancePermissions(
   markets: ExchangeMarket[],
 ): MarketPermissionResult {
   if (restrictions.enableReading !== true) throw new Error("binance_read_permission_required");
-  if (restrictions.enableWithdrawals === true) throw new Error("withdraw_permission_detected");
-  if (restrictions.enableInternalTransfer === true || restrictions.permitsUniversalTransfer === true) {
+  if (restrictions.enableWithdrawals !== false) throw new Error("withdraw_permission_detected");
+  if (restrictions.enableInternalTransfer !== false || restrictions.permitsUniversalTransfer !== false) {
     throw new Error("binance_transfer_permission_detected");
   }
 
