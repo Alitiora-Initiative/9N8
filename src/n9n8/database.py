@@ -84,6 +84,14 @@ class Database:
                     idempotency_key TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS daily_risk (
+                    telegram_id INTEGER NOT NULL,
+                    day_utc TEXT NOT NULL,
+                    starting_equity_lamports INTEGER NOT NULL,
+                    realized_pnl_lamports INTEGER NOT NULL DEFAULT 0,
+                    trade_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(telegram_id, day_utc)
+                );
                 CREATE TABLE IF NOT EXISTS security_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_id INTEGER,
@@ -254,6 +262,60 @@ class Database:
             )
             await db.commit()
 
+
+
+    async def start_daily_risk(self, telegram_id: int, day_utc: str, starting_equity_lamports: int) -> dict[str, int]:
+        if starting_equity_lamports < 0:
+            raise ValueError("Starting equity cannot be negative.")
+        async with self._lock, aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """INSERT OR IGNORE INTO daily_risk
+                   (telegram_id,day_utc,starting_equity_lamports,realized_pnl_lamports,trade_count)
+                   VALUES(?,?,?,0,0)""",
+                (telegram_id, day_utc, starting_equity_lamports),
+            )
+            await db.commit()
+            cur = await db.execute(
+                "SELECT starting_equity_lamports,realized_pnl_lamports,trade_count FROM daily_risk WHERE telegram_id=? AND day_utc=?",
+                (telegram_id, day_utc),
+            )
+            row = await cur.fetchone()
+        return {
+            "starting_equity_lamports": int(row[0]),
+            "realized_pnl_lamports": int(row[1]),
+            "trade_count": int(row[2]),
+        }
+
+    async def record_daily_entry(self, telegram_id: int, day_utc: str) -> None:
+        async with self._lock, aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE daily_risk SET trade_count=trade_count+1 WHERE telegram_id=? AND day_utc=?",
+                (telegram_id, day_utc),
+            )
+            await db.commit()
+
+    async def record_daily_pnl(self, telegram_id: int, day_utc: str, pnl_lamports: int) -> None:
+        async with self._lock, aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE daily_risk SET realized_pnl_lamports=realized_pnl_lamports+? WHERE telegram_id=? AND day_utc=?",
+                (int(pnl_lamports), telegram_id, day_utc),
+            )
+            await db.commit()
+
+    async def daily_risk_snapshot(self, telegram_id: int, day_utc: str) -> dict[str, int] | None:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                "SELECT starting_equity_lamports,realized_pnl_lamports,trade_count FROM daily_risk WHERE telegram_id=? AND day_utc=?",
+                (telegram_id, day_utc),
+            )
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "starting_equity_lamports": int(row[0]),
+            "realized_pnl_lamports": int(row[1]),
+            "trade_count": int(row[2]),
+        }
 
     async def enabled_users(self) -> list[int]:
         async with aiosqlite.connect(self.path) as db:
