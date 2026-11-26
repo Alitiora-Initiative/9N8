@@ -340,7 +340,6 @@ def _safety_keyboard(config: dict) -> InlineKeyboardMarkup:
 
 
 def _fees_keyboard() -> InlineKeyboardMarkup:
-def _fees_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Change MEV / Risk Settings", callback_data="settings:risk")],
         [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
