@@ -225,10 +225,17 @@
         method:"POST",
         body:JSON.stringify({confirm:true,destination:destination})
       });
-      $("modalMessage").textContent = "Confirmed. Signature: " + (result.signature || "submitted");
-      toast(modalAction === "withdraw" ? "Withdrawal confirmed" : "Wallet rotated. Check Telegram for the new key.");
+      if (result.status === "queued") {
+        $("modalMessage").textContent =
+          "Queued for the persistent trading worker. Job #" + result.job_id +
+          ". No transfer has been confirmed yet. 9N8 will send the transaction result in Telegram.";
+        toast(modalAction === "withdraw" ? "Withdrawal queued — awaiting worker" : "Wallet rotation queued — awaiting worker");
+      } else {
+        $("modalMessage").textContent = "Confirmed. Signature: " + (result.signature || "submitted");
+        toast(modalAction === "withdraw" ? "Withdrawal confirmed" : "Wallet rotated. Check Telegram for the new key.");
+      }
       await refresh();
-      window.setTimeout(closeModal, 3500);
+      window.setTimeout(closeModal, result.status === "queued" ? 6000 : 3500);
     } catch (error) {
       $("modalMessage").textContent = error.message;
     } finally {
@@ -270,8 +277,10 @@
     haptic("heavy");
     if (!window.confirm("Panic sell 100% of this token position?")) return;
     try {
-      await api("/api/positions/" + button.dataset.panic + "/panic", {method:"POST"});
-      toast("Panic sell submitted");
+      const result = await api("/api/positions/" + button.dataset.panic + "/panic", {method:"POST"});
+      toast(result.status === "queued"
+        ? "Panic sell queued — worker will send its result"
+        : "Panic sell submitted; awaiting confirmation");
     } catch (error) { toast(error.message); }
   });
   if (tg) {
