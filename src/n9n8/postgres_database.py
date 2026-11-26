@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from decimal import Decimal
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -217,8 +218,8 @@ class PostgresDatabase:
                  (telegram_id, mint, token_amount_raw, initial_cost_lamports,
                   entry_price_usd, status, buy_signature)
                VALUES($1,$2,$3,$4,$5,'open',$6) RETURNING id""",
-            int(telegram_id), mint, str(token_amount_raw), str(initial_cost_lamports),
-            str(entry_price_usd), buy_signature,
+            int(telegram_id), mint, Decimal(str(token_amount_raw)), Decimal(str(initial_cost_lamports)),
+            Decimal(str(entry_price_usd)), buy_signature,
         )
         return int(position_id)
 
@@ -264,7 +265,7 @@ class PostgresDatabase:
                        THEN trunc(initial_cost_lamports * $2 / token_amount_raw)
                      ELSE initial_cost_lamports END
                WHERE id=$1""",
-            int(position_id), str(remaining_raw), reason, str(realized_lamports),
+            int(position_id), Decimal(str(remaining_raw)), reason, Decimal(str(realized_lamports)),
             sell_signature, bool(fully_closed),
         )
 
@@ -304,7 +305,7 @@ class PostgresDatabase:
                  WHEN public.n9n8_daily_risk.starting_equity_lamports=0 AND $3>0
                  THEN $3 ELSE public.n9n8_daily_risk.starting_equity_lamports END
                RETURNING starting_equity_lamports,realized_pnl_lamports,trade_count""",
-            int(telegram_id), day_utc, str(starting_equity_lamports),
+            int(telegram_id), day_utc, Decimal(str(starting_equity_lamports)),
         )
         return {
             "starting_equity_lamports": int(row["starting_equity_lamports"]),
@@ -324,7 +325,7 @@ class PostgresDatabase:
             """UPDATE public.n9n8_daily_risk
                SET realized_pnl_lamports=realized_pnl_lamports+$3
                WHERE telegram_id=$1 AND day_utc=$2::date""",
-            int(telegram_id), day_utc, str(int(pnl_lamports)),
+            int(telegram_id), day_utc, Decimal(str(int(pnl_lamports))),
         )
 
     async def daily_risk_snapshot(self, telegram_id: int, day_utc: str) -> dict[str, int] | None:
@@ -424,7 +425,7 @@ class PostgresDatabase:
             """WITH claimed AS (
                  SELECT id FROM public.n9n8_worker_jobs
                  WHERE status='queued' AND available_at<=now()
-                 ORDER BY id FOR UPDATE SKIP LOCKED LIMIT $2
+                 ORDER BY id LIMIT $2 FOR UPDATE SKIP LOCKED
                )
                UPDATE public.n9n8_worker_jobs j
                SET status='running',locked_at=now(),locked_by=$1,
@@ -518,7 +519,7 @@ class PostgresDatabase:
                  confirmed_at=CASE WHEN EXCLUDED.status IN ('confirmed','finalized')
                                    THEN now() ELSE public.n9n8_trade_receipts.confirmed_at END""",
             int(telegram_id), event_type, signature, status, mint, position_id,
-            str(amount_lamports) if amount_lamports is not None else None,
-            str(token_amount_raw) if token_amount_raw is not None else None,
+            Decimal(str(amount_lamports)) if amount_lamports is not None else None,
+            Decimal(str(token_amount_raw)) if token_amount_raw is not None else None,
             json.dumps(metadata or {}),
         )
