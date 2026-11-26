@@ -74,7 +74,9 @@ async def test_withdrawal_unknown_confirmation_returns_signature_without_retry()
     methods = [method for method, _ in manager.helius.calls]
     assert methods == ["getFeeForMessage", "sendTransaction"]
     manager.confirm.assert_awaited_once_with(signature)
-    manager.db.record_trade_receipt.assert_not_awaited()
+    manager.db.record_trade_receipt.assert_awaited_once()
+    assert manager.db.record_trade_receipt.await_args.args[3] == "unknown"
+    manager.db.set_payout_address.assert_not_awaited()
 
 
 @pytest.mark.asyncio
