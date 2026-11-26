@@ -273,7 +273,7 @@ def create_webapp(
             while True:
                 event = await queue.get()
                 await websocket.send_json(event)
-        except (ValueError, json.JSONDecodeError, asyncio.TimeoutError):
+        except (ValueError, TypeError, AttributeError, json.JSONDecodeError, asyncio.TimeoutError):
             await websocket.close(code=4401)
         except WebSocketDisconnect:
             pass
