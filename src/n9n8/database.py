@@ -144,8 +144,6 @@ class Database:
                     detail TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
-            """)
-
                 CREATE TABLE IF NOT EXISTS paper_settings (
                     telegram_id INTEGER PRIMARY KEY REFERENCES users(telegram_id) ON DELETE CASCADE,
                     config_json TEXT NOT NULL,
@@ -208,20 +206,7 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_paper_trades_user_time
                     ON paper_trades(telegram_id, created_at DESC);
-            # Upgrade existing local databases without changing any live position rows.
-            position_columns = {
-                row[1] for row in await (await db.execute("PRAGMA table_info(positions)")).fetchall()
-            }
-            for column, definition in (
-                ("peak_value_lamports", "INTEGER NOT NULL DEFAULT 0"),
-                ("last_value_lamports", "INTEGER NOT NULL DEFAULT 0"),
-                ("last_pnl_pct", "TEXT NOT NULL DEFAULT '0'"),
-                ("tp1_done", "INTEGER NOT NULL DEFAULT 0"),
-                ("tp2_done", "INTEGER NOT NULL DEFAULT 0"),
-            ):
-                if column not in position_columns:
-                    await db.execute(f"ALTER TABLE positions ADD COLUMN {column} {definition}")
-                            CREATE TABLE IF NOT EXISTS trade_receipts (
+                CREATE TABLE IF NOT EXISTS trade_receipts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
                     event_type TEXT NOT NULL,
@@ -237,8 +222,21 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_trade_receipts_user_time
                     ON trade_receipts(telegram_id,created_at DESC);
-await db.commit()
-
+            """)
+            # Upgrade existing local databases without changing live position records.
+            position_columns = {
+                row[1] for row in await (await db.execute("PRAGMA table_info(positions)")).fetchall()
+            }
+            for column, definition in (
+                ("peak_value_lamports", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_value_lamports", "INTEGER NOT NULL DEFAULT 0"),
+                ("last_pnl_pct", "TEXT NOT NULL DEFAULT '0'"),
+                ("tp1_done", "INTEGER NOT NULL DEFAULT 0"),
+                ("tp2_done", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in position_columns:
+                    await db.execute(f"ALTER TABLE positions ADD COLUMN {column} {definition}")
+            await db.commit()
 
     async def user_count(self) -> int:
         async with aiosqlite.connect(self.path) as db:
