@@ -36,3 +36,19 @@ async def test_paper_quote_adapter_rejects_non_mapping_quote_payload():
 
     with pytest.raises(RuntimeError, match="invalid paper quote"):
         await client.quote("SOL", "TOKEN", 10)
+
+
+@pytest.mark.asyncio
+async def test_paper_quote_adapter_forwards_selected_slippage_basis_points():
+    calls = []
+
+    async def quote(input_mint, output_mint, amount_raw, slippage_bps=None):
+        calls.append((input_mint, output_mint, amount_raw, slippage_bps))
+        return {"outAmount": "100", "otherAmountThreshold": "98"}
+
+    client = PaperQuoteOnlyClient(quote)
+    result = await client.quote("SOL", "TOKEN", 1_000_000, 1_500)
+
+    assert result["otherAmountThreshold"] == "98"
+    assert calls == [("SOL", "TOKEN", 1_000_000, 1_500)]
+    assert not hasattr(client, "build_swap")
