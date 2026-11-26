@@ -192,7 +192,7 @@ async def run(worker_only: bool = False) -> None:
             await engine.watch_wallet(telegram_id)
             await engine.start_user(telegram_id)
             active_users.add(telegram_id)
-        else:
+        elif telegram_id in engine._enabled_users:
             await engine.stop_user(telegram_id)
             active_users.discard(telegram_id)
 
