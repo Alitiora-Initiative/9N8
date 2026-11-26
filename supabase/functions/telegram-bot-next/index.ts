@@ -24,6 +24,7 @@ import {
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
 import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
+import { TRIAL_DRYTEST_URL, trialDrytestKeyboard, trialDrytestText } from "./drytest.ts";
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
@@ -236,6 +237,7 @@ function networkSelectorKeyboard(): Obj {
 function mainKeyboard(): Obj {
   return { inline_keyboard: [
     [{ text: "🚀 OPEN SOLANA SNIPER CONTROL", web_app: { url: SOLANA_SNIPER_URL } }],
+    [{ text: "🧪 Trial Drytest · Virtual Only", web_app: { url: TRIAL_DRYTEST_URL } }],
     [{ text: "🧪 Paper Trading", callback_data: "n8:solana_paper" }, { text: "🔴 Live Controls", callback_data: "n8:solana_live" }],
     [{ text: "📊 Positions", callback_data: "n8:solana_positions" }, { text: "⚙️ Trading Settings", callback_data: "n8:solana_settings" }],
     [{ text: "🛡 Safety Filters", callback_data: "n8:solana_safety" }],
@@ -2479,6 +2481,7 @@ async function setBotProfileAndCommands(): Promise<void> {
         { command: "safety", description: "Open anti-rug safety filters" },
         { command: "services", description: "See all 9N8 services" },
         { command: "simulator", description: "Open the exchange live-price simulator" },
+        { command: "drytest", description: "Open no-money trial drytest" },
         { command: "connect", description: "Connect Binance, Bybit or OKX" },
         { command: "connections", description: "See your connected accounts" },
         { command: "wallets", description: "See linked wallets" },
@@ -2516,6 +2519,7 @@ function serviceOverview(): string {
     "GET STARTED",
     "/sniper — open the Solana Sniper dashboard",
     "/solana_paper — open isolated virtual Solana trading",
+    "/drytest — open the no-money trial simulator",
     "/solana_live — open gated live-wallet controls",
     "/networks — show supported and unavailable chains",
     "/positions — open Paper and Live positions",
@@ -2609,6 +2613,7 @@ async function handleMessage(update: any) {
       "/approvals — pending trade proposals\n" +
       "/sniper — open complete Solana Sniper dashboard\n" +
       "/solana_paper — separate virtual Solana trading\n" +
+      "/drytest — public-market trial drytest (virtual only)\n" +
       "/solana_live — gated Solana live-wallet controls\n" +
        "/networks — show supported and unavailable chains\n" +
       "/positions — open Paper and Live positions\n" +
@@ -2708,10 +2713,8 @@ async function handleMessage(update: any) {
       solanaPanelKeyboard("paper"));
     return;
   }
-    if (command === "/simulator") {
-    await send(chatId, "LIVE-MARKET PAPER SIMULATOR\\n\\nReal Binance Spot candles, ticker and order-book data. Paper orders use virtual cash, visible depth VWAP and estimated fees; no real order is submitted.", {
-      inline_keyboard: [[{ text: "📈 Open 9N8 simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
-    });
+    if (command === "/drytest" || command === "/simulator") {
+    await send(chatId, trialDrytestText(), trialDrytestKeyboard());
     return;
   }
   if (command === "/approvals") {
