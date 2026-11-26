@@ -440,6 +440,42 @@ class PaperStore:
             await conn.commit()
         return {"remaining_raw":remaining,"basis_sold_lamports":basis_sold,"realized_lamports":realized,"net_proceeds_lamports":net,"fully_closed":remaining==0}
 
+    async def set_targets(self, position_id: int, tp1_done: bool | None = None, tp2_done: bool | None = None) -> None:
+        if self.is_postgres:
+            await self.db._pool().execute(
+                """UPDATE public.n9n8_paper_positions SET
+                   tp1_done=COALESCE($2,tp1_done),tp2_done=COALESCE($3,tp2_done),updated_at=now()
+                   WHERE id=$1 AND status='open'""",
+                int(position_id), tp1_done, tp2_done,
+            )
+        else:
+            async with aiosqlite.connect(self.db.path) as conn:
+                await conn.execute(
+                    """UPDATE paper_positions SET
+                       tp1_done=COALESCE(?,tp1_done),tp2_done=COALESCE(?,tp2_done),updated_at=?
+                       WHERE id=? AND status='open'""",
+                    (None if tp1_done is None else int(tp1_done),
+                     None if tp2_done is None else int(tp2_done),_now(),int(position_id)),
+                )
+                await conn.commit()
+
+    async def trade_count_today(self, telegram_id: int, day_utc: str) -> int:
+        if self.is_postgres:
+            value = await self.db._pool().fetchval(
+                """SELECT count(*) FROM public.n9n8_paper_trades
+                   WHERE telegram_id=$1 AND side='buy' AND created_at::date=$2::date""",
+                int(telegram_id),day_utc,
+            )
+        else:
+            async with aiosqlite.connect(self.db.path) as conn:
+                cur=await conn.execute(
+                    """SELECT count(*) FROM paper_trades
+                       WHERE telegram_id=? AND side='buy' AND substr(created_at,1,10)=?""",
+                    (int(telegram_id),day_utc),
+                )
+                row=await cur.fetchone(); value=row[0] if row else 0
+        return int(value or 0)
+
     async def history(self, telegram_id: int, limit: int=30) -> list[dict[str,Any]]:
         limit=max(1,min(int(limit),100))
         if self.is_postgres:
