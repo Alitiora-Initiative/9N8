@@ -137,6 +137,19 @@ class AutonomousEngine:
         checks["ready"] = not checks["blockers"]
         return checks
 
+    async def resume_live_positions(self, telegram_id: int) -> int:
+        """Resume exits for already-open on-chain positions without enabling new entries."""
+        positions = await self.db.active_positions(telegram_id)
+        for position in positions:
+            position_id = int(position["id"])
+            task = self._position_tasks.get(position_id)
+            if task is None or task.done():
+                self._position_tasks[position_id] = asyncio.create_task(
+                    self._monitor_position(position_id),
+                    name=f"9n8-live-position-{position_id}",
+                )
+        return len(positions)
+
     async def start_live_user(self, telegram_id: int) -> dict[str, Any]:
         await self.db.ensure_user(telegram_id)
         readiness = await self.live_readiness(telegram_id)
