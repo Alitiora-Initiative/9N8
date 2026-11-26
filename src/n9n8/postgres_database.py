@@ -420,6 +420,20 @@ class PostgresDatabase:
         item["result_json"] = _json_value(item["result_json"])
         return item
 
+    async def mark_stale_jobs_unknown(self) -> int:
+        """Never replay an operation whose transaction may have landed before a worker crash."""
+        status = await self._pool().execute(
+            """UPDATE public.n9n8_worker_jobs
+               SET status='unknown',
+                   last_error='Worker disappeared while this operation was running; verify wallet and signatures before retrying.',
+                   locked_at=NULL,locked_by=NULL,updated_at=now()
+               WHERE status='running' AND locked_at < now() - INTERVAL '10 minutes'"""
+        )
+        try:
+            return int(str(status).split()[-1])
+        except (ValueError, IndexError):
+            return 0
+
     async def claim_jobs(self, worker_id: str, limit: int = 10) -> list[dict[str, Any]]:
         rows = await self._pool().fetch(
             """WITH claimed AS (
