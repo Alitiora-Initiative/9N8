@@ -1,12 +1,12 @@
 # 9N8 — Solana Telegram Launchpad Bot
 
-9N8 is a Telegram-first Solana launchpad monitoring and trading application. It combines an aiogram bot, a FastAPI Telegram Mini App, Helius RPC/WebSockets, Pump.fun/Raydium launch detection, Jupiter Swap API v2 routing, Jito bundle submission, encrypted per-user Solana wallets, and a Decimal-based risk/exit engine.
+9N8 is a Telegram-first Solana launchpad monitoring and trading application. Telegram runs command handling and notifications; Vercel serves the FastAPI Mini App/API; a Vercel Daemon runs the continuous Python trading worker; a dedicated Neon PostgreSQL project stores encrypted wallets, settings, positions, receipts, risk records, telemetry and worker jobs. The worker connects to Helius RPC/WebSockets, Pump.fun/Raydium detection, Jupiter Swap API v2 and Jito bundles.
 
-**The OKX application has been removed from `main`.** PR #8 merged the Solana-first bot into the default branch. Follow-up execution hardening is being delivered separately in PR #10.
+**The OKX application has been removed from `main`.** PR #8 merged the Solana-first bot; PR #10 merged Jupiter/Jito and wallet-lifecycle corrections. The Neon/Vercel worker split is being developed separately on `feature/9n8-neon-platform-split`.
 
 ## Current implementation status
 
-Implemented in `main` and the current follow-up branch:
+Implemented in `main` and the current platform branch:
 
 - Per-Telegram-user Solana Ed25519 wallet generation/import, encrypted-at-rest key storage, balance queries, and 60-second key-message deletion attempt.
 - Aiogram dashboard, parameter FSM, activation/withdrawal/rotation confirmation flows, and status notifications.
@@ -17,6 +17,9 @@ Implemented in `main` and the current follow-up branch:
 - Jupiter Swap API v2 raw instruction builder and Jito atomic bundle submission with landing-status checks.
 - Background position supervision, TP/SL/max-hold and daily risk controls.
 - FastAPI Mini App endpoints with Telegram `initData` HMAC validation and per-user WebSocket telemetry.
+- Dedicated Neon PostgreSQL schema and a Postgres adapter for user records, Fernet-encrypted wallet secrets, settings, positions, fee/risk ledgers, receipts, telemetry and worker jobs.
+- Vercel root FastAPI entrypoint plus a Vercel Daemon Dockerfile running `python -m src.n9n8.worker`; request handlers enqueue panic-sell, withdrawal and wallet-rotation operations for the persistent worker.
+- Worker heartbeat and durable telemetry polling for the Mini App.
 - Dark-mode responsive Telegram Mini App.
 - Dockerfile and Docker Compose configuration with persistent SQLite storage.
 
@@ -65,6 +68,15 @@ Safe current options:
 
 Do not treat UptimeRobot pings as storage durability. Keeping a free instance awake does not turn its filesystem into persistent storage.
 
+## Deployment topology
+
+- **Telegram:** the persistent worker runs aiogram polling for commands, approvals, wallet actions and notifications. Telegram Mini App `initData` is validated by the FastAPI service.
+- **Vercel request app:** root `index.py` exposes FastAPI routes for the Mini App, settings, status and queue submission. It does not run Helius subscriptions or trade-monitor loops.
+- **Neon:** use the separate `9n8-trading` project and `n9n8` database. Do not point 9N8 at the unrelated `vyra-markets` brokerage database. Apply `migrations/001_n9n8_postgres.sql` before runtime initialization.
+- **Vercel Daemon:** `worker/Dockerfile` runs `python -m src.n9n8.worker`. It polls the `9n8-worker` Vercel Queue topic for wake-up messages, then reads/claims the durable job from Neon. It keeps Helius subscriptions and position monitors in memory while the process is running; no durable state is stored on its filesystem.
+
+The Daemon is a Vercel public-beta product and starts only on production deployments. It is configured for one `iad1` instance. The Vercel request service sends queue wake-ups using `x-vercel-oidc-token`; the Daemon uses its runtime `VERCEL_OIDC_TOKEN` to poll and acknowledge messages. The Daemon must fail closed if no valid OIDC token is exposed to its container. Vercel Queues delivers at least once, so Neon job rows and their claim state remain authoritative and prevent repeat execution. Vercel bills Daemon CPU and provisioned memory beyond plan inclusions; Queues is metered separately. Review current project usage and pricing before starting it. See <https://vercel.com/docs/queues>, <https://vercel.com/changelog/vercel-daemons-is-now-in-public-beta> and <https://vercel.com/pricing>. Do not start the daemon until runtime secrets and billing are reviewed.
+
 ## Windows setup
 
 Requirements: Python 3.11+, a Telegram bot token, a Helius API key, a Solana treasury address, and a persistent local database folder.
@@ -83,6 +95,8 @@ TELEGRAM_BOT_TOKEN=your_botfather_token
 HELIUS_API_KEY=your_helius_api_key
 MASTER_TREASURY_ADDRESS=your_solana_treasury_public_key
 ENCRYPTION_MASTER_KEY=your_fernet_key
+DATABASE_URL=your_9n8_neon_postgresql_url
+N9N8_REQUIRE_POSTGRES=true
 N9N8_TRADING_MODE=paper
 LIVE_TRADING_ENABLED=false
 WEBAPP_URL=https://your-https-host.example
@@ -96,7 +110,7 @@ py -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decod
 
 Store the generated key in a password manager and keep a separate offline backup. If it is lost, the encrypted wallet records cannot be decrypted. Changing it after users have wallets will make old encrypted secrets unreadable unless you perform a deliberate key migration.
 
-Helius endpoints are derived automatically from `HELIUS_API_KEY`. You can instead set both `SOLANA_RPC_URL` and `SOLANA_WSS_URL` explicitly.
+**Deployed Vercel API and Daemon:** configure the same production `DATABASE_URL`, `ENCRYPTION_MASTER_KEY`, `TELEGRAM_BOT_TOKEN`, `HELIUS_API_KEY`, `MASTER_TREASURY_ADDRESS`, `WEBAPP_URL`, `N9N8_REQUIRE_POSTGRES=true`, `N9N8_TRADING_MODE=paper` and `LIVE_TRADING_ENABLED=false` in the Vercel production environment. Do not use the SQLite file on Vercel. The Neon connection string is a secret and must not be committed or printed.\n\nHelius endpoints are derived automatically from `HELIUS_API_KEY`. You can instead set both `SOLANA_RPC_URL` and `SOLANA_WSS_URL` explicitly.
 
 ## GitHub Secrets vs runtime environment
 
@@ -110,7 +124,7 @@ Never print secrets in logs or commit `.env`.
 
 ## Paper and live modes
 
-Paper mode is the default. It listens to real launchpad events and reports discoveries, but it does not claim to fill simulated positions or manufacture PnL.
+Paper mode is the default. The persistent worker listens to real launchpad events and reports discoveries, but it does not claim to fill simulated positions or manufacture PnL.
 
 Live mode requires both:
 

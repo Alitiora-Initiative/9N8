@@ -64,6 +64,7 @@ class AutonomousEngine:
         self._last_quote_at = 0.0
         self._candidate_lock = asyncio.Semaphore(4)
         self._paper_notified: set[tuple[int, str]] = set()
+        self._enabled_users: set[int] = set()
 
     @property
     def live_enabled(self) -> bool:
@@ -80,6 +81,7 @@ class AutonomousEngine:
             if not user.get("activation_paid"):
                 raise ExecutionError("The $1 activation fee has not been confirmed.")
         await self.db.update_settings(telegram_id, {"enabled": True})
+        self._enabled_users.add(int(telegram_id))
         balance = await self.wallet.balance(telegram_id)
         await self.db.start_daily_risk(telegram_id, utc_day(), balance)
         await self.watch_wallet(telegram_id)
@@ -96,6 +98,7 @@ class AutonomousEngine:
 
     async def stop_user(self, telegram_id: int) -> None:
         await self.db.update_settings(telegram_id, {"enabled": False})
+        self._enabled_users.discard(int(telegram_id))
         await self.db.security_event(
             telegram_id, "engine_stopped",
             "New entries disabled; open position monitors remain active.",
@@ -104,6 +107,13 @@ class AutonomousEngine:
             telegram_id,
             "9N8 paused. New entries are disabled; existing positions remain under exit monitoring.",
         )
+        if not self._enabled_users and self._scanner_task is not None:
+            await self.sniper.stop()
+            scanner = self._scanner_task
+            self._scanner_task = None
+            if not scanner.done():
+                scanner.cancel()
+                await asyncio.gather(scanner, return_exceptions=True)
 
 
     async def watch_wallet(self, telegram_id: int) -> None:
@@ -161,6 +171,8 @@ class AutonomousEngine:
             self._wallet_watch_tasks.pop(telegram_id, None)
 
     async def _ensure_scanner(self) -> None:
+        if not self._enabled_users:
+            return
         if self._scanner_task is None or self._scanner_task.done():
             self._stopping = False
             self._scanner_task = asyncio.create_task(
@@ -184,9 +196,10 @@ class AutonomousEngine:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._position_tasks.clear()
         self._wallet_watch_tasks.clear()
+        self._enabled_users.clear()
 
     async def _on_candidate(self, candidate: LaunchCandidate) -> None:
-        if self._stopping:
+        if self._stopping or not self._enabled_users:
             return
         async with self._candidate_lock:
             users = await self.db.all_users_with_wallets()
@@ -233,6 +246,110 @@ class AutonomousEngine:
                         telegram_id,
                         f"9N8 skipped {candidate.mint[:8]}…: {type(exc).__name__}: {str(exc)[:180]}",
                     )
+
+
+    async def _confirmed_transaction(self, signature: str) -> dict | None:
+        """Wait briefly for confirmed RPC metadata; do not substitute quote estimates."""
+        for attempt in range(10):
+            try:
+                transaction = await self.helius.transaction(signature)
+                meta = (transaction or {}).get("meta") or {}
+                if transaction and meta and meta.get("err") is None:
+                    return transaction
+            except Exception as exc:
+                logger.warning(
+                    "Transaction metadata unavailable for %s (attempt %s: %s)",
+                    signature, attempt + 1, type(exc).__name__,
+                )
+            await asyncio.sleep(0.5)
+        return None
+
+    @staticmethod
+    def _wallet_transaction_delta(transaction: dict, wallet_address: str) -> int | None:
+        """Return confirmed wallet lamport delta, excluding rent returned by CloseAccount."""
+        meta = transaction.get("meta") or {}
+        message = ((transaction.get("transaction") or {}).get("message") or {})
+        keys = message.get("accountKeys") or []
+        pre = meta.get("preBalances") or []
+        post = meta.get("postBalances") or []
+        wallet_index = None
+        key_values: list[str] = []
+        for index, item in enumerate(keys):
+            value = item.get("pubkey") if isinstance(item, dict) else item
+            value = str(value)
+            key_values.append(value)
+            if value == wallet_address:
+                wallet_index = index
+        if wallet_index is None or wallet_index >= len(pre) or wallet_index >= len(post):
+            return None
+        delta = int(post[wallet_index]) - int(pre[wallet_index])
+        rent_refunds = 0
+        seen_closed_accounts: set[str] = set()
+        instructions = list(message.get("instructions") or [])
+        for group in meta.get("innerInstructions") or []:
+            instructions.extend(group.get("instructions") or [])
+        for instruction in instructions:
+            parsed = instruction.get("parsed") or {}
+            if str(parsed.get("type") or "").lower() not in {"closeaccount", "close_account"}:
+                continue
+            info = parsed.get("info") or {}
+            if str(info.get("destination") or "") != wallet_address:
+                continue
+            account = str(info.get("account") or "")
+            if not account or account in seen_closed_accounts:
+                continue
+            seen_closed_accounts.add(account)
+            try:
+                account_index = key_values.index(account)
+            except ValueError:
+                continue
+            if account_index < len(pre) and account_index < len(post):
+                account_rent = max(0, int(pre[account_index]) - int(post[account_index]))
+                token_row = next(
+                    (
+                        row for row in (meta.get("preTokenBalances") or [])
+                        if int(row.get("accountIndex", -1)) == account_index
+                    ),
+                    None,
+                )
+                token_info = (token_row or {}).get("uiTokenAmount") or {}
+                if (token_row or {}).get("mint") == SOL_MINT:
+                    # Closing a wrapped-SOL account returns both its rent and its
+                    # wrapped SOL. Exclude only the rent reserve from the trade delta.
+                    wrapped_lamports = int(token_info.get("amount") or 0)
+                    rent_refunds += max(0, account_rent - wrapped_lamports)
+                else:
+                    # A non-WSOL token account contains rent, not spendable SOL.
+                    rent_refunds += account_rent
+        return delta - rent_refunds
+
+    async def _record_trade_receipt(
+        self,
+        telegram_id: int,
+        event_type: str,
+        signature: str,
+        status: str,
+        *,
+        mint: str | None = None,
+        position_id: int | None = None,
+        amount_lamports: int | None = None,
+        token_amount_raw: int | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        recorder = getattr(self.db, "record_trade_receipt", None)
+        if recorder is None:
+            return
+        await recorder(
+            telegram_id,
+            event_type,
+            signature,
+            status,
+            mint=mint,
+            position_id=position_id,
+            amount_lamports=amount_lamports,
+            token_amount_raw=token_amount_raw,
+            metadata=metadata or {},
+        )
 
     async def _consider_entry(self, telegram_id: int, candidate: LaunchCandidate, config: dict) -> None:
         user = await self.db.get_user(telegram_id)
@@ -349,15 +466,19 @@ class AutonomousEngine:
             jito_tip_lamports=jito_tip,
             use_jito=use_jito,
         )
-        # Read transaction metadata first: confirmed account indexing can lag the
-        # successful swap by a few RPC updates.
-        try:
-            tx_data = await self.helius.transaction(result.signature)
-        except Exception:
-            tx_data = None
-            logger.warning("Could not fetch confirmed transaction metadata for %s", result.signature)
+        # Reconcile both transactions in a Jito bundle. The tip is a separate
+        # transaction and its network fee is part of the user's actual cost basis.
+        tx_data = await self._confirmed_transaction(result.signature)
+        tip_tx_data = (
+            await self._confirmed_transaction(result.tip_signature)
+            if result.tip_signature else None
+        )
         tx_meta = (tx_data or {}).get("meta") or {}
         network_fee = int(tx_meta.get("fee") or 5000)
+        tip_network_fee = int(((tip_tx_data or {}).get("meta") or {}).get("fee") or 0)
+        transaction_receipts_available = bool(
+            tx_data and (not result.tip_signature or tip_tx_data)
+        )
         wallet_address = str(wallet_key.pubkey())
         token_amount = 0
         token_decimals: int | None = None
@@ -384,16 +505,23 @@ class AutonomousEngine:
                     token_amount = 0
                 if token_amount > 0:
                     break
+        token_amount_provisional = False
         if token_amount <= 0:
-            # The confirmed route quote is retained as the provisional position
-            # size so this trade is not silently forgotten if RPC indexing lags.
+            # Keep a provisional record so the confirmed swap is not forgotten;
+            # mark the receipt unknown and pause further entries until reconciled.
             token_amount = int(result.output_amount)
+            token_amount_provisional = True
             await self.notify(
                 telegram_id,
                 f"WARNING: swap {result.signature} is confirmed, but Helius has not indexed the token account yet. "
                 "9N8 is recording the route output provisionally and will keep checking the wallet. "
                 "Verify the fill on Solscan before submitting another trade.",
             )
+        receipt_status = (
+            "confirmed"
+            if transaction_receipts_available and not token_amount_provisional
+            else "unknown"
+        )
         if token_decimals is None:
             try:
                 supply = await self.helius.token_supply(candidate.mint)
@@ -414,12 +542,46 @@ class AutonomousEngine:
                     entry_price = amount_sol * sol_usd / token_units
             except Exception:
                 logger.warning("Entry valuation unavailable for confirmed swap %s", result.signature)
-        total_basis = trade_lamports + network_fee + jito_tip
+        total_basis = trade_lamports + network_fee + jito_tip + tip_network_fee
         position_id = await self.db.create_position(
             telegram_id, candidate.mint, token_amount, total_basis,
             str(entry_price), result.signature,
         )
         await self.db.record_daily_entry(telegram_id, today)
+        await self._record_trade_receipt(
+            telegram_id, "buy", result.signature, receipt_status,
+            mint=candidate.mint,
+            position_id=position_id,
+            amount_lamports=total_basis,
+            token_amount_raw=token_amount,
+            metadata={
+                "launchpad": candidate.launchpad,
+                "expected_output_raw": str(result.output_amount),
+                "minimum_output_raw": str(result.minimum_output),
+                "token_amount_source": "provisional_jupiter_quote" if token_amount_provisional else "helius_or_transaction",
+                "network_fee_lamports": network_fee,
+                "jito_tip_lamports": jito_tip,
+                "tip_network_fee_lamports": tip_network_fee,
+                "bundle_id": result.bundle_id,
+                "tip_signature": result.tip_signature,
+                "receipt_reconciled": receipt_status == "confirmed",
+            },
+        )
+        if result.tip_signature:
+            await self._record_trade_receipt(
+                telegram_id, "fee", result.tip_signature, receipt_status,
+                mint=candidate.mint,
+                position_id=position_id,
+                amount_lamports=jito_tip + tip_network_fee,
+                metadata={"kind": "jito_tip", "bundle_id": result.bundle_id},
+            )
+        if receipt_status != "confirmed":
+            await self.db.update_settings(telegram_id, {"enabled": False})
+            await self.notify(
+                telegram_id,
+                "WARNING: the buy was confirmed but 9N8 could not reconcile all transaction receipts. "
+                "The position is being monitored, new entries are paused, and you must verify the Solscan receipt before resuming.",
+            )
         self._position_tasks[position_id] = asyncio.create_task(
             self._monitor_position(position_id), name=f"9n8-position-{position_id}"
         )
@@ -600,13 +762,93 @@ class AutonomousEngine:
                 result.signature,
                 f"profit:{position_id}:{result.signature}",
             )
+        # The actual SOL change is taken from confirmed transaction metadata,
+        # including the separate Jito tip transaction. Wallet deltas already
+        # include network fees and the treasury transfer; do not subtract them twice.
+        swap_tx_data = await self._confirmed_transaction(result.signature)
+        tip_tx_data = (
+            await self._confirmed_transaction(result.tip_signature)
+            if result.tip_signature else None
+        )
+        swap_delta = (
+            self._wallet_transaction_delta(swap_tx_data, str(wallet_key.pubkey()))
+            if swap_tx_data else None
+        )
+        tip_delta = (
+            self._wallet_transaction_delta(tip_tx_data, str(wallet_key.pubkey()))
+            if tip_tx_data else (0 if not result.tip_signature else None)
+        )
         remaining = await self.helius.token_balance_raw(str(wallet_key.pubkey()), mint)
+        if remaining <= 0:
+            for _attempt in range(5):
+                await asyncio.sleep(0.5)
+                remaining = await self.helius.token_balance_raw(str(wallet_key.pubkey()), mint)
+                if remaining > 0:
+                    break
         fully_closed = remaining == 0
-        net_realized_lamports = min_out - basis_sold - sell_fees - treasury_lamports
+        if swap_delta is None or tip_delta is None:
+            await self._record_trade_receipt(
+                telegram_id, "sell", result.signature, "unknown",
+                mint=mint, position_id=position_id,
+                token_amount_raw=sell_amount,
+                metadata={
+                    "reason": reason,
+                    "expected_output_raw": str(expected_out),
+                    "minimum_output_raw": str(min_out),
+                    "basis_sold_lamports": basis_sold,
+                    "treasury_fee_lamports": treasury_lamports,
+                    "tip_signature": result.tip_signature,
+                    "bundle_id": result.bundle_id,
+                    "remaining_token_amount_raw": remaining,
+                    "error": "Confirmed transaction metadata unavailable; wallet delta not reconciled.",
+                },
+            )
+            await self.db.close_position(
+                position_id, remaining,
+                "exit_pnl_unknown",
+                0, result.signature, fully_closed,
+            )
+            await self.db.update_settings(telegram_id, {"enabled": False})
+            await self.notify(
+                telegram_id,
+                f"EXIT SUBMITTED · {reason.upper()}\\n"
+                f"Mint: {mint}\\nSignature: https://solscan.io/tx/{result.signature}\\n"
+                "The transaction is reported landed, but exact wallet-delta metadata is unavailable. "
+                "The exit PnL is marked unknown, new entries are paused, and the position requires reconciliation before trading resumes.",
+            )
+            return
+
+        actual_wallet_delta = int(swap_delta) + int(tip_delta)
+        net_realized_lamports = actual_wallet_delta - basis_sold
+        await self._record_trade_receipt(
+            telegram_id, "sell", result.signature, "confirmed",
+            mint=mint, position_id=position_id,
+            amount_lamports=actual_wallet_delta,
+            token_amount_raw=sell_amount,
+            metadata={
+                "reason": reason,
+                "expected_output_raw": str(expected_out),
+                "minimum_output_raw": str(min_out),
+                "actual_wallet_delta_lamports": actual_wallet_delta,
+                "basis_sold_lamports": basis_sold,
+                "net_realized_pnl_lamports": net_realized_lamports,
+                "treasury_fee_lamports": treasury_lamports,
+                "tip_signature": result.tip_signature,
+                "bundle_id": result.bundle_id,
+                "remaining_token_amount_raw": remaining,
+            },
+        )
+        if result.tip_signature:
+            await self._record_trade_receipt(
+                telegram_id, "fee", result.tip_signature, "confirmed",
+                mint=mint, position_id=position_id,
+                amount_lamports=jito_tip,
+                metadata={"kind": "jito_tip", "bundle_id": result.bundle_id},
+            )
         await self.db.close_position(
             position_id, remaining,
             "take_profit_partial" if partial and not fully_closed else reason,
-            expected_out, result.signature, fully_closed,
+            net_realized_lamports, result.signature, fully_closed,
         )
         await self.db.record_daily_pnl(telegram_id, utc_day(), net_realized_lamports)
         rent_reclaimed = await self._reclaim_empty_accounts(telegram_id, mint, fully_closed)
@@ -615,6 +857,8 @@ class AutonomousEngine:
             f"EXIT CONFIRMED · {reason.upper()}\n"
             f"Mint: {mint}\nSold: {sell_amount} raw units\n"
             f"Expected SOL out: {from_lamports(expected_out)}\n"
+            f"Observed wallet delta: {from_lamports(actual_wallet_delta)} SOL\n"
+            f"Net realized PnL: {from_lamports(net_realized_lamports)} SOL\n"
             f"Profit fee: {from_lamports(treasury_lamports)} SOL\n"
             f"Remaining tokens: {remaining}\n"
             f"ATA rent released: {from_lamports(rent_reclaimed)} SOL\n"

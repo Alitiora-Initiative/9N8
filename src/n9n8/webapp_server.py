@@ -5,7 +5,9 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
@@ -24,6 +26,7 @@ from .math_engine import format_sol, from_lamports
 from .oracle import PriceOracle
 from .telemetry import TelemetryHub
 from .wallet import WalletManager
+from .vercel_queue import VercelQueueClient, VercelQueueError
 
 logger = logging.getLogger(__name__)
 WEBAPP_DIR = Path(__file__).resolve().parents[2] / "webapp"
@@ -98,11 +101,12 @@ def _validate_settings(values: dict[str, Any]) -> dict[str, Any]:
 def create_webapp(
     settings: Settings,
     db: Database,
-    engine: AutonomousEngine,
+    engine: AutonomousEngine | None,
     wallet: WalletManager,
     oracle: PriceOracle,
     bot: Bot,
-    telemetry: TelemetryHub,
+    telemetry: TelemetryHub | None,
+    worker_queue: VercelQueueClient | None = None,
 ) -> FastAPI:
     app = FastAPI(title="9N8 Telegram Mini App", docs_url=None, redoc_url=None)
     app.state.db = db
@@ -111,6 +115,7 @@ def create_webapp(
     app.state.oracle = oracle
     app.state.bot = bot
     app.state.telemetry = telemetry
+    app.state.worker_queue = worker_queue
     if WEBAPP_DIR.exists():
         app.mount("/assets", StaticFiles(directory=str(WEBAPP_DIR)), name="assets")
 
@@ -125,6 +130,27 @@ def create_webapp(
             return telegram_id
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    async def wake_worker(request: Request, payload: dict[str, Any], idempotency_key: str) -> None:
+        if worker_queue is None:
+            raise HTTPException(status_code=503, detail="Persistent worker queue is not configured.")
+        token = (
+            request.headers.get("x-vercel-oidc-token")
+            or os.getenv("VERCEL_QUEUE_API_TOKEN", "")
+        )
+        try:
+            await worker_queue.send(
+                settings.vercel_queue_topic,
+                payload,
+                token,
+                idempotency_key,
+            )
+        except VercelQueueError as exc:
+            logger.warning("Worker wake-up failed after Neon state was saved (%s)", type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="Your request was saved, but the worker could not be notified. Check its status before repeating any funds movement.",
+            ) from exc
 
     @app.get("/")
     async def index():
@@ -173,45 +199,110 @@ def create_webapp(
     @app.post("/api/settings")
     async def post_settings(
         patch: SettingsUpdate,
+        request: Request,
         x_telegram_init_data: str | None = Header(default=None),
     ):
         telegram_id = await authorize_header(x_telegram_init_data)
         try:
             values = _validate_settings(patch.values)
-            return await db.update_settings(telegram_id, values)
+            updated = await db.update_settings(telegram_id, values)
+            if engine is None:
+                await wake_worker(
+                    request,
+                    {"kind": "sync_user", "telegram_id": telegram_id},
+                    f"settings:{telegram_id}:{uuid.uuid4().hex}",
+                )
+            return updated
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/engine/start")
-    async def start_engine(x_telegram_init_data: str | None = Header(default=None)):
+    async def start_engine(
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
         telegram_id = await authorize_header(x_telegram_init_data)
         try:
-            mode = await engine.start_user(telegram_id)
-            return {"ok": True, "mode": mode}
+            user = await db.get_user(telegram_id)
+            if not user or not user.get("solana_address"):
+                raise HTTPException(status_code=409, detail="Create or import a Solana wallet first.")
+            if settings.trading_mode == "live":
+                if not settings.live_trading_enabled:
+                    raise HTTPException(status_code=409, detail="Live execution remains locked by the server.")
+                if not user.get("activation_paid"):
+                    raise HTTPException(status_code=409, detail="The live activation fee is not confirmed.")
+            if engine is not None:
+                mode = await engine.start_user(telegram_id)
+                return {"ok": True, "mode": mode, "enabled": True}
+            config = await db.update_settings(telegram_id, {"enabled": True})
+            await db.security_event(telegram_id, "engine_start_requested", "Start requested through the Vercel Mini App.")
+            await wake_worker(
+                request,
+                {"kind": "sync_user", "telegram_id": telegram_id},
+                f"start:{telegram_id}:{uuid.uuid4().hex}",
+            )
+            return {
+                "ok": True,
+                "mode": settings.trading_mode,
+                "enabled": bool(config.get("enabled")),
+                "message": "Start request saved. The persistent trading worker will activate the supervisor.",
+            }
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/engine/stop")
-    async def stop_engine(x_telegram_init_data: str | None = Header(default=None)):
+    async def stop_engine(
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
         telegram_id = await authorize_header(x_telegram_init_data)
-        await engine.stop_user(telegram_id)
+        if engine is not None:
+            await engine.stop_user(telegram_id)
+        else:
+            await db.update_settings(telegram_id, {"enabled": False})
+            await db.security_event(telegram_id, "engine_stop_requested", "Stop requested through the Vercel Mini App.")
+            await wake_worker(
+                request,
+                {"kind": "sync_user", "telegram_id": telegram_id},
+                f"stop:{telegram_id}:{uuid.uuid4().hex}",
+            )
         return {"ok": True, "enabled": False}
 
     @app.post("/api/positions/{position_id}/panic")
     async def panic_sell(
         position_id: int,
+        request: Request,
         x_telegram_init_data: str | None = Header(default=None),
     ):
         telegram_id = await authorize_header(x_telegram_init_data)
         try:
-            await engine.panic_sell(telegram_id, position_id)
-            return {"ok": True, "message": "Panic sell submitted; await the trade confirmation message."}
+            if engine is not None:
+                await engine.panic_sell(telegram_id, position_id)
+                return {"ok": True, "message": "Panic sell submitted; await the trade confirmation message."}
+            position = await db.get_position(position_id, telegram_id)
+            if not position or position.get("status") != "open":
+                raise HTTPException(status_code=404, detail="Open position not found.")
+            job = await db.enqueue_job(
+                telegram_id, "panic_sell", {"position_id": position_id},
+                f"webapp:panic:{telegram_id}:{position_id}",
+            )
+            await wake_worker(
+                request,
+                {"kind": "job", "job_id": int(job["id"]), "telegram_id": telegram_id},
+                f"job:{job['id']}",
+            )
+            return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Panic sell queued for the persistent worker."}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/wallet/withdraw")
     async def withdraw(
         action: ActionRequest,
+        request: Request,
         x_telegram_init_data: str | None = Header(default=None),
     ):
         telegram_id = await authorize_header(x_telegram_init_data)
@@ -221,43 +312,87 @@ def create_webapp(
             raise HTTPException(status_code=409, detail="Close all open positions before withdrawing.")
         try:
             destination = str(Pubkey.from_string(action.destination or ""))
-            await engine.stop_user(telegram_id)
-            amount, signature = await wallet.withdraw_all(telegram_id, destination)
-            await db.set_payout_address(telegram_id, destination)
-            return {"ok": True, "amount_sol": format_sol(amount), "signature": signature}
+            if engine is not None:
+                await engine.stop_user(telegram_id)
+                amount, signature = await wallet.withdraw_all(telegram_id, destination)
+                await db.set_payout_address(telegram_id, destination)
+                return {"ok": True, "amount_sol": format_sol(amount), "signature": signature}
+            await db.update_settings(telegram_id, {"enabled": False})
+            job = await db.enqueue_job(
+                telegram_id, "withdraw_all", {"destination": destination},
+                f"webapp:withdraw:{telegram_id}:{await db.get_wallet_address(telegram_id)}:{await wallet.balance(telegram_id)}:{destination}",
+            )
+            await wake_worker(
+                request,
+                {"kind": "job", "job_id": int(job["id"]), "telegram_id": telegram_id},
+                f"job:{job['id']}",
+            )
+            return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Withdrawal queued. The bot will send its result in Telegram."}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/wallet/wipe")
     async def wipe(
         action: ActionRequest,
+        request: Request,
         x_telegram_init_data: str | None = Header(default=None),
     ):
         telegram_id = await authorize_header(x_telegram_init_data)
         if not action.confirm:
             raise HTTPException(status_code=400, detail="Explicit confirmation is required.")
+        if await db.active_positions(telegram_id):
+            raise HTTPException(status_code=409, detail="Close all open positions before rotating the wallet.")
         try:
             destination = str(Pubkey.from_string(action.destination or ""))
-            await engine.stop_user(telegram_id)
-            new_address, new_secret, payout, signature = await wallet.rotate_wallet(
-                telegram_id, destination
+            if engine is not None:
+                await engine.stop_user(telegram_id)
+                new_address, new_secret, payout, signature = await wallet.rotate_wallet(
+                    telegram_id, destination
+                )
+                await engine.reset_wallet_watcher(telegram_id)
+                private_message = await bot.send_message(
+                    telegram_id,
+                    "NEW PAUSED 9N8 WALLET — SAVE THIS RECOVERY KEY\n\n"
+                    f"Address:\n{new_address}\n\n"
+                    f"Private key (base58):\n{new_secret}\n\n"
+                    "This message auto-deletes in 60 seconds. Anyone with this key can take the wallet assets.",
+                )
+                asyncio.create_task(_delete_sensitive_later(bot, telegram_id, private_message.message_id))
+                return {
+                    "ok": True, "new_address": new_address,
+                    "payout_sol": format_sol(payout), "signature": signature,
+                    "notice": "Recovery key sent in an auto-deleting Telegram message.",
+                }
+            await db.update_settings(telegram_id, {"enabled": False})
+            job = await db.enqueue_job(
+                telegram_id, "rotate_wallet", {"destination": destination},
+                f"webapp:rotate:{telegram_id}:{await db.get_wallet_address(telegram_id)}",
             )
-            await engine.reset_wallet_watcher(telegram_id)
-            private_message = await bot.send_message(
-                telegram_id,
-                "NEW PAUSED 9N8 WALLET — SAVE THIS RECOVERY KEY\n\n"
-                f"Address:\n{new_address}\n\n"
-                f"Private key (base58):\n{new_secret}\n\n"
-                "This message auto-deletes in 60 seconds. Anyone with this key can take the wallet assets.",
+            await wake_worker(
+                request,
+                {"kind": "job", "job_id": int(job["id"]), "telegram_id": telegram_id},
+                f"job:{job['id']}",
             )
-            asyncio.create_task(_delete_sensitive_later(bot, telegram_id, private_message.message_id))
-            return {
-                "ok": True, "new_address": new_address,
-                "payout_sol": format_sol(payout), "signature": signature,
-                "notice": "Recovery key sent in an auto-deleting Telegram message.",
-            }
+            return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Wallet rotation queued for the persistent worker."}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/jobs/{job_id}")
+    async def get_job_status(
+        job_id: int,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
+        telegram_id = await authorize_header(x_telegram_init_data)
+        if not hasattr(db, "get_job"):
+            raise HTTPException(status_code=404, detail="Worker job status is unavailable in this local database mode.")
+        job = await db.get_job(job_id, telegram_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Worker job not found.")
+        return job
 
     @app.websocket("/ws/telemetry")
     async def websocket_telemetry(websocket: WebSocket):
@@ -276,11 +411,26 @@ def create_webapp(
                 await websocket.close(code=4429)
                 return
             await db.ensure_user(telegram_id)
-            queue = await telemetry.subscribe(telegram_id)
+            if telemetry is not None:
+                queue = await telemetry.subscribe(telegram_id)
             await websocket.send_json({"type": "connected", "telegram_id": telegram_id})
+            last_event_id = 0
             while True:
-                event = await queue.get()
-                await websocket.send_json(event)
+                if queue is not None:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    await websocket.send_json(event)
+                elif hasattr(db, "events_after"):
+                    events = await db.events_after(telegram_id, last_event_id, limit=100)
+                    for event in events:
+                        last_event_id = max(last_event_id, int(event.get("id") or 0))
+                        await websocket.send_json(event)
+                    if not events:
+                        await asyncio.sleep(1)
+                    else:
+                        await asyncio.sleep(0.1)
+                else:
+                    await asyncio.sleep(5)
+                    await websocket.send_json({"type": "heartbeat"})
         except (ValueError, TypeError, AttributeError, json.JSONDecodeError, asyncio.TimeoutError):
             await websocket.close(code=4401)
         except WebSocketDisconnect:
@@ -288,7 +438,7 @@ def create_webapp(
         except asyncio.CancelledError:
             raise
         finally:
-            if queue is not None:
+            if queue is not None and telemetry is not None:
                 await telemetry.unsubscribe(telegram_id, queue)
 
     return app
