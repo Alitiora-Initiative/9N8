@@ -161,7 +161,7 @@ async def _network_selector_text(telegram_id: int) -> str:
         "EVM network selection is currently blocked. This runtime has no EVM wallet vault, RPC listener, contract-risk adapter, DEX swap executor, or EVM position watchdog.",
         "Selecting an unavailable network will not change the active engine. Do not send ETH or BNB assets to the Solana deposit address.",
     ])
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def _network_selector_keyboard() -> InlineKeyboardMarkup:
@@ -182,10 +182,10 @@ def _network_unavailable_text(code: str) -> str:
     if network is None:
         return "Unknown network. The active execution network remains Solana Mainnet."
     return (
-        f"⛔ {network.name.upper()} IS NOT CONNECTED\\n\\n"
-        "No chain switch was made. Solana Mainnet remains the only execution-enabled network.\\n\\n"
-        f"Requested DEX targets: {network.dex_targets}\\n"
-        f"Status: {network.execution_note}\\n\\n"
+        f"⛔ {network.name.upper()} IS NOT CONNECTED\n\n"
+        "No chain switch was made. Solana Mainnet remains the only execution-enabled network.\n\n"
+        f"Requested DEX targets: {network.dex_targets}\n"
+        f"Status: {network.execution_note}\n\n"
         "No wallet was generated, no balance was queried, and no transaction can be submitted for this network in the current release."
     )
 
@@ -195,7 +195,7 @@ async def _solana_wallet_text(telegram_id: int) -> str:
     address = await svc.db.get_wallet_address(telegram_id)
     if not address:
         return (
-            "💼 SOLANA WALLET MANAGEMENT\\n\\n"
+            "💼 SOLANA WALLET MANAGEMENT\n\n"
             "No Solana trading wallet is connected. Create a dedicated wallet or import an existing Solana key."
         )
     try:
@@ -203,10 +203,10 @@ async def _solana_wallet_text(telegram_id: int) -> str:
     except Exception:
         balance = "Temporarily unavailable"
     return (
-        "💼 SOLANA WALLET MANAGEMENT\\n\\n"
-        f"Network: Solana Mainnet\\n"
-        f"Address: {address}\\n"
-        f"Balance: {balance}\\n\\n"
+        "💼 SOLANA WALLET MANAGEMENT\n\n"
+        f"Network: Solana Mainnet\n"
+        f"Address: {address}\n"
+        f"Balance: {balance}\n\n"
         "Only send Solana-native assets to this address. Base, Ethereum and BNB Chain deposits are not supported here."
     )
 
@@ -1231,7 +1231,7 @@ async def cb_live_snipe_confirm(callback: CallbackQuery) -> None:
         if signature:
             lines.append(f"Solscan: https://solscan.io/tx/{signature}")
             buttons.insert(0, [InlineKeyboardButton(text="Solscan Transaction", url="https://solscan.io/tx/" + signature)])
-        await callback.message.answer("\\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception as exc:
         await callback.message.answer(
             "LIVE SNIPE DID NOT COMPLETE\n"
@@ -2082,9 +2082,9 @@ async def auto_detect_pasted_address(message: Message, state: FSMContext) -> Non
     evm_match = re.fullmatch(r"0x[a-fA-F0-9]{40}", candidate)
     if evm_match:
         await message.answer(
-            "🔷 EVM CONTRACT ADDRESS DETECTED\\n\\n"
+            "🔷 EVM CONTRACT ADDRESS DETECTED\n\n"
             "This address format belongs to an EVM network, but Base, Ethereum and BNB Chain are not connected to 9N8's execution runtime yet. "
-            "No token scan, wallet lookup, quote or transaction was attempted.\\n\\n"
+            "No token scan, wallet lookup, quote or transaction was attempted.\n\n"
             "Open the network selector to review the current connection status.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="🌐 Network Selector", callback_data="network:show")],
@@ -2104,8 +2104,8 @@ async def auto_detect_pasted_address(message: Message, state: FSMContext) -> Non
 
     _pending_detected_mints[message.from_user.id] = mint
     await message.answer(
-        "🎯 SOLANA TOKEN ADDRESS DETECTED\\n\\n"
-        f"Mint: {mint}\\n\\n"
+        "🎯 SOLANA TOKEN ADDRESS DETECTED\n\n"
+        f"Mint: {mint}\n\n"
         "Choose which isolated account should preview this token. A Live choice only prepares a quote and safety report; it does not buy until you review and confirm.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🧪 Paper Preview", callback_data="detected:paper")],
