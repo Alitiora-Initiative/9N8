@@ -2437,26 +2437,31 @@ async function setBotProfileAndCommands(): Promise<void> {
   // Keep the bot's public description and command list easy to understand.
   try {
     await telegram("setMyDescription", {
-      description: "Welcome to 9N8. Follow markets, practise with virtual money, and connect Binance, Bybit or OKX. Choose Spot, Margin, Futures or Options access. Connecting an account does not place a trade. Real exchange orders remain locked."
+      description: "9N8 Solana Sniper: separate Paper and Live control panels, live launchpad monitoring, positions, risk rules and wallet controls. Paper uses virtual money; live execution remains gated."
     });
     await telegram("setMyShortDescription", {
-      short_description: "Practise with virtual money and connect Binance, Bybit or OKX markets."
+      short_description: "Solana Sniper · Separate Paper & Live controls · Safety gates."
     });
     await telegram("setMyCommands", {
       commands: [
-        { command: "start", description: "Start 9N8" },
-        { command: "services", description: "See what 9N8 can do" },
-        { command: "paper", description: "See your virtual practice account" },
-        { command: "simulator", description: "Open live-price practice charts" },
+        { command: "start", description: "Open the 9N8 Solana Sniper dashboard" },
+        { command: "sniper", description: "Open the complete Solana Sniper control panel" },
+        { command: "solana_paper", description: "Open separate Solana Paper Trading controls" },
+        { command: "solana_live", description: "Open gated Solana Live Trading controls" },
+        { command: "positions", description: "View Paper and Live positions" },
+        { command: "settings", description: "Open sniper trading settings" },
+        { command: "safety", description: "Open anti-rug safety filters" },
+        { command: "services", description: "See all 9N8 services" },
+        { command: "simulator", description: "Open the exchange live-price simulator" },
         { command: "connect", description: "Connect Binance, Bybit or OKX" },
         { command: "connections", description: "See your connected accounts" },
         { command: "wallets", description: "See linked wallets" },
-        { command: "live", description: "See what is enabled for live use" },
+        { command: "live", description: "See live readiness and risk status" },
         { command: "risk", description: "See your safety limits" },
         { command: "approvals", description: "See requests waiting for approval" },
         { command: "pause", description: "Pause new activity" },
-        { command: "stop", description: "Stop the bot" },
-        { command: "help", description: "Get help" }
+        { command: "stop", description: "Emergency stop" },
+        { command: "help", description: "Get all commands and instructions" }
       ]
     });
   } catch {
