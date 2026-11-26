@@ -273,6 +273,7 @@ async def cb_create_wallet(callback: CallbackQuery) -> None:
     await callback.answer()
     try:
         address, secret = await svc.wallet.create_wallet(callback.from_user.id)
+        await svc.engine.watch_wallet(callback.from_user.id)
         await callback.message.answer(
             f"Wallet created. Solana deposit address:\n{address}\n\n"
             "Your recovery key will arrive in a separate auto-deleting message."
@@ -299,6 +300,7 @@ async def handle_import_wallet(message: Message, state: FSMContext) -> None:
         if not _is_private(message):
             return
         address = await svc.wallet.import_wallet(message.from_user.id, (message.text or "").strip())
+        await svc.engine.watch_wallet(message.from_user.id)
         await message.answer(f"Wallet imported successfully.\nSolana address:\n{address}")
     except WalletError as exc:
         await message.answer(f"Wallet import failed: {exc}")
@@ -676,6 +678,7 @@ async def cb_wipe_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         address, secret, payout, signature = await svc.wallet.rotate_wallet(
             callback.from_user.id, destination
         )
+        await svc.engine.reset_wallet_watcher(callback.from_user.id)
         await callback.message.answer(
             f"Old wallet payout: {format_sol(payout)} SOL\n"
             f"Receipt: https://solscan.io/tx/{signature}\n"
