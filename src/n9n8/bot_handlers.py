@@ -531,8 +531,14 @@ def _validated_setting(field: str, raw: str):
         "jito_tip_lamports": (Decimal("0"), Decimal("100000000")),
         "take_profit_pct": (Decimal("0.5"), Decimal("500")),
         "stop_loss_pct": (Decimal("0.5"), Decimal("95")),
-        "max_hold_seconds": (Decimal("5"), Decimal("3600")),
+        "max_hold_seconds": (Decimal("5"), Decimal("86400")),
         "moon_bag_pct": (Decimal("0"), Decimal("90")),
+        "take_profit_2_pct": (Decimal("1"), Decimal("1000")),
+        "take_profit_2_sell_pct": (Decimal("1"), Decimal("90")),
+        "trailing_stop_pct": (Decimal("1"), Decimal("80")),
+        "min_liquidity_sol": (Decimal("0.1"), Decimal("100000")),
+        "min_lp_locked_pct": (Decimal("50"), Decimal("100")),
+        "max_dev_wallet_pct": (Decimal("0.1"), Decimal("100")),
         "daily_position_limit": (Decimal("1"), Decimal("100")),
         "max_daily_drawdown_pct": (Decimal("1"), Decimal("50")),
         "max_top10_concentration_pct": (Decimal("1"), Decimal("100")),
@@ -554,16 +560,26 @@ async def handle_parameter_value(message: Message, state: FSMContext) -> None:
     svc = _svc()
     data = await state.get_data()
     field = data.get("field")
+    mode = str(data.get("mode", "live"))
     try:
         value = _validated_setting(field, message.text or "")
-        await svc.db.update_settings(message.from_user.id, {field: value})
-        await message.answer("Setting saved.")
+        if mode == "paper":
+            if not svc.engine.paper_engine:
+                raise ValueError("Paper engine is not available.")
+            await svc.engine.paper_engine.store.update_settings(message.from_user.id, {field: value}, "paper")
+        else:
+            await svc.db.update_settings(message.from_user.id, {field: value})
+        await message.answer(f"{mode.title()} setting saved.")
     except (ValueError, TypeError) as exc:
         await message.answer(f"Setting was not changed: {exc}")
     finally:
         await state.clear()
-    config = await svc.db.get_settings(message.from_user.id)
-    await message.answer("CURRENT 9N8 SETTINGS", reply_markup=_settings_keyboard(config))
+    if mode == "paper" and svc.engine.paper_engine:
+        config = await svc.engine.paper_engine.store.settings(message.from_user.id, "paper")
+        await message.answer("PAPER SETTINGS", reply_markup=_paper_settings_keyboard(config))
+    else:
+        config = await svc.db.get_settings(message.from_user.id)
+        await message.answer("LIVE SETTINGS", reply_markup=_settings_keyboard(config))
 
 
 @router.callback_query(F.data == "fees:show")
