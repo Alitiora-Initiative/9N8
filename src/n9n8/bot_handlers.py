@@ -1094,6 +1094,32 @@ async def cmd_paper_positions(message: Message) -> None:
     await _show_command_panel(message, text, keyboard)
 
 
+def _paper_positions_view(rows: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+    lines = ["🧪 PAPER POSITIONS · VIRTUAL ONLY", ""]
+    buttons = []
+    if not rows:
+        lines.append("No open virtual positions.")
+    for row in rows[:10]:
+        mint = str(row["mint"])
+        lines.append(
+            f"{mint}\n"
+            f"• Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"• Marked PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"• Tokens: {row['token_amount_raw']} raw units"
+        )
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"Virtual Sell 100% {mint[:7]}…",
+                callback_data=f"paper:position:sell:{row['id']}",
+            )
+        ])
+    buttons.extend([
+        [InlineKeyboardButton(text="🔄 Refresh Paper Positions", callback_data="positions:paper")],
+        [InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")],
+    ])
+    return "\n\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
 async def _send_paper_positions(message: Message, rows: list[dict]) -> None:
     lines = ["🧪 PAPER POSITIONS · VIRTUAL ONLY", ""]
     buttons = []
@@ -1119,22 +1145,8 @@ async def cb_paper_positions(callback: CallbackQuery) -> None:
     svc = _svc()
     await callback.answer()
     rows = await svc.engine.paper_engine.store.positions(callback.from_user.id) if svc.engine.paper_engine else []
-    if not rows:
-        await callback.message.edit_text("No open virtual positions.",reply_markup=_paper_menu_keyboard(False))
-        return
-    lines = ["PAPER POSITIONS · VIRTUAL ONLY",""]
-    buttons = []
-    for row in rows[:10]:
-        mint = str(row["mint"])
-        lines.append(
-            f"Mint: {mint}\n"
-            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
-            f"Marked PnL: {row.get('last_pnl_pct','0')}%\n"
-            f"Tokens: {row['token_amount_raw']} raw units"
-        )
-        buttons.append([InlineKeyboardButton(text=f"Virtual Sell 100% {mint[:7]}…", callback_data=f"paper:position:sell:{row['id']}")])
-    buttons.append([InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")])
-    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    text, keyboard = _paper_positions_view(rows)
+    await callback.message.edit_text(text, reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("paper:position:sell:"))
@@ -1156,7 +1168,6 @@ async def cmd_live_positions(message: Message) -> None:
     svc = _svc()
     rows = await svc.db.active_positions(message.from_user.id)
     if not rows:
-        if not rows:
         await _show_command_panel(
             message,
             "No open live positions in your real Solana wallet.",
@@ -1165,6 +1176,42 @@ async def cmd_live_positions(message: Message) -> None:
         return
     text, keyboard = await _live_positions_view(rows)
     await _show_command_panel(message, text, keyboard)
+
+
+async def _live_positions_view(rows: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+    lines = ["🔴 LIVE ACTIVE POSITIONS · SOLANA MAINNET", ""]
+    buttons = []
+    if not rows:
+        lines.append("No open live positions.")
+    for row in rows[:8]:
+        mint = str(row["mint"])
+        entry = int(row.get("initial_cost_lamports") or 0)
+        current = int(row.get("last_value_lamports") or 0)
+        realized = int(row.get("realized_lamports") or 0)
+        pnl = realized + current - entry
+        phase = "MOONBAG · TRAILING ACTIVE" if bool(row.get("tp1_done")) else "INITIAL · WAITING FOR TP1"
+        lines.append(
+            f"{mint}\n"
+            f"• Invested: {format_sol(entry)} SOL\n"
+            f"• Current marked value: {format_sol(current)} SOL\n"
+            f"• Realized PnL: {format_sol(realized)} SOL\n"
+            f"• Estimated total PnL: {format_sol(pnl)} SOL ({row.get('last_pnl_pct','0')}% last mark)\n"
+            f"• Tokens: {row['token_amount_raw']} raw units\n"
+            f"• Phase: {phase}"
+        )
+        buttons.append([
+            InlineKeyboardButton(text=f"💰 Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
+            InlineKeyboardButton(text=f"🚨 Sell 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
+        ])
+        buttons.append([
+            InlineKeyboardButton(text="📈 Live Chart", url="https://dexscreener.com/solana/" + mint),
+        ])
+    buttons.extend([
+        [InlineKeyboardButton(text="🔄 Refresh Live Prices", callback_data="positions:live")],
+        [InlineKeyboardButton(text="🧨 PANIC SELL ALL LIVE POSITIONS", callback_data="positions:panic_all:ask")],
+        [InlineKeyboardButton(text="🏠 Back to Dashboard", callback_data="home:show")],
+    ])
+    return "\n\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 async def _send_live_positions(message: Message, rows: list[dict]) -> None:
@@ -1187,37 +1234,17 @@ async def _send_live_positions(message: Message, rows: list[dict]) -> None:
         [InlineKeyboardButton(text="🧨 PANIC SELL ALL LIVE POSITIONS", callback_data="positions:panic_all:ask")],
         [InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")],
     ])
-    await message.answer("\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    text, keyboard = await _live_positions_view(rows)
+    await _show_command_panel(message, text, keyboard)
 
 
 @router.callback_query(F.data == "positions:live")
 async def cb_live_positions(callback: CallbackQuery) -> None:
     svc = _svc()
-    await callback.answer()
+    await callback.answer("Refreshing live positions…")
     rows = await svc.db.active_positions(callback.from_user.id)
-    if not rows:
-        await callback.message.edit_text("No open live positions.",reply_markup=_live_menu_keyboard(False,False))
-        return
-    lines = ["LIVE POSITIONS · REAL WALLET",""]
-    buttons = []
-    for row in rows[:8]:
-        mint = str(row["mint"])
-        lines.append(
-            f"Mint: {mint}\n"
-            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
-            f"Current PnL: {row.get('last_pnl_pct','0')}%\n"
-            f"Tokens: {row['token_amount_raw']} raw\n"
-            f"Target state: {row.get('exit_reason') or 'monitoring'}"
-        )
-        buttons.append([
-            InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
-            InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
-        ])
-    buttons.extend([
-        [InlineKeyboardButton(text="🧨 PANIC SELL ALL LIVE POSITIONS", callback_data="positions:panic_all:ask")],
-        [InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")],
-    ])
-    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    text, keyboard = await _live_positions_view(rows)
+    await callback.message.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "positions:panic_all:ask")
