@@ -64,6 +64,7 @@ class AutonomousEngine:
         self._last_quote_at = 0.0
         self._candidate_lock = asyncio.Semaphore(4)
         self._paper_notified: set[tuple[int, str]] = set()
+        self._enabled_users: set[int] = set()
 
     @property
     def live_enabled(self) -> bool:
@@ -80,6 +81,7 @@ class AutonomousEngine:
             if not user.get("activation_paid"):
                 raise ExecutionError("The $1 activation fee has not been confirmed.")
         await self.db.update_settings(telegram_id, {"enabled": True})
+        self._enabled_users.add(int(telegram_id))
         balance = await self.wallet.balance(telegram_id)
         await self.db.start_daily_risk(telegram_id, utc_day(), balance)
         await self.watch_wallet(telegram_id)
@@ -96,6 +98,7 @@ class AutonomousEngine:
 
     async def stop_user(self, telegram_id: int) -> None:
         await self.db.update_settings(telegram_id, {"enabled": False})
+        self._enabled_users.discard(int(telegram_id))
         await self.db.security_event(
             telegram_id, "engine_stopped",
             "New entries disabled; open position monitors remain active.",
@@ -104,6 +107,13 @@ class AutonomousEngine:
             telegram_id,
             "9N8 paused. New entries are disabled; existing positions remain under exit monitoring.",
         )
+        if not self._enabled_users and self._scanner_task is not None:
+            await self.sniper.stop()
+            scanner = self._scanner_task
+            self._scanner_task = None
+            if not scanner.done():
+                scanner.cancel()
+                await asyncio.gather(scanner, return_exceptions=True)
 
 
     async def watch_wallet(self, telegram_id: int) -> None:
@@ -161,6 +171,8 @@ class AutonomousEngine:
             self._wallet_watch_tasks.pop(telegram_id, None)
 
     async def _ensure_scanner(self) -> None:
+        if not self._enabled_users:
+            return
         if self._scanner_task is None or self._scanner_task.done():
             self._stopping = False
             self._scanner_task = asyncio.create_task(
@@ -184,9 +196,10 @@ class AutonomousEngine:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._position_tasks.clear()
         self._wallet_watch_tasks.clear()
+        self._enabled_users.clear()
 
     async def _on_candidate(self, candidate: LaunchCandidate) -> None:
-        if self._stopping:
+        if self._stopping or not self._enabled_users:
             return
         async with self._candidate_lock:
             users = await self.db.all_users_with_wallets()
