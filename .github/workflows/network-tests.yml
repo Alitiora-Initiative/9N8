@@ -18,5 +18,7 @@ jobs:
           deno-version: v2.x
       - name: Test network registry and address classification
         run: deno test supabase/functions/telegram-bot-next/networks_test.ts
+      - name: Test Jupiter live quote and expiry guards
+        run: deno test supabase/functions/telegram-bot-next/jupiter-live_test.ts
       - name: Type-check Telegram Edge Function
         run: deno check supabase/functions/telegram-bot-next/index.ts
