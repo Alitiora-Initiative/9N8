@@ -195,13 +195,14 @@ async def run(worker_only: bool = False) -> None:
                     jobs = await db.claim_jobs(worker_id, limit=10)
                     for job in jobs:
                         await run_worker_job(job)
+                    open_position_count = 0
+                    for active_user_id in active_users:
+                        open_position_count += len(await db.active_positions(active_user_id))
                     await db.heartbeat(
                         worker_id,
                         "running",
                         settings.trading_mode,
-                        {"active_users": len(active_users), "open_positions": sum(
-                            len(await db.active_positions(user_id)) for user_id in active_users
-                        ) if active_users else 0},
+                        {"active_users": len(active_users), "open_positions": open_position_count},
                     )
             except asyncio.CancelledError:
                 raise
