@@ -1,9 +1,9 @@
 name: 9N8 Solana tests
 on:
   push:
-    branches: [main, feature/solana-telegram-sniper, feature/9n8-neon-platform-split]
+    branches: [main, feature/solana-telegram-sniper, feature/9n8-neon-platform-split, feature/telegram-network-switcher-and-dashboard]
   pull_request:
-    branches: [main]
+    branches: [main, feature/solana-live-controls-completion]
 permissions:
   contents: read
 
