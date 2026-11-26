@@ -137,6 +137,134 @@ class AutonomousEngine:
         checks["ready"] = not checks["blockers"]
         return checks
 
+    async def preview_live_snipe(
+        self, telegram_id: int, mint: str, amount_sol: str,
+    ) -> dict[str, Any]:
+        """Validate a manual live buy without signing or submitting a transaction."""
+        try:
+            canonical_mint = str(Pubkey.from_string(mint.strip()))
+        except Exception as exc:
+            raise ExecutionError("Enter a valid Solana token mint address.") from exc
+        if canonical_mint == SOL_MINT:
+            raise ExecutionError("Select a token mint other than wrapped SOL.")
+        if not self.live_enabled:
+            raise ExecutionError("The operator has not enabled the global live-trading switch.")
+        config = await self.db.get_settings(telegram_id)
+        if not bool(config.get("live_enabled", False)):
+            raise ExecutionError("Live mode is OFF for this Telegram account. Open /live and arm it first.")
+        readiness = await self.live_readiness(telegram_id)
+        if not readiness["ready"]:
+            raise ExecutionError("Live readiness is blocked: " + " ".join(readiness["blockers"][:4]))
+        if await self.db.has_open_mint(telegram_id, canonical_mint):
+            raise ExecutionError("This wallet already has an open position in this mint.")
+        daily = await self.db.start_daily_risk(telegram_id, utc_day(), await self.wallet.balance(telegram_id))
+        daily_cap = int(config.get("daily_position_limit", self.settings.default_daily_trades))
+        if daily["trade_count"] >= daily_cap:
+            raise ExecutionError("Your daily live trade limit has been reached.")
+        if len(await self.db.active_positions(telegram_id)) >= daily_cap:
+            raise ExecutionError("Your maximum number of open live positions has been reached.")
+
+        buy_amount = dec(amount_sol)
+        hard_cap = dec(self.settings.max_position_sol)
+        if buy_amount <= 0 or buy_amount > hard_cap:
+            raise ExecutionError(f"Buy size must be greater than zero and no more than {hard_cap} SOL.")
+        amount_lamports = to_lamports(buy_amount)
+        balance = await self.wallet.balance(telegram_id)
+        priority = max(0, int(config.get("priority_fee_lamports", 10_000)))
+        use_jito = bool(config.get("mev_shield", True))
+        tip = max(0, int(config.get("jito_tip_lamports", 1_000_000))) if use_jito else 0
+        try:
+            token_rent = 2 * int(await self.helius.rent_exemption(165))
+        except Exception as exc:
+            raise ExecutionError("Current token-account rent could not be checked; live buy blocked.") from exc
+        required = amount_lamports + priority + tip + token_rent + BASE_GAS_RESERVE
+        if balance < required:
+            raise ExecutionError(
+                f"Wallet balance is {from_lamports(balance)} SOL; this buy needs at least "
+                f"{from_lamports(required)} SOL including fees and rent reserves."
+            )
+
+        try:
+            sol_price = await self.oracle.sol_usd()
+            minimum_liquidity_usd = max(
+                dec(config.get("min_liquidity_sol", "5")) * sol_price,
+                dec(config.get("min_liquidity_usd", "0")),
+            )
+            risk = await self.security.inspect(
+                canonical_mint,
+                launchpad="raydium",
+                max_top10_pct=str(config.get("max_top10_concentration_pct", "25")),
+                min_liquidity_usd=str(minimum_liquidity_usd),
+                min_lp_locked_pct=str(config.get("min_lp_locked_pct", "80")),
+                max_dev_pct=str(config.get("max_dev_wallet_pct", "5")),
+                require_mint_authority_revoked=bool(config.get("require_mint_authority_revoked", True)),
+                require_freeze_authority_revoked=bool(config.get("require_freeze_authority_revoked", True)),
+            )
+        except Exception as exc:
+            raise ExecutionError(f"Live token safety checks could not be completed: {type(exc).__name__}.") from exc
+        if not risk.passed:
+            raise ExecutionError("Token rejected by the safety gate: " + "; ".join(risk.reasons[:5]))
+
+        async with self._quote_lock:
+            interval = 1.05 if self.settings.jupiter_api_key else 2.1
+            wait = interval - (time.monotonic() - self._last_quote_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            quote = await self.executor.quote(SOL_MINT, canonical_mint, amount_lamports)
+            self._last_quote_at = time.monotonic()
+        expected = int(quote.get("outAmount") or 0)
+        minimum = int(quote.get("otherAmountThreshold") or expected)
+        if expected <= 0 or minimum <= 0:
+            raise ExecutionError("Jupiter did not return a usable buy quote.")
+        supply = await self.helius.token_supply(canonical_mint)
+        decimals = int(supply["value"]["decimals"])
+        units = Decimal(minimum) / (Decimal(10) ** decimals)
+        if units <= 0:
+            raise ExecutionError("Token quote has no usable minimum output.")
+        entry_price_usd = buy_amount * sol_price / units
+        return {
+            "mint": canonical_mint,
+            "buy_amount_sol": str(buy_amount),
+            "expected_output_raw": str(expected),
+            "minimum_output_raw": str(minimum),
+            "price_impact_pct": str(quote.get("priceImpactPct") or "unknown"),
+            "entry_price_usd": str(entry_price_usd),
+            "liquidity_usd": risk.liquidity_usd,
+            "lp_locked_pct": risk.lp_locked_pct,
+            "top10_concentration_pct": risk.top10_concentration_pct,
+            "developer_concentration_pct": risk.developer_concentration_pct,
+            "mint_authority_disabled": risk.mint_authority_disabled,
+            "freeze_authority_disabled": risk.freeze_authority_disabled,
+            "estimated_required_sol": str(from_lamports(required)),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    async def manual_snipe(self, telegram_id: int, mint: str, amount_sol: str) -> int:
+        """Execute a manual live snipe only after a fresh second-stage validation."""
+        preview = await self.preview_live_snipe(telegram_id, mint, amount_sol)
+        if (datetime.now(timezone.utc) - datetime.fromisoformat(preview["created_at"])).total_seconds() > 30:
+            raise ExecutionError("The live snipe preview expired. Run /snipe again.")
+        config = await self.db.get_settings(telegram_id)
+        config["buy_amount_sol"] = str(preview["buy_amount_sol"])
+        candidate = LaunchCandidate(
+            mint=preview["mint"],
+            launchpad="raydium",
+            signature="manual-telegram-snipe",
+            slot=None,
+            created_at_slot=None,
+            developer_buy_sol=None,
+            source_logs=("manual-telegram-snipe",),
+            bonding_curve=None,
+        )
+        await self._consider_entry(telegram_id, candidate, config, buy_amount_override_sol=str(preview["buy_amount_sol"]))
+        positions = await self.db.active_positions(telegram_id)
+        match = next((p for p in positions if str(p.get("mint")) == preview["mint"]), None)
+        if not match:
+            raise ExecutionError(
+                "The live buy was not recorded as an open position. Check the live trade receipt and wallet before retrying."
+            )
+        return int(match["id"])
+
     async def start_live_user(self, telegram_id: int) -> dict[str, Any]:
         await self.db.ensure_user(telegram_id)
         readiness = await self.live_readiness(telegram_id)
@@ -427,7 +555,10 @@ class AutonomousEngine:
             metadata=metadata or {},
         )
 
-    async def _consider_entry(self, telegram_id: int, candidate: LaunchCandidate, config: dict) -> None:
+    async def _consider_entry(
+        self, telegram_id: int, candidate: LaunchCandidate, config: dict,
+        buy_amount_override_sol: str | None = None,
+    ) -> None:
         user = await self.db.get_user(telegram_id)
         if not user or not user.get("activation_paid"):
             return
@@ -506,7 +637,11 @@ class AutonomousEngine:
             )
             return
 
-        amount_sol = dec(config.get("buy_amount_sol", self.settings.default_buy_sol))
+        amount_sol = dec(
+            buy_amount_override_sol
+            if buy_amount_override_sol is not None
+            else config.get("buy_amount_sol", self.settings.default_buy_sol)
+        )
         if amount_sol <= 0 or amount_sol > dec(self.settings.max_position_sol):
             await self.notify(telegram_id, "Entry blocked: buy amount exceeds the hard position cap.")
             return
