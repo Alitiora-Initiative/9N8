@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot, F, Router
@@ -16,7 +18,7 @@ from solders.pubkey import Pubkey
 
 from .config import Settings
 from .database import Database
-from .math_engine import format_sol, usd_to_lamports
+from .math_engine import format_sol, to_lamports, usd_to_lamports
 from .oracle import PriceOracle
 from .wallet import WalletError, WalletManager
 from .autonomous_engine import AutonomousEngine
@@ -34,11 +36,17 @@ class ParameterFlow(StatesGroup):
 
 
 class WithdrawFlow(StatesGroup):
+    amount = State()
     destination = State()
 
 
 class SnipeFlow(StatesGroup):
     mint = State()
+
+
+class LiveSnipeFlow(StatesGroup):
+    mint = State()
+    amount = State()
 
 
 class WipeFlow(StatesGroup):
@@ -56,12 +64,19 @@ class AppServices:
 
 services: AppServices | None = None
 _pending_paper_snipes: dict[int, dict] = {}
-_pending_paper_snipes: dict[int, dict] = {}
+_pending_live_snipes: dict[int, dict] = {}
+_withdraw_locks: dict[int, asyncio.Lock] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
     global services
     services = value
+    # This deployment is intentionally single-operator. Filter every message
+    # and callback at the Router boundary, not only individual commands.
+    if not getattr(router, "_n9n8_authorized_filter_installed", False):
+        router.message.filter(F.from_user.id == value.settings.authorized_user_id)
+        router.callback_query.filter(F.from_user.id == value.settings.authorized_user_id)
+        router._n9n8_authorized_filter_installed = True
 
 
 def _svc() -> AppServices:
@@ -86,6 +101,7 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🧪 Paper Trading", callback_data="paper:menu"),
             InlineKeyboardButton(text="🔴 Live Solana Sniper", callback_data="live:menu"),
         ],
+        [InlineKeyboardButton(text="🎯 Manual Live Snipe", callback_data="live:snipe")],
         [
             InlineKeyboardButton(text="📊 Positions", callback_data="positions:show"),
             InlineKeyboardButton(text="📜 Trade History", callback_data="history:show"),
@@ -143,44 +159,8 @@ def _mode_keyboard(mode: str, enabled: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _paper_settings_keyboard(config: dict) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"Buy {config.get('buy_amount_sol','0.05')} SOL", callback_data="paper:field:buy_amount_sol"),
-            InlineKeyboardButton(text=f"Slippage {config.get('slippage_pct','15')}%", callback_data="paper:field:slippage_pct"),
-        ],
-        [
-            InlineKeyboardButton(text=f"TP1 +{config.get('take_profit_pct','100')}%", callback_data="paper:field:take_profit_pct"),
-            InlineKeyboardButton(text=f"TP2 +{config.get('take_profit_2_pct','300')}%", callback_data="paper:field:take_profit_2_pct"),
-        ],
-        [
-            InlineKeyboardButton(text=f"TP2 Sell {config.get('take_profit_2_sell_pct','25')}%", callback_data="paper:field:take_profit_2_sell_pct"),
-            InlineKeyboardButton(text=f"Trail {config.get('trailing_stop_pct','20')}%", callback_data="paper:field:trailing_stop_pct"),
-        ],
-        [
-            InlineKeyboardButton(text=f"Hard Stop {config.get('stop_loss_pct','30')}%", callback_data="paper:field:stop_loss_pct"),
-            InlineKeyboardButton(text=f"Hold {int(config.get('max_hold_seconds',14400))//3600}h", callback_data="paper:field:max_hold_seconds"),
-        ],
-        [
-            InlineKeyboardButton(text=f"Jito Estimate {format_sol(int(config.get('jito_tip_lamports',2000000)))} SOL", callback_data="paper:field:jito_tip_lamports"),
-            InlineKeyboardButton(text=f"Min Liquidity {config.get('min_liquidity_sol','5')} SOL", callback_data="paper:field:min_liquidity_sol"),
-        ],
-        [
-            InlineKeyboardButton(text=f"LP Locked {config.get('min_lp_locked_pct','80')}%", callback_data="paper:field:min_lp_locked_pct"),
-            InlineKeyboardButton(text=f"Top 10 ≤ {config.get('max_top10_concentration_pct','25')}%", callback_data="paper:field:max_top10_concentration_pct"),
-        ],
-        [InlineKeyboardButton(text=f"Max Developer {config.get('max_dev_wallet_pct','5')}%", callback_data="paper:field:max_dev_wallet_pct")],
-        [
-            InlineKeyboardButton(text="Launchpad: Both" if config.get("launchpad","both")=="both" else f"Launchpad: {config.get('launchpad')}", callback_data="paper:launchpad"),
-            InlineKeyboardButton(text="MEV Shield: " + ("ON" if config.get("mev_shield",True) else "OFF"), callback_data="paper:mev"),
-        ],
-        [InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")],
-    ])
-
-
 def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
     launchpad = str(config.get("launchpad", "both"))
-    pump_mode = str(config.get("pump_mode", "fresh"))
     mev = "ON" if config.get("mev_shield", True) else "OFF"
     rows = [
         [
@@ -189,43 +169,47 @@ def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Both", callback_data="settings:launchpad:both"),
         ],
         [
-            InlineKeyboardButton(text="Fresh Launch", callback_data="settings:pumpmode:fresh"),
-            InlineKeyboardButton(text="Migration", callback_data="settings:pumpmode:migration"),
-        ],
-        [
             InlineKeyboardButton(text=f"MEV Shield: {mev}", callback_data="settings:toggle:mev_shield"),
         ],
         [
-            InlineKeyboardButton(text=f"Buy SOL: {config['buy_amount_sol']}", callback_data="settings:field:buy_amount_sol"),
-            InlineKeyboardButton(text=f"Slippage: {config['slippage_pct']}%", callback_data="settings:field:slippage_pct"),
+            InlineKeyboardButton(text=f"Buy SOL: {config.get('buy_amount_sol','0.05')}", callback_data="settings:field:buy_amount_sol"),
+            InlineKeyboardButton(text=f"Buy Slippage: {config.get('buy_slippage_pct',config.get('slippage_pct','15'))}%", callback_data="settings:field:buy_slippage_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Priority μLamports: {config['priority_fee_lamports']}", callback_data="settings:field:priority_fee_lamports"),
-            InlineKeyboardButton(text=f"Jito Tip: {format_sol(int(config['jito_tip_lamports']))} SOL", callback_data="settings:field:jito_tip_lamports"),
+            InlineKeyboardButton(text=f"Sell Slippage: {config.get('sell_slippage_pct',config.get('slippage_pct','20'))}%", callback_data="settings:field:sell_slippage_pct"),
+            InlineKeyboardButton(text=f"Jito Tip: {format_sol(int(config.get('jito_tip_lamports',2000000)))} SOL", callback_data="settings:field:jito_tip_lamports"),
         ],
         [
-            InlineKeyboardButton(text=f"Take Profit: {config['take_profit_pct']}%", callback_data="settings:field:take_profit_pct"),
-            InlineKeyboardButton(text=f"Stop Loss: {config['stop_loss_pct']}%", callback_data="settings:field:stop_loss_pct"),
+            InlineKeyboardButton(text=f"Priority μLamports: {config.get('priority_fee_lamports',10000)}", callback_data="settings:field:priority_fee_lamports"),
+            InlineKeyboardButton(text=f"Min Liquidity: {config.get('min_liquidity_sol','5')} SOL", callback_data="settings:field:min_liquidity_sol"),
         ],
         [
-            InlineKeyboardButton(text=f"Max Hold: {config['max_hold_seconds']}s", callback_data="settings:field:max_hold_seconds"),
-            InlineKeyboardButton(text=f"Moon Bag: {config['moon_bag_pct']}%", callback_data="settings:field:moon_bag_pct"),
+            InlineKeyboardButton(text=f"TP1: +{config.get('take_profit_pct','100')}%", callback_data="settings:field:take_profit_pct"),
+            InlineKeyboardButton(text=f"TP2: +{config.get('take_profit_2_pct','300')}%", callback_data="settings:field:take_profit_2_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Daily Trades: {config['daily_position_limit']}", callback_data="settings:field:daily_position_limit"),
-            InlineKeyboardButton(text=f"Daily Drawdown: {config['max_daily_drawdown_pct']}%", callback_data="settings:field:max_daily_drawdown_pct"),
+            InlineKeyboardButton(text=f"TP2 sells: {config.get('take_profit_2_sell_pct','25')}%", callback_data="settings:field:take_profit_2_sell_pct"),
+            InlineKeyboardButton(text=f"Trailing stop: {config.get('trailing_stop_pct','20')}%", callback_data="settings:field:trailing_stop_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Migration Trigger: {config.get('pump_migration_progress_pct', '80')}%", callback_data="settings:field:pump_migration_progress_pct"),
-            InlineKeyboardButton(text=f"Min Liquidity USD: {config.get('min_liquidity_usd', '5000')}", callback_data="settings:field:min_liquidity_usd"),
+            InlineKeyboardButton(text=f"Hard stop: -{config.get('stop_loss_pct','30')}%", callback_data="settings:field:stop_loss_pct"),
+            InlineKeyboardButton(text=f"Max hold: {int(config.get('max_hold_seconds',14400))//3600}h", callback_data="settings:field:max_hold_seconds"),
         ],
         [
-            InlineKeyboardButton(text=f"Top-10 Cap: {config['max_top10_concentration_pct']}%", callback_data="settings:field:max_top10_concentration_pct"),
+            InlineKeyboardButton(text=f"Min LP locked: {config.get('min_lp_locked_pct','80')}%", callback_data="settings:field:min_lp_locked_pct"),
+            InlineKeyboardButton(text=f"Max dev: {config.get('max_dev_wallet_pct','5')}%", callback_data="settings:field:max_dev_wallet_pct"),
         ],
-        [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
+        [
+            InlineKeyboardButton(text=f"Top-10 cap: {config.get('max_top10_concentration_pct','25')}%", callback_data="settings:field:max_top10_concentration_pct"),
+            InlineKeyboardButton(text=f"Daily trades: {config.get('daily_position_limit',5)}", callback_data="settings:field:daily_position_limit"),
+        ],
+        [
+            InlineKeyboardButton(text=f"Daily drawdown: {config.get('max_daily_drawdown_pct','15')}%", callback_data="settings:field:max_daily_drawdown_pct"),
+            InlineKeyboardButton(text=f"Migration: {config.get('pump_migration_progress_pct','80')}%", callback_data="settings:field:pump_migration_progress_pct"),
+        ],
+        [InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
 
 def _fees_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -262,11 +246,20 @@ async def _dashboard_text(telegram_id: int) -> str:
     live_config = await svc.db.get_settings(telegram_id)
     address = (user or {}).get("solana_address")
     live_balance = "Wallet not created"
+    live_balance_usd = "—"
+    rpc_latency = "not measured"
+    balance_lamports = 0
     if address:
         try:
-            live_balance = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
+            started = time.perf_counter()
+            balance_lamports = await svc.wallet.balance(telegram_id)
+            rpc_latency = f"{(time.perf_counter() - started) * 1000:.0f} ms"
+            live_balance = f"{format_sol(balance_lamports)} SOL"
+            sol_usd = await svc.oracle.sol_usd()
+            live_balance_usd = f"${(Decimal(format_sol(balance_lamports)) * sol_usd):.2f}"
         except Exception:
             live_balance = "Balance temporarily unavailable"
+
     paper_engine = svc.engine.paper_engine
     paper_account = await paper_engine.store.account(telegram_id) if paper_engine else None
     paper_on = await paper_engine.store.mode_enabled(telegram_id, "paper") if paper_engine else False
@@ -277,20 +270,32 @@ async def _dashboard_text(telegram_id: int) -> str:
         if paper_account else "Not started · $1,000 virtual value"
     )
     activation = "PAID" if (user or {}).get("activation_paid") else "NOT PAID"
+    live_positions = await svc.db.active_positions(telegram_id)
+    unrealized = sum(
+        int(p.get("last_value_lamports") or 0) - int(p.get("initial_cost_lamports") or 0)
+        for p in live_positions if int(p.get("last_value_lamports") or 0) > 0
+    )
+    scanner_task = getattr(svc.engine, "_scanner_task", None)
+    scanner_status = "RUNNING" if scanner_task and not scanner_task.done() else "IDLE"
     return (
         "⚡ 9N8 · SOLANA TRADING CONTROL\n\n"
         "TWO SEPARATE MODES\n"
         f"🧪 Paper Trading: {'RUNNING' if paper_on else 'PAUSED'}\n"
         f"Virtual cash: {paper_balance}\n"
         f"Practice days: {paper_days}/7\n"
-        f"🔴 Live Solana Sniper: {'ARMED' if live_on else 'LOCKED / OFF'}\n\n"
-        f"Live wallet: {live_balance}\n"
+        f"🔴 Live Solana Sniper: {'ARMED' if live_on else 'LOCKED / OFF'}\n"
+        f"Market listener: {scanner_status}\n"
+        f"Live positions: {len(live_positions)}\n"
+        f"Marked unrealized PnL: {format_sol(unrealized)} SOL\n\n"
+        f"Live wallet: {live_balance} · {live_balance_usd}\n"
+        f"Wallet RPC response: {rpc_latency}\n"
         f"Deposit address: {address or 'Create a wallet to receive SOL'}\n"
         f"Live activation: {activation}\n"
         f"Operator live switch: {'ON' if svc.settings.live_trading_enabled else 'OFF'}\n\n"
         "Paper trades use real market quotes but virtual funds only. Live mode uses your wallet "
         "and needs a separate readiness check and your confirmation."
     )
+
 
 def _paper_menu_keyboard(enabled: bool) -> InlineKeyboardMarkup:
     action = "paper:stop" if enabled else "paper:start"
@@ -313,8 +318,10 @@ def _live_menu_keyboard(enabled: bool, ready: bool) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="Confirm Start Live Sniper", callback_data="live:confirm")])
     rows.extend([
         [InlineKeyboardButton(text="Refresh Readiness", callback_data="live:check")],
-        [InlineKeyboardButton(text="Live Positions", callback_data="positions:live"),
-         InlineKeyboardButton(text="Live Settings", callback_data="settings:show")],
+        [InlineKeyboardButton(text="🎯 Manual Snipe", callback_data="live:snipe"),
+         InlineKeyboardButton(text="📊 Live Positions", callback_data="positions:live")],
+        [InlineKeyboardButton(text="⚙️ Live Settings", callback_data="settings:show"),
+         InlineKeyboardButton(text="🛡️ Live Safety", callback_data="safety:live")],
         [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -323,7 +330,8 @@ def _live_menu_keyboard(enabled: bool, ready: bool) -> InlineKeyboardMarkup:
 def _paper_settings_keyboard(config: dict) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=f"Buy {config.get('buy_amount_sol','0.05')} SOL", callback_data="paper:field:buy_amount_sol"),
-         InlineKeyboardButton(text=f"Slippage {config.get('slippage_pct','15')}%", callback_data="paper:field:slippage_pct")],
+         InlineKeyboardButton(text=f"Buy Slippage {config.get('buy_slippage_pct',config.get('slippage_pct','15'))}%", callback_data="paper:field:buy_slippage_pct")],
+        [InlineKeyboardButton(text=f"Sell Slippage {config.get('sell_slippage_pct',config.get('slippage_pct','20'))}%", callback_data="paper:field:sell_slippage_pct")],
         [InlineKeyboardButton(text=f"TP1 +{config.get('take_profit_pct','100')}%", callback_data="paper:field:take_profit_pct"),
          InlineKeyboardButton(text=f"TP2 +{config.get('take_profit_2_pct','300')}%", callback_data="paper:field:take_profit_2_pct")],
         [InlineKeyboardButton(text=f"TP2 sells {config.get('take_profit_2_sell_pct','25')}%", callback_data="paper:field:take_profit_2_sell_pct"),
@@ -421,17 +429,56 @@ async def _history_text(telegram_id: int, mode: str = "both") -> str:
                 f"{format_sol(amount)} SOL · {row.get('reason') or 'simulated'}"
             )
     if mode in {"both","live"}:
-        live_rows = await svc.db.list_trade_receipts(telegram_id,20)
+        live_rows = await svc.db.list_trade_receipts(telegram_id,50)
         lines.extend(["", "LIVE TRANSACTIONS · BLOCKCHAIN RECEIPTS"])
         if not live_rows:
             lines.append("No live blockchain receipts recorded.")
+
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        net_24h = 0
+        confirmed_exits_24h = 0
+        for row in live_rows:
+            created = row.get("created_at")
+            try:
+                created_at = created if isinstance(created, datetime) else datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if created_at >= since and row.get("event_type") == "sell" and row.get("status") in {"confirmed", "finalized"}:
+                pnl_value = metadata.get("net_realized_pnl_lamports")
+                if pnl_value is not None:
+                    net_24h += int(pnl_value)
+                    confirmed_exits_24h += 1
+        lines.append(
+            f"24h confirmed realized PnL: {format_sol(net_24h)} SOL "
+            f"({confirmed_exits_24h} confirmed exits)"
+        )
+
         for row in live_rows[:20]:
             signature = str(row.get("signature") or "")
             lines.append(
                 f"• {str(row.get('event_type','trade')).upper()} · {str(row.get('status','unknown')).upper()} "
                 f"· {str(row.get('mint') or 'SOL')[:8]}…"
             )
-            lines.append(f"  https://solscan.io/tx/{signature}")
+            if signature:
+                lines.append(f"  https://solscan.io/tx/{signature}")
+
+        security_rows = await svc.db.list_security_events(telegram_id, 30)
+        rejection_rows = [
+            item for item in security_rows
+            if "reject" in str(item.get("event_type", "")).lower()
+            or "skip" in str(item.get("event_type", "")).lower()
+        ]
+        lines.extend(["", "RECENT SAFETY REJECTIONS · NO BUY WAS SENT"])
+        if not rejection_rows:
+            lines.append("No recorded safety rejections.")
+        for item in rejection_rows[:12]:
+            lines.append(
+                f"• {str(item.get('event_type','rejected')).replace('_',' ')}: "
+                f"{str(item.get('detail',''))[:260]}"
+            )
     return "\n".join(lines)
 
 
@@ -572,7 +619,7 @@ async def cmd_live(message: Message) -> None:
     svc = _svc()
     readiness = await svc.engine.live_readiness(message.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "live")
-    await message.answer(_live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await message.answer(await _live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
 @router.message(Command("live_on"))
@@ -599,16 +646,9 @@ async def cmd_live_on(message: Message) -> None:
         return
     readiness = await svc.engine.live_readiness(message.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "live")
-    await message.answer(_live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await message.answer(await _live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
-@router.message(Command("live_off"))
-async def cmd_live_off(message: Message) -> None:
-    if not _is_private(message):
-        return
-    svc = _svc()
-    await svc.engine.stop_live_user(message.from_user.id)
-    await message.answer("Live entries are OFF. Existing confirmed live positions remain under exit monitoring.")
 
 
 @router.callback_query(F.data == "live:menu")
@@ -617,7 +657,7 @@ async def cb_live_menu(callback: CallbackQuery) -> None:
     await callback.answer()
     readiness = await svc.engine.live_readiness(callback.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "live")
-    await callback.message.edit_text(_live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await callback.message.edit_text(await _live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
 @router.callback_query(F.data == "live:check")
@@ -626,7 +666,7 @@ async def cb_live_check(callback: CallbackQuery) -> None:
     await callback.answer()
     readiness = await svc.engine.live_readiness(callback.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "live")
-    await callback.message.edit_text(_live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await callback.message.edit_text(await _live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
 @router.callback_query(F.data == "live:confirm")
@@ -673,24 +713,102 @@ async def cb_positions(callback: CallbackQuery) -> None:
     ]))
 
 
+@router.message(Command("paper_positions"))
+async def cmd_paper_positions(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    rows = await svc.engine.paper_engine.store.positions(message.from_user.id) if svc.engine.paper_engine else []
+    if not rows:
+        await message.answer("No open virtual positions. Use /paper to review your practice account.")
+        return
+    await _send_paper_positions(message, rows)
+
+
+async def _send_paper_positions(message: Message, rows: list[dict]) -> None:
+    lines = ["🧪 PAPER POSITIONS · VIRTUAL ONLY", ""]
+    buttons = []
+    for row in rows[:10]:
+        mint = str(row["mint"])
+        lines.append(
+            f"{mint}\n"
+            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"Marked PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Tokens: {row['token_amount_raw']} raw units"
+        )
+        buttons.append([InlineKeyboardButton(text=f"Virtual Sell 100% {mint[:7]}…", callback_data=f"paper:position:sell:{row['id']}")])
+    buttons.append([InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")])
+    await message.answer("\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
 @router.callback_query(F.data == "positions:paper")
 async def cb_paper_positions(callback: CallbackQuery) -> None:
     svc = _svc()
     await callback.answer()
-    rows = await svc.engine.paper_engine.store.positions(callback.from_user.id)
+    rows = await svc.engine.paper_engine.store.positions(callback.from_user.id) if svc.engine.paper_engine else []
     if not rows:
         await callback.message.edit_text("No open virtual positions.",reply_markup=_paper_menu_keyboard(False))
         return
     lines = ["PAPER POSITIONS · VIRTUAL ONLY",""]
+    buttons = []
     for row in rows[:10]:
+        mint = str(row["mint"])
         lines.append(
-            f"Mint: {row['mint']}\n"
-            f"PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Mint: {mint}\n"
+            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"Marked PnL: {row.get('last_pnl_pct','0')}%\n"
             f"Tokens: {row['token_amount_raw']} raw units"
         )
-    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")]
-    ]))
+        buttons.append([InlineKeyboardButton(text=f"Virtual Sell 100% {mint[:7]}…", callback_data=f"paper:position:sell:{row['id']}")])
+    buttons.append([InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")])
+    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("paper:position:sell:"))
+async def cb_paper_position_sell(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Recording a virtual paper exit…")
+    try:
+        position_id = int(callback.data.rsplit(":", 1)[-1])
+        await svc.engine.paper_engine.panic_sell(callback.from_user.id, position_id)
+        await callback.message.answer("Paper position closed with a virtual quote. No real SOL was spent or received.")
+    except Exception as exc:
+        await callback.message.answer(f"Paper exit failed: {type(exc).__name__}: {str(exc)[:180]}")
+
+
+@router.message(Command("live_positions"))
+async def cmd_live_positions(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    rows = await svc.db.active_positions(message.from_user.id)
+    if not rows:
+        await message.answer("No open live positions in your real Solana wallet.")
+        return
+    await _send_live_positions(message, rows)
+
+
+async def _send_live_positions(message: Message, rows: list[dict]) -> None:
+    lines = ["🔴 LIVE POSITIONS · REAL WALLET", ""]
+    buttons = []
+    for row in rows[:8]:
+        mint = str(row["mint"])
+        lines.append(
+            f"{mint}\n"
+            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"Current PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Tokens: {row['token_amount_raw']} raw units\n"
+            f"Exit phase: {row.get('exit_reason') or 'monitoring'}"
+        )
+        buttons.append([
+            InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
+            InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
+        ])
+    buttons.extend([
+        [InlineKeyboardButton(text="🧨 PANIC SELL ALL LIVE POSITIONS", callback_data="positions:panic_all:ask")],
+        [InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")],
+    ])
+    await message.answer("\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
 @router.callback_query(F.data == "positions:live")
@@ -704,10 +822,88 @@ async def cb_live_positions(callback: CallbackQuery) -> None:
     lines = ["LIVE POSITIONS · REAL WALLET",""]
     buttons = []
     for row in rows[:8]:
-        lines.append(f"Mint: {row['mint']}\nTokens: {row['token_amount_raw']} raw\nTarget state: {row.get('exit_reason') or 'monitoring'}")
-        buttons.append([InlineKeyboardButton(text=f"Panic Sell {str(row['mint'])[:7]}…",callback_data=f"position:panic:{row['id']}")])
-    buttons.append([InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")])
+        mint = str(row["mint"])
+        lines.append(
+            f"Mint: {mint}\n"
+            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"Current PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Tokens: {row['token_amount_raw']} raw\n"
+            f"Target state: {row.get('exit_reason') or 'monitoring'}"
+        )
+        buttons.append([
+            InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
+            InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
+        ])
+    buttons.extend([
+        [InlineKeyboardButton(text="🧨 PANIC SELL ALL LIVE POSITIONS", callback_data="positions:panic_all:ask")],
+        [InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")],
+    ])
     await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data == "positions:panic_all:ask")
+async def cb_panic_all_ask(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    rows = await svc.db.active_positions(callback.from_user.id)
+    if not rows:
+        await callback.message.edit_text("No open live positions to close.", reply_markup=_live_menu_keyboard(False, False))
+        return
+    if len(rows) > 8:
+        await callback.message.answer(
+            f"You have {len(rows)} live positions. This bulk action is capped at 8 per confirmation; "
+            "close some first, then repeat."
+        )
+        return
+    await callback.message.edit_text(
+        "⚠️ CONFIRM PANIC SELL ALL\n\n"
+        f"This will attempt to sell all {len(rows)} open real-wallet token positions, one by one, "
+        "using fresh Jupiter quotes and the current live safety/execution settings.\n\n"
+        "Each sell has its own transaction signature and may fail independently. "
+        "Do not retry an unknown transaction outcome.\n\n"
+        "This action cannot be undone.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧨 CONFIRM SELL ALL", callback_data="positions:panic_all:confirm")],
+            [InlineKeyboardButton(text="Cancel", callback_data="positions:live")],
+        ]),
+    )
+
+
+@router.callback_query(F.data == "positions:panic_all:confirm")
+async def cb_panic_all_confirm(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Processing live position exits…")
+    await svc.engine.stop_live_user(callback.from_user.id)
+    rows = await svc.db.active_positions(callback.from_user.id)
+    results = []
+    for row in rows[:8]:
+        position_id = int(row["id"])
+        try:
+            await svc.engine.panic_sell(callback.from_user.id, position_id)
+            results.append(f"Position #{position_id}: sell submitted; verify its receipt.")
+        except Exception as exc:
+            results.append(f"Position #{position_id}: not confirmed — {type(exc).__name__}: {str(exc)[:120]}")
+    await callback.message.edit_text(
+        "PANIC SELL ALL RESULTS\n\n"
+        + ("\n".join(results) if results else "No open live positions were found.")
+        + "\n\nNew live entries are OFF. Check /live_positions and /live_history for receipts.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Refresh Live Positions", callback_data="positions:live")],
+            [InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")],
+        ]),
+    )
+
+
+@router.callback_query(F.data.startswith("position:sell50:"))
+async def cb_live_sell50(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Submitting your 50% sell…")
+    try:
+        position_id = int(callback.data.rsplit(":", 1)[-1])
+        await svc.engine.sell_position_percent(callback.from_user.id, position_id, 50)
+        await callback.message.answer("50% sell was processed by the live engine. Check the on-chain receipt before another trade.")
+    except Exception as exc:
+        await callback.message.answer(f"50% sell was not completed: {type(exc).__name__}: {str(exc)[:200]}")
 
 
 @router.message(Command("settings"))
@@ -798,16 +994,172 @@ async def cb_paper_snipe_cancel(callback: CallbackQuery) -> None:
     await callback.message.edit_text("Manual paper snipe cancelled.",reply_markup=_paper_menu_keyboard(False))
 
 
+@router.message(Command("paper_snipe"))
+async def cmd_paper_snipe(message: Message, state: FSMContext) -> None:
+    if not _is_private(message):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1:
+        await _show_paper_snipe_preview(message, message.from_user.id, parts[1].strip())
+    else:
+        await state.set_state(SnipeFlow.mint)
+        await message.answer("Paste a Solana mint for a PAPER preview. This uses virtual funds only.")
+
+
 @router.message(Command("snipe"))
+@router.message(Command("live_snipe"))
 async def cmd_snipe(message: Message, state: FSMContext) -> None:
     if not _is_private(message):
         return
     parts = (message.text or "").split(maxsplit=1)
-    if len(parts)>1:
-        await _show_paper_snipe_preview(message,message.from_user.id,parts[1].strip())
+    if len(parts) > 1:
+        await _show_live_snipe_preview(message, message.from_user.id, parts[1].strip())
     else:
-        await state.set_state(SnipeFlow.mint)
-        await message.answer("Paste the Solana mint address for a MANUAL PAPER SNIPE preview. No real SOL order will be sent.")
+        await state.set_state(LiveSnipeFlow.mint)
+        await message.answer("Paste a Solana mint for a LIVE trade preview. Nothing is spent until you review and confirm.")
+
+
+@router.callback_query(F.data == "live:snipe")
+async def cb_live_snipe(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(LiveSnipeFlow.mint)
+    await callback.message.answer("Paste a Solana mint for a LIVE trade preview. Live mode must already be armed; a second confirmation is required.")
+
+
+async def _show_live_snipe_preview(
+    message: Message, telegram_id: int, mint_text: str, amount_sol: str = "0.05",
+) -> None:
+    svc = _svc()
+    try:
+        preview = await svc.engine.preview_live_snipe(telegram_id, mint_text, amount_sol)
+    except Exception as exc:
+        await message.answer(
+            "🔴 LIVE SNIPE BLOCKED\n"
+            f"{type(exc).__name__}: {str(exc)[:450]}\n\n"
+            "No transaction was signed or submitted."
+        )
+        return
+    _pending_live_snipes[telegram_id] = preview
+    await message.answer(
+        "🎯 MANUAL LIVE SNIPE PREVIEW\n\n"
+        f"Mint: {preview['mint']}\n"
+        f"Real SOL spend: {preview['buy_amount_sol']} SOL\n"
+        f"Minimum quoted output: {preview['minimum_output_raw']} raw units\n"
+        f"Price impact: {preview['price_impact_pct']}\n"
+        f"Wallet required including rent/fees: {preview['estimated_required_sol']} SOL\n\n"
+        "SAFETY CHECKS\n"
+        f"Mint authority revoked: {'YES' if preview['mint_authority_disabled'] else 'NO'}\n"
+        f"Freeze authority revoked: {'YES' if preview['freeze_authority_disabled'] else 'NO'}\n"
+        f"LP locked/burned: {preview['lp_locked_pct']}%\n"
+        f"Top-10 wallet share: {preview['top10_concentration_pct']}%\n"
+        f"Developer share: {preview['developer_concentration_pct']}%\n"
+        f"Pool liquidity (USD): {preview['liquidity_usd']}\n\n"
+        "THIS USES REAL SOL. Review every number. The bot rechecks the quote, balance and safety immediately after you confirm.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="0.05 SOL", callback_data="live:snipe:amount:0.05"),
+             InlineKeyboardButton(text="0.10 SOL", callback_data="live:snipe:amount:0.10")],
+            [InlineKeyboardButton(text="0.25 SOL", callback_data="live:snipe:amount:0.25"),
+             InlineKeyboardButton(text="0.50 SOL", callback_data="live:snipe:amount:0.50")],
+            [InlineKeyboardButton(text="Custom SOL", callback_data="live:snipe:custom"),
+             InlineKeyboardButton(text="Confirm LIVE Buy", callback_data="live:snipe:confirm")],
+            [InlineKeyboardButton(text="Cancel", callback_data="live:snipe:cancel")],
+        ]),
+    )
+
+
+@router.callback_query(F.data.startswith("live:snipe:amount:"))
+async def cb_live_snipe_amount(callback: CallbackQuery) -> None:
+    await callback.answer()
+    pending = _pending_live_snipes.get(callback.from_user.id)
+    if not pending:
+        await callback.message.answer("This live preview expired. Run /snipe again.")
+        return
+    amount = callback.data.rsplit(":", 1)[-1]
+    await _show_live_snipe_preview(callback.message, callback.from_user.id, pending["mint"], amount)
+
+
+@router.callback_query(F.data == "live:snipe:custom")
+async def cb_live_snipe_custom(callback: CallbackQuery, state: FSMContext) -> None:
+    pending = _pending_live_snipes.get(callback.from_user.id)
+    if not pending:
+        await callback.answer("This live preview expired. Run /snipe again.", show_alert=True)
+        return
+    await callback.answer()
+    await state.set_state(LiveSnipeFlow.amount)
+    await state.update_data(mint=pending["mint"])
+    await callback.message.answer("Enter the buy amount in SOL. It must stay within your configured per-trade cap.")
+
+
+@router.message(LiveSnipeFlow.mint)
+async def handle_live_snipe_mint(message: Message, state: FSMContext) -> None:
+    try:
+        await _show_live_snipe_preview(message, message.from_user.id, (message.text or "").strip())
+    finally:
+        await state.clear()
+
+
+@router.message(LiveSnipeFlow.amount)
+async def handle_live_snipe_custom_amount(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    mint = str(data.get("mint") or "")
+    try:
+        amount = Decimal((message.text or "").strip())
+        if not amount.is_finite() or amount <= 0:
+            raise ValueError("Enter a positive SOL amount.")
+        await _show_live_snipe_preview(message, message.from_user.id, mint, str(amount))
+    except Exception as exc:
+        await message.answer(f"Custom amount rejected: {str(exc)[:180]}")
+    finally:
+        await state.clear()
+
+
+@router.callback_query(F.data == "live:snipe:confirm")
+async def cb_live_snipe_confirm(callback: CallbackQuery) -> None:
+    svc = _svc()
+    pending = _pending_live_snipes.pop(callback.from_user.id, None)
+    if not pending:
+        await callback.answer("This live preview expired. Run /snipe again.", show_alert=True)
+        return
+    await callback.answer("Rechecking safety and submitting your confirmed live buy…")
+    try:
+        position_id = await svc.engine.manual_snipe(
+            callback.from_user.id, str(pending["mint"]), str(pending["buy_amount_sol"])
+        )
+        position = await svc.db.get_position(position_id, callback.from_user.id)
+        signature = str((position or {}).get("buy_signature") or "")
+        mint = str(pending["mint"])
+        buttons = [
+            [InlineKeyboardButton(text="Live Chart", url="https://dexscreener.com/solana/" + mint)],
+            [InlineKeyboardButton(text="Sell 50%", callback_data=f"position:sell50:{position_id}"),
+             InlineKeyboardButton(text="Panic Sell 100%", callback_data=f"position:panic:{position_id}")],
+            [InlineKeyboardButton(text="Live Positions", callback_data="positions:live")],
+        ]
+        lines = [
+            "LIVE SNIPE RECORDED",
+            f"Mint: {mint}",
+            f"Position: #{position_id}",
+            f"Real SOL spend: {pending['buy_amount_sol']} SOL",
+            "Check the receipt before assuming the transaction has fully settled.",
+        ]
+        if signature:
+            lines.append(f"Solscan: https://solscan.io/tx/{signature}")
+            buttons.insert(0, [InlineKeyboardButton(text="Solscan Transaction", url="https://solscan.io/tx/" + signature)])
+        await callback.message.answer("\\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as exc:
+        await callback.message.answer(
+            "LIVE SNIPE DID NOT COMPLETE\n"
+            f"{type(exc).__name__}: {str(exc)[:450]}\n\n"
+            "Check /live_positions and the wallet's Solscan history. Do not retry an order with an unknown transaction outcome."
+        )
+
+
+@router.callback_query(F.data == "live:snipe:cancel")
+async def cb_live_snipe_cancel(callback: CallbackQuery) -> None:
+    _pending_live_snipes.pop(callback.from_user.id, None)
+    await callback.answer("Cancelled. No transaction was sent.")
+    await callback.message.edit_text("Manual live snipe cancelled. Live mode remains unchanged.", reply_markup=_live_menu_keyboard(False, False))
+
+
 
 
 @router.callback_query(F.data == "paper:snipe")
@@ -829,23 +1181,58 @@ async def handle_snipe_mint(message: Message, state: FSMContext) -> None:
 async def cmd_safety(message: Message) -> None:
     if not _is_private(message):
         return
-    svc = _svc()
-    config = await svc.engine.paper_engine.store.settings(message.from_user.id,"paper")
     await message.answer(
-        "🛡️ ANTI-RUG GATEKEEPER\n\n"
-        "Always-required checks (cannot be switched off):\n"
-        "✅ Mint authority revoked · ✅ Freeze authority revoked\n"
-        "✅ Creator wallet concentration verified · ✅ Token-2022 extension gate\n"
-        "✅ Top-10 wallet concentration · ✅ Pool liquidity · ✅ LP lock/burn\n\n"
-        f"Minimum liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
-        f"Minimum LP locked/burned: {config.get('min_lp_locked_pct','80')}%\n"
-        f"Maximum top-10 wallet share: {config.get('max_top10_concentration_pct','25')}%\n"
-        f"Maximum developer wallet share: {config.get('max_dev_wallet_pct','5')}%\n\n"
-        "A token is rejected when any required security result cannot be verified.",
+        "🛡️ ANTI-RUG SAFETY FILTERS\n\n"
+        "These checks protect both paper and live entries. Critical checks stay ON and cannot be disabled.\n\n"
+        "🔒 Mint authority revoked: REQUIRED\n"
+        "🔒 Freeze authority revoked: REQUIRED\n"
+        "🔒 Creator and top-holder concentration: CHECKED\n"
+        "🔒 Token extensions and transfer restrictions: CHECKED\n"
+        "🔒 Pool liquidity and LP lock/burn: REQUIRED\n\n"
+        "You can adjust thresholds separately for the paper account and live wallet. A missing or unverifiable result blocks the entry.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Edit Safety Thresholds",callback_data="paper:settings")],
-            [InlineKeyboardButton(text="Back",callback_data="home:show")],
+            [InlineKeyboardButton(text="Paper Safety Thresholds", callback_data="paper:settings")],
+            [InlineKeyboardButton(text="Live Safety Thresholds", callback_data="safety:live")],
+            [InlineKeyboardButton(text="Back", callback_data="home:show")],
         ]),
+    )
+
+
+@router.callback_query(F.data == "safety:show")
+async def cb_safety_show(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(
+        "🛡️ ANTI-RUG SAFETY FILTERS\n\n"
+        "These checks protect both paper and live entries. Critical checks stay ON and cannot be disabled.\n\n"
+        "🔒 Mint authority revoked: REQUIRED\n"
+        "🔒 Freeze authority revoked: REQUIRED\n"
+        "🔒 Creator and top-holder concentration: CHECKED\n"
+        "🔒 Token extensions and transfer restrictions: CHECKED\n"
+        "🔒 Pool liquidity and LP lock/burn: REQUIRED\n\n"
+        "An entry is blocked whenever a required result is missing or cannot be verified.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Paper Safety Thresholds", callback_data="paper:settings")],
+            [InlineKeyboardButton(text="Live Safety Thresholds", callback_data="safety:live")],
+            [InlineKeyboardButton(text="Back", callback_data="home:show")],
+        ]),
+    )
+
+
+@router.callback_query(F.data == "safety:live")
+async def cb_live_safety(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    config = await svc.db.get_settings(callback.from_user.id)
+    await callback.message.edit_text(
+        "🔒 LIVE SAFETY FILTERS · REAL WALLET\n\n"
+        "Mint authority revocation: REQUIRED · LOCKED ON\n"
+        "Freeze authority revocation: REQUIRED · LOCKED ON\n"
+        f"Minimum pool liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
+        f"Minimum LP locked/burned: {config.get('min_lp_locked_pct','80')}%\n"
+        f"Maximum top-10 share: {config.get('max_top10_concentration_pct','25')}%\n"
+        f"Maximum developer share: {config.get('max_dev_wallet_pct','5')}%\n\n"
+        "Critical authority checks cannot be disabled. Change the numeric thresholds below; an unverified safety result still blocks every live buy.",
+        reply_markup=_settings_keyboard(config),
     )
 
 
@@ -854,6 +1241,42 @@ async def cmd_history(message: Message) -> None:
     if not _is_private(message):
         return
     await message.answer(await _history_text(message.from_user.id,"both"))
+
+
+@router.message(Command("paper_history"))
+async def cmd_paper_history(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await message.answer(await _history_text(message.from_user.id, "paper"))
+
+
+@router.message(Command("live_history"))
+async def cmd_live_history(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await message.answer(await _history_text(message.from_user.id, "live"))
+
+
+@router.message(Command("live_settings"))
+async def cmd_live_settings(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    config = await svc.db.get_settings(message.from_user.id)
+    await message.answer(
+        "LIVE SETTINGS · REAL WALLET\nChanges apply only to future live entries.\n",
+        reply_markup=_settings_keyboard(config),
+    )
+
+
+@router.message(Command("stop"))
+@router.message(Command("live_off"))
+async def cmd_live_off(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    await svc.engine.stop_live_user(message.from_user.id)
+    await message.answer("Live entries are OFF. Paper mode is unchanged. Existing real positions remain monitored.")
 
 
 @router.callback_query(F.data == "history:show")
@@ -888,14 +1311,7 @@ async def cb_history_live(callback: CallbackQuery) -> None:
 async def cmd_withdraw(message: Message) -> None:
     if not _is_private(message):
         return
-    await message.answer(
-        "Wallet withdrawals move real SOL only. Virtual Paper funds cannot be withdrawn. "
-        "Close all open real-wallet positions before withdrawing.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Open Wallet Withdrawal",callback_data="wallet:exit")],
-            [InlineKeyboardButton(text="Back",callback_data="home:show")],
-        ]),
-    )
+    await _show_withdraw_options(message, message.from_user.id)
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
@@ -911,12 +1327,19 @@ async def cmd_help(message: Message) -> None:
         "/live — show live readiness and safety locks\n"
         "/live_on — request live activation after all checks pass\n"
         "/live_off — stop new live entries\n"
-        "/snipe MINT — scan a token for a manual paper buy\n"
-        "/positions — show paper and live positions separately\n"
+        "/snipe MINT — preview a real-wallet live snipe (requires confirmation)\n"
+        "/live_snipe MINT — alias for /snipe\n"
+        "/paper_snipe MINT — virtual paper-only preview\n"
+        "/positions — choose paper or live positions\n"
+        "/paper_positions — show virtual positions\n"
+        "/live_positions — show real-wallet positions\n"
         "/settings — choose paper or live settings\n"
+        "/live_settings — edit real-wallet execution settings\n"
         "/safety — show anti-rug requirements\n"
-        "/history — show paper trade history\n"
-        "/withdraw — start a real-wallet withdrawal\n"
+        "/paper_history — show simulated trades\n"
+        "/live_history — show on-chain receipts\n"
+        "/withdraw — transfer a selected amount of real SOL\n"
+        "/stop — stop new live entries (paper stays unchanged)\n"
         "/status — dashboard and mode status\n"
         "/help — this guide\n\n"
         "Paper mode uses virtual SOL only. Live mode can use real SOL and remains locked "
@@ -1086,11 +1509,12 @@ async def cb_toggle_mev(callback: CallbackQuery) -> None:
 async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
     field = callback.data.split(":", 2)[2]
     allowed = {
-        "buy_amount_sol", "slippage_pct", "priority_fee_lamports",
+        "buy_amount_sol", "slippage_pct", "buy_slippage_pct", "sell_slippage_pct", "priority_fee_lamports",
         "jito_tip_lamports", "take_profit_pct", "stop_loss_pct",
         "max_hold_seconds", "moon_bag_pct", "daily_position_limit",
         "max_daily_drawdown_pct", "max_top10_concentration_pct",
         "pump_migration_progress_pct", "min_liquidity_usd",
+        "min_liquidity_sol", "min_lp_locked_pct", "max_dev_wallet_pct",
     }
     if field not in allowed:
         await callback.answer("Unknown setting", show_alert=True)
@@ -1100,7 +1524,9 @@ async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(field=field)
     labels = {
         "buy_amount_sol": "Buy amount in SOL (for example 0.05)",
-        "slippage_pct": "Maximum slippage percentage (0.1 to 50)",
+        "slippage_pct": "Legacy slippage percentage (0.1 to 50)",
+        "buy_slippage_pct": "Maximum buy slippage percentage (0.1 to 50)",
+        "sell_slippage_pct": "Maximum sell slippage percentage (0.1 to 50)",
         "priority_fee_lamports": "Compute-unit price in micro-lamports (integer)",
         "jito_tip_lamports": "Jito tip in lamports (for example 1000000)",
         "take_profit_pct": "Take-profit percentage (for example 10)",
@@ -1112,6 +1538,9 @@ async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
         "max_top10_concentration_pct": "Maximum top-10 holder concentration percentage",
         "pump_migration_progress_pct": "Pump.fun curve progress trigger percentage (1 to 99)",
         "min_liquidity_usd": "Minimum indexed pool liquidity in USD",
+        "min_liquidity_sol": "Minimum pool liquidity in SOL",
+        "min_lp_locked_pct": "Minimum liquidity percentage that must be locked or burned",
+        "max_dev_wallet_pct": "Maximum developer wallet share percentage",
     }
     await callback.message.answer(labels[field] + "\nSend the new numeric value.")
 
@@ -1124,8 +1553,10 @@ def _validated_setting(field: str, raw: str):
     if not value.is_finite():
         raise ValueError("Enter a finite number.")
     ranges = {
-        "buy_amount_sol": (Decimal("0.001"), Decimal("0.25")),
+        "buy_amount_sol": (Decimal("0.001"), Decimal("0.50")),
         "slippage_pct": (Decimal("0.1"), Decimal("50")),
+        "buy_slippage_pct": (Decimal("0.1"), Decimal("50")),
+        "sell_slippage_pct": (Decimal("0.1"), Decimal("50")),
         "priority_fee_lamports": (Decimal("0"), Decimal("100000000")),
         "jito_tip_lamports": (Decimal("0"), Decimal("100000000")),
         "take_profit_pct": (Decimal("0.5"), Decimal("500")),
@@ -1195,7 +1626,7 @@ async def cb_fees(callback: CallbackQuery) -> None:
         "9N8 TREASURY FEES\n\n"
         "Activation: $1.00 once before first live execution\n"
         "Winning trade performance: 0.1% of conservative positive realized-profit estimate\n"
-        "Full SOL withdrawal: $1.00\n"
+        "Selected SOL withdrawal: no platform fee; the real Solana network fee applies\n"
         "Stop & delete / key rotation: $1.00\n"
         "Losing trades: no performance fee\n\n"
         + fee_conversion
@@ -1255,70 +1686,202 @@ async def cb_stop(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "wallet:exit")
 async def cb_wallet_exit(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.answer(
-        "WALLET EXIT\n\n"
-        "Withdraw All sends the remaining SOL, after the $1 platform fee and actual network fee, "
-        "to your external Solana address. Open SPL-token positions must be closed first.\n\n"
-        "Stop & Delete charges a $1 termination fee, pays the remaining SOL to your external "
-        "address, retires the old key and creates a new paused wallet.",
+    await callback.message.edit_text(
+        "REAL WALLET CONTROLS\n\n"
+        "Withdraw a chosen part of your real SOL balance after closing all live positions. "
+        "Paper balances are virtual and cannot be withdrawn.\n\n"
+        "Stop & Delete remains a separate wallet-rotation operation.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Withdraw All", callback_data="wallet:withdraw")],
-            [InlineKeyboardButton(text="Stop & Delete / Rotate Key", callback_data="wallet:wipe")],
+            [InlineKeyboardButton(text="Choose SOL Withdrawal Amount", callback_data="withdraw:menu")],
+            [InlineKeyboardButton(text="Stop & Delete / Rotate Wallet", callback_data="wallet:wipe")],
             [InlineKeyboardButton(text="Back", callback_data="home:show")],
         ]),
     )
 
 
+async def _show_withdraw_options(message: Message, telegram_id: int) -> None:
+    svc = _svc()
+    if await svc.db.active_positions(telegram_id):
+        await message.answer(
+            "WITHDRAWAL PAUSED\nClose all live token positions first. Paper positions do not affect real wallet withdrawals.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Open Live Positions", callback_data="positions:live")],
+                [InlineKeyboardButton(text="Back", callback_data="home:show")],
+            ]),
+        )
+        return
+    balance = await svc.wallet.balance(telegram_id)
+    # Keep 0.00002 SOL aside until the exact network fee is quoted for the signed transfer.
+    withdrawable = max(0, balance - 20_000)
+    if withdrawable <= 0:
+        await message.answer("No SOL is available to withdraw after keeping a network-fee reserve.")
+        return
+    amount_text = format_sol(withdrawable)
+    await message.answer(
+        "💸 WITHDRAW LIVE SOL\n\n"
+        f"Wallet balance: {format_sol(balance)} SOL\n"
+        f"Maximum selectable payout: {amount_text} SOL\n"
+        "A network-fee reserve is kept. No platform fee is added to these withdrawals.\n\n"
+        "Paper funds are virtual and cannot be withdrawn.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Withdraw 25%", callback_data="withdraw:percent:25"),
+             InlineKeyboardButton(text="Withdraw 50%", callback_data="withdraw:percent:50")],
+            [InlineKeyboardButton(text="Withdraw 100%", callback_data="withdraw:percent:100"),
+             InlineKeyboardButton(text="Custom SOL", callback_data="withdraw:custom")],
+            [InlineKeyboardButton(text="Cancel", callback_data="home:show")],
+        ]),
+    )
+
+
+@router.callback_query(F.data == "withdraw:menu")
 @router.callback_query(F.data == "wallet:withdraw")
-async def cb_withdraw(callback: CallbackQuery, state: FSMContext) -> None:
+async def cb_withdraw_menu(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
-    await state.set_state(WithdrawFlow.destination)
-    await callback.message.answer("Enter your external Solana payout address. Check it carefully.")
+    await state.clear()
+    await _show_withdraw_options(callback.message, callback.from_user.id)
+
+
+@router.callback_query(F.data.startswith("withdraw:percent:"))
+async def cb_withdraw_percent(callback: CallbackQuery, state: FSMContext) -> None:
+    svc = _svc()
+    await callback.answer()
+    try:
+        percent = int(callback.data.rsplit(":", 1)[-1])
+        if percent not in {25, 50, 100}:
+            raise ValueError("Select 25%, 50% or 100%.")
+        if await svc.db.active_positions(callback.from_user.id):
+            raise ValueError("Close all live positions before withdrawing.")
+        balance = await svc.wallet.balance(callback.from_user.id)
+        available = max(0, balance - 20_000)
+        amount = (available * percent) // 100
+        if amount <= 0:
+            raise ValueError("There is no withdrawable SOL after the network-fee reserve.")
+        await state.clear()
+        await state.update_data(amount_lamports=amount, submitting=False)
+        await state.set_state(WithdrawFlow.destination)
+        await callback.message.answer(
+            f"Selected payout: {format_sol(amount)} SOL ({percent}% of available wallet balance).\n"
+            "Now paste your destination Solana wallet address."
+        )
+    except Exception as exc:
+        await callback.message.answer(f"Withdrawal amount not available: {str(exc)[:200]}")
+
+
+@router.callback_query(F.data == "withdraw:custom")
+async def cb_withdraw_custom(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    await state.set_state(WithdrawFlow.amount)
+    await callback.message.answer("Enter the exact SOL amount to withdraw, for example 0.025. The bot will check the current balance and fee reserve.")
+
+
+@router.message(WithdrawFlow.amount)
+async def handle_withdraw_custom_amount(message: Message, state: FSMContext) -> None:
+    svc = _svc()
+    try:
+        amount_value = Decimal((message.text or "").strip())
+        if not amount_value.is_finite() or amount_value <= 0:
+            raise ValueError("Enter a positive SOL amount.")
+        amount = to_lamports(str(amount_value))
+        if await svc.db.active_positions(message.from_user.id):
+            raise ValueError("Close all live positions before withdrawing.")
+        balance = await svc.wallet.balance(message.from_user.id)
+        maximum = max(0, balance - 20_000)
+        if amount > maximum:
+            raise ValueError(f"Maximum available right now is {format_sol(maximum)} SOL.")
+        await state.update_data(amount_lamports=amount, submitting=False)
+        await state.set_state(WithdrawFlow.destination)
+        await message.answer(
+            f"Selected payout: {format_sol(amount)} SOL.\n"
+            "Paste your destination Solana wallet address."
+        )
+    except Exception as exc:
+        await message.answer(f"Custom withdrawal amount rejected: {str(exc)[:200]}")
 
 
 @router.message(WithdrawFlow.destination)
 async def handle_withdraw_destination(message: Message, state: FSMContext) -> None:
+    svc = _svc()
     try:
         destination = str(Pubkey.from_string((message.text or "").strip()))
     except Exception:
         await message.answer("Invalid Solana address. No transfer was made. Send a valid base58 address.")
         return
-    await state.update_data(destination=destination)
+    data = await state.get_data()
+    amount = int(data.get("amount_lamports") or 0)
+    if amount <= 0:
+        await message.answer("Withdrawal amount expired. Start again with /withdraw.")
+        await state.clear()
+        return
+    if await svc.db.active_positions(message.from_user.id):
+        await message.answer("Close all live positions before withdrawing. No transfer was made.")
+        await state.clear()
+        return
+    balance = await svc.wallet.balance(message.from_user.id)
+    maximum = max(0, balance - 20_000)
+    if amount > maximum:
+        await message.answer("Your wallet balance changed. Start /withdraw again to refresh the available amount.")
+        await state.clear()
+        return
+    await state.update_data(destination=destination, submitting=False)
     await state.set_state(None)
     await message.answer(
-        f"Confirm full SOL withdrawal to:\n{destination}\n\n"
-        "This charges the $1 platform fee plus the actual Solana transaction fee.",
+        "CONFIRM REAL SOL WITHDRAWAL\n\n"
+        f"Destination:\n{destination}\n\n"
+        f"Payout amount: {format_sol(amount)} SOL\n"
+        "The network fee is quoted again before signing. Paper funds are never used.\n"
+        "This transaction is submitted only after you press Confirm.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="Confirm Withdraw All", callback_data="wallet:withdraw:confirm"),
+            InlineKeyboardButton(text="Confirm SOL Withdrawal", callback_data="withdraw:confirm"),
             InlineKeyboardButton(text="Cancel", callback_data="home:show"),
         ]]),
     )
 
 
-@router.callback_query(F.data == "wallet:withdraw:confirm")
+@router.callback_query(F.data == "withdraw:confirm")
 async def cb_withdraw_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     svc = _svc()
-    await callback.answer()
-    data = await state.get_data()
-    destination = data.get("destination")
-    if not destination:
-        await callback.message.answer("Withdrawal address expired. Start again.")
-        return
-    if await svc.db.active_positions(callback.from_user.id):
-        await callback.message.answer("Close all open positions before withdrawing the wallet balance.")
-        return
-    try:
-        await svc.engine.stop_user(callback.from_user.id)
-        amount, signature = await svc.wallet.withdraw_all(callback.from_user.id, destination)
-        await svc.db.set_payout_address(callback.from_user.id, destination)
-        await callback.message.answer(
-            f"Withdrawal confirmed.\nSent: {format_sol(amount)} SOL\n"
-            f"Solscan: https://solscan.io/tx/{signature}"
-        )
-    except Exception as exc:
-        await callback.message.answer(f"Withdrawal was not completed: {exc}")
-    finally:
-        await state.clear()
+    telegram_id = callback.from_user.id
+    lock = _withdraw_locks.setdefault(telegram_id, asyncio.Lock())
+    await callback.answer("Checking balance and network fee…")
+    async with lock:
+        data = await state.get_data()
+        amount = int(data.get("amount_lamports") or 0)
+        destination = str(data.get("destination") or "")
+        if not amount or not destination or data.get("submitting"):
+            await callback.message.answer("This withdrawal confirmation is expired or already being processed. Use /withdraw to start again.")
+            return
+        await state.update_data(submitting=True)
+        try:
+            if await svc.db.active_positions(telegram_id):
+                raise ValueError("Close all live positions before withdrawing.")
+            balance = await svc.wallet.balance(telegram_id)
+            if amount > max(0, balance - 10_000):
+                raise ValueError("The real wallet balance changed. No transfer was made; refresh /withdraw.")
+            # Stop new live entries but leave existing exits monitored.
+            await svc.engine.stop_live_user(telegram_id)
+            sent, network_fee, signature = await svc.wallet.withdraw_amount(telegram_id, destination, amount)
+            await callback.message.answer(
+                "✅ WITHDRAWAL CONFIRMED\n"
+                f"Sent: {format_sol(sent)} SOL\n"
+                f"Network fee: {format_sol(network_fee)} SOL\n"
+                f"Destination: {destination}\n"
+                f"Solscan: https://solscan.io/tx/{signature}"
+            )
+        except Exception as exc:
+            await callback.message.answer(
+                "WITHDRAWAL NOT COMPLETED / CHECK STATUS\n"
+                f"{type(exc).__name__}: {str(exc)[:500]}\n\n"
+                "Do not repeat a withdrawal when a transaction signature is shown with an unknown outcome."
+            )
+        finally:
+            await state.clear()
+
+
+@router.callback_query(F.data == "wallet:withdraw:confirm")
+async def cb_legacy_withdraw_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer("This older withdrawal preview has expired. Use /withdraw to choose an amount.", show_alert=True)
+    await state.clear()
 
 
 @router.callback_query(F.data == "wallet:wipe")
@@ -1377,6 +1940,46 @@ async def cb_wipe_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer(f"Wallet rotation was not completed: {exc}")
     finally:
         await state.clear()
+
+
+@router.callback_query(F.data.startswith("paste:paper:"))
+async def cb_pasted_mint_paper(callback: CallbackQuery) -> None:
+    await callback.answer()
+    mint = callback.data.rsplit(":", 1)[-1]
+    await _show_paper_snipe_preview(callback.message, callback.from_user.id, mint)
+
+
+@router.callback_query(F.data.startswith("paste:live:"))
+async def cb_pasted_mint_live(callback: CallbackQuery) -> None:
+    await callback.answer()
+    mint = callback.data.rsplit(":", 1)[-1]
+    await _show_live_snipe_preview(callback.message, callback.from_user.id, mint)
+
+
+@router.message()
+async def detect_pasted_solana_mint(message: Message) -> None:
+    """Offer separate paper/live previews when a public token mint is pasted."""
+    if not _is_private(message) or not message.text:
+        return
+    raw = message.text.strip()
+    if raw.startswith("/") or " " in raw or not 32 <= len(raw) <= 44:
+        return
+    try:
+        mint = str(Pubkey.from_string(raw))
+    except Exception:
+        return
+    if mint != raw:
+        return
+    await message.answer(
+        "🎯 SOLANA TOKEN ADDRESS DETECTED\n\n"
+        f"Mint: {mint}\n\n"
+        "Choose what you want to do. Paper uses virtual funds. Live only shows a preview first and requires a second confirmation before any real SOL is spent.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧪 Paper Preview", callback_data=f"paste:paper:{mint}")],
+            [InlineKeyboardButton(text="🔴 Live Preview", callback_data=f"paste:live:{mint}")],
+            [InlineKeyboardButton(text="Cancel", callback_data="home:show")],
+        ]),
+    )
 
 
 @router.callback_query(F.data.startswith("position:panic:"))
