@@ -911,16 +911,172 @@ async def cb_paper_snipe_cancel(callback: CallbackQuery) -> None:
     await callback.message.edit_text("Manual paper snipe cancelled.",reply_markup=_paper_menu_keyboard(False))
 
 
+@router.message(Command("paper_snipe"))
+async def cmd_paper_snipe(message: Message, state: FSMContext) -> None:
+    if not _is_private(message):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) > 1:
+        await _show_paper_snipe_preview(message, message.from_user.id, parts[1].strip())
+    else:
+        await state.set_state(SnipeFlow.mint)
+        await message.answer("Paste a Solana mint for a PAPER preview. This uses virtual funds only.")
+
+
 @router.message(Command("snipe"))
+@router.message(Command("live_snipe"))
 async def cmd_snipe(message: Message, state: FSMContext) -> None:
     if not _is_private(message):
         return
     parts = (message.text or "").split(maxsplit=1)
-    if len(parts)>1:
-        await _show_paper_snipe_preview(message,message.from_user.id,parts[1].strip())
+    if len(parts) > 1:
+        await _show_live_snipe_preview(message, message.from_user.id, parts[1].strip())
     else:
-        await state.set_state(SnipeFlow.mint)
-        await message.answer("Paste the Solana mint address for a MANUAL PAPER SNIPE preview. No real SOL order will be sent.")
+        await state.set_state(LiveSnipeFlow.mint)
+        await message.answer("Paste a Solana mint for a LIVE trade preview. Nothing is spent until you review and confirm.")
+
+
+@router.callback_query(F.data == "live:snipe")
+async def cb_live_snipe(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(LiveSnipeFlow.mint)
+    await callback.message.answer("Paste a Solana mint for a LIVE trade preview. Live mode must already be armed; a second confirmation is required.")
+
+
+async def _show_live_snipe_preview(
+    message: Message, telegram_id: int, mint_text: str, amount_sol: str = "0.05",
+) -> None:
+    svc = _svc()
+    try:
+        preview = await svc.engine.preview_live_snipe(telegram_id, mint_text, amount_sol)
+    except Exception as exc:
+        await message.answer(
+            "🔴 LIVE SNIPE BLOCKED\n"
+            f"{type(exc).__name__}: {str(exc)[:450]}\n\n"
+            "No transaction was signed or submitted."
+        )
+        return
+    _pending_live_snipes[telegram_id] = preview
+    await message.answer(
+        "🎯 MANUAL LIVE SNIPE PREVIEW\n\n"
+        f"Mint: {preview['mint']}\n"
+        f"Real SOL spend: {preview['buy_amount_sol']} SOL\n"
+        f"Minimum quoted output: {preview['minimum_output_raw']} raw units\n"
+        f"Price impact: {preview['price_impact_pct']}\n"
+        f"Wallet required including rent/fees: {preview['estimated_required_sol']} SOL\n\n"
+        "SAFETY CHECKS\n"
+        f"Mint authority revoked: {'YES' if preview['mint_authority_disabled'] else 'NO'}\n"
+        f"Freeze authority revoked: {'YES' if preview['freeze_authority_disabled'] else 'NO'}\n"
+        f"LP locked/burned: {preview['lp_locked_pct']}%\n"
+        f"Top-10 wallet share: {preview['top10_concentration_pct']}%\n"
+        f"Developer share: {preview['developer_concentration_pct']}%\n"
+        f"Pool liquidity (USD): {preview['liquidity_usd']}\n\n"
+        "THIS USES REAL SOL. Review every number. The bot rechecks the quote, balance and safety immediately after you confirm.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="0.05 SOL", callback_data="live:snipe:amount:0.05"),
+             InlineKeyboardButton(text="0.10 SOL", callback_data="live:snipe:amount:0.10")],
+            [InlineKeyboardButton(text="0.25 SOL", callback_data="live:snipe:amount:0.25"),
+             InlineKeyboardButton(text="0.50 SOL", callback_data="live:snipe:amount:0.50")],
+            [InlineKeyboardButton(text="Custom SOL", callback_data="live:snipe:custom"),
+             InlineKeyboardButton(text="Confirm LIVE Buy", callback_data="live:snipe:confirm")],
+            [InlineKeyboardButton(text="Cancel", callback_data="live:snipe:cancel")],
+        ]),
+    )
+
+
+@router.callback_query(F.data.startswith("live:snipe:amount:"))
+async def cb_live_snipe_amount(callback: CallbackQuery) -> None:
+    await callback.answer()
+    pending = _pending_live_snipes.get(callback.from_user.id)
+    if not pending:
+        await callback.message.answer("This live preview expired. Run /snipe again.")
+        return
+    amount = callback.data.rsplit(":", 1)[-1]
+    await _show_live_snipe_preview(callback.message, callback.from_user.id, pending["mint"], amount)
+
+
+@router.callback_query(F.data == "live:snipe:custom")
+async def cb_live_snipe_custom(callback: CallbackQuery, state: FSMContext) -> None:
+    pending = _pending_live_snipes.get(callback.from_user.id)
+    if not pending:
+        await callback.answer("This live preview expired. Run /snipe again.", show_alert=True)
+        return
+    await callback.answer()
+    await state.set_state(LiveSnipeFlow.amount)
+    await state.update_data(mint=pending["mint"])
+    await callback.message.answer("Enter the buy amount in SOL. It must stay within your configured per-trade cap.")
+
+
+@router.message(LiveSnipeFlow.mint)
+async def handle_live_snipe_mint(message: Message, state: FSMContext) -> None:
+    try:
+        await _show_live_snipe_preview(message, message.from_user.id, (message.text or "").strip())
+    finally:
+        await state.clear()
+
+
+@router.message(LiveSnipeFlow.amount)
+async def handle_live_snipe_custom_amount(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    mint = str(data.get("mint") or "")
+    try:
+        amount = Decimal((message.text or "").strip())
+        if not amount.is_finite() or amount <= 0:
+            raise ValueError("Enter a positive SOL amount.")
+        await _show_live_snipe_preview(message, message.from_user.id, mint, str(amount))
+    except Exception as exc:
+        await message.answer(f"Custom amount rejected: {str(exc)[:180]}")
+    finally:
+        await state.clear()
+
+
+@router.callback_query(F.data == "live:snipe:confirm")
+async def cb_live_snipe_confirm(callback: CallbackQuery) -> None:
+    svc = _svc()
+    pending = _pending_live_snipes.pop(callback.from_user.id, None)
+    if not pending:
+        await callback.answer("This live preview expired. Run /snipe again.", show_alert=True)
+        return
+    await callback.answer("Rechecking safety and submitting your confirmed live buy…")
+    try:
+        position_id = await svc.engine.manual_snipe(
+            callback.from_user.id, str(pending["mint"]), str(pending["buy_amount_sol"])
+        )
+        position = await svc.db.get_position(position_id, callback.from_user.id)
+        signature = str((position or {}).get("buy_signature") or "")
+        mint = str(pending["mint"])
+        buttons = [
+            [InlineKeyboardButton(text="Live Chart", url="https://dexscreener.com/solana/" + mint)],
+            [InlineKeyboardButton(text="Sell 50%", callback_data=f"position:sell50:{position_id}"),
+             InlineKeyboardButton(text="Panic Sell 100%", callback_data=f"position:panic:{position_id}")],
+            [InlineKeyboardButton(text="Live Positions", callback_data="positions:live")],
+        ]
+        lines = [
+            "LIVE SNIPE RECORDED",
+            f"Mint: {mint}",
+            f"Position: #{position_id}",
+            f"Real SOL spend: {pending['buy_amount_sol']} SOL",
+            "Check the receipt before assuming the transaction has fully settled.",
+        ]
+        if signature:
+            lines.append(f"Solscan: https://solscan.io/tx/{signature}")
+            buttons.insert(0, [InlineKeyboardButton(text="Solscan Transaction", url="https://solscan.io/tx/" + signature)])
+        await callback.message.answer("\\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception as exc:
+        await callback.message.answer(
+            "LIVE SNIPE DID NOT COMPLETE\n"
+            f"{type(exc).__name__}: {str(exc)[:450]}\n\n"
+            "Check /live_positions and the wallet's Solscan history. Do not retry an order with an unknown transaction outcome."
+        )
+
+
+@router.callback_query(F.data == "live:snipe:cancel")
+async def cb_live_snipe_cancel(callback: CallbackQuery) -> None:
+    _pending_live_snipes.pop(callback.from_user.id, None)
+    await callback.answer("Cancelled. No transaction was sent.")
+    await callback.message.edit_text("Manual live snipe cancelled. Live mode remains unchanged.", reply_markup=_live_menu_keyboard(False, False))
+
+
 
 
 @router.callback_query(F.data == "paper:snipe")
