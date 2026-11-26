@@ -12,7 +12,7 @@ The Telegram webhook is running through Supabase and the paper-trading data path
 
 | Component | Audit result |
 |---|---|
-| Telegram webhook | Supabase `telegram-bot-next` active (v46 after the Jupiter expiry upgrade); 52 recorded updates, 52 processed, 0 retryable errors |
+| Telegram webhook | Supabase `telegram-bot-next` active (v47 after the final Jupiter quote-safety upgrade); 52 recorded updates, 52 processed, 0 retryable errors |
 | Paper store | 2 sessions, 20 virtual positions, 40 virtual trades, 1,890 tick-history records |
 | Jupiter live certification | `testing`; manual wallet execution disabled; delegated automation disabled |
 | Live swap ledger | 0 recorded swaps |
@@ -34,12 +34,13 @@ These are point-in-time observations, not guarantees about future provider state
 7. Jupiter quote creation now records route-specific validity. JupiterZ RFQs are capped to provider expireAt minus a 1.5-second safety margin; aggregator orders require lastValidBlockHeight, checked again against Solana getBlockHeight immediately before execution. Unknown router formats and missing expiry data fail closed.
 8. Added Deno tests for expired aggregator block heights, missing expiry values, short/invalid JupiterZ RFQ expiry, and unknown routers. The updated telegram-bot-next Edge Function was deployed as active version 46.
 9. The GitHub dependency scan now reports package-level advisories and available fix information during CI.
+10. Jupiter quotes with a missing, null or empty priceImpactPct are rejected; the 2% impact rule no longer treats missing price-impact data as 0%.
 7. The GitHub secret-sync workflow now requires a separate `VERCEL_BACKEND_PROJECT_ID` and refuses to sync backend credentials to the public Vite frontend.
 8. Deployment documentation distinguishes Supabase's inbound Telegram webhook from the Python worker's background responsibilities.
 
 ## CI verification
 
-GitHub Actions run #446 for commit `7e892482ce1996baa58e6a32f1f533f6fc7d7679` completed successfully: Python checks and pytest passed, Deno paper/exchange/Jupiter expiry checks passed, and the Vite production build passed. The backend secret-sync job was skipped by design. A green CI run does not prove the production Daemon is running.
+GitHub Actions run #450 for commit `b05eebf47d133338b4894254bbf49f434aadb773` completed successfully: Python checks and pytest passed, Deno paper/exchange/Jupiter expiry checks passed, and the Vite production build passed. The backend secret-sync job was skipped by design. The separate Telegram network CI run #35 also passed the Jupiter quote-expiry tests and a complete Edge Function type-check. A green CI run does not prove the production Daemon is running.
 
 
 
