@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Awaitable, Callable
@@ -18,6 +19,10 @@ from .helius import (
 logger = logging.getLogger(__name__)
 PUMP_CREATE_DISCRIMINATOR = bytes([24, 30, 200, 40, 5, 28, 7, 119])
 PUMP_INITIAL_REAL_TOKEN_RESERVES = 793_100_000_000_000
+MAX_SEEN_SIGNATURES = 20_000
+MAX_EVENT_WORKERS = 8
+MAX_QUEUED_EVENTS = 512
+TRANSACTION_RETRY_DELAYS = (0.0, 0.25, 0.5, 1.0)
 
 
 @dataclass(frozen=True)
@@ -48,9 +53,19 @@ class LaunchpadSniper:
     """Parse actual Pump.fun creates and Raydium initializations from chain logs."""
     def __init__(self, helius: HeliusClient):
         self.helius = helius
-        self._seen: set[str] = set()
+        # Preserve recent deduplication history without periodically forgetting
+        # every processed signature at once. In-flight signatures are tracked
+        # separately so a failed lookup can be retried after a stream replay.
+        self._seen: OrderedDict[str, None] = OrderedDict()
+        self._in_flight: set[str] = set()
         self._stop = asyncio.Event()
         self._curve_tasks: dict[str, asyncio.Task] = {}
+
+    def _remember_signature(self, signature: str) -> None:
+        self._seen[signature] = None
+        self._seen.move_to_end(signature)
+        while len(self._seen) > MAX_SEEN_SIGNATURES:
+            self._seen.popitem(last=False)
 
     async def stop(self) -> None:
         self._stop.set()
@@ -61,44 +76,129 @@ class LaunchpadSniper:
         self._curve_tasks.clear()
 
     async def run(self, callback: Callable[[LaunchCandidate], Awaitable[None]]) -> None:
+        """Consume launch events while parsing transactions with bounded concurrency.
+
+        A bounded queue prevents a burst of signatures from creating unbounded
+        tasks. Transaction lookups are retried briefly because a processed log
+        can arrive before the RPC node exposes the corresponding transaction.
+        """
         self._stop.clear()
         programs = [PUMP_FUN_PROGRAM, RAYDIUM_V4_PROGRAM, RAYDIUM_CPMM_PROGRAM, PUMPSWAP_PROGRAM]
-        async for event in self.helius.logs(programs):
-            if self._stop.is_set():
-                break
-            signature = event.get("signature")
-            if not signature or event.get("err") is not None or signature in self._seen:
-                continue
-            self._seen.add(signature)
-            if len(self._seen) > 20000:
-                self._seen.clear()
+        queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=MAX_QUEUED_EVENTS)
+
+        async def process_worker() -> None:
+            while True:
+                event = await queue.get()
+                signature = str(event.get("signature") or "")
+                try:
+                    completed = await self._process_event(event, callback)
+                    if completed and signature:
+                        self._remember_signature(signature)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug(
+                        "Launch transaction %s deferred after processing error: %s",
+                        signature[:16],
+                        type(exc).__name__,
+                    )
+                finally:
+                    if signature:
+                        self._in_flight.discard(signature)
+                    queue.task_done()
+
+        workers = [
+            asyncio.create_task(process_worker(), name=f"9n8-launch-worker-{index}")
+            for index in range(MAX_EVENT_WORKERS)
+        ]
+        try:
+            async for event in self.helius.logs(programs):
+                if self._stop.is_set():
+                    break
+                signature = str(event.get("signature") or "")
+                if (
+                    not signature
+                    or event.get("err") is not None
+                    or signature in self._seen
+                    or signature in self._in_flight
+                ):
+                    continue
+                self._in_flight.add(signature)
+                try:
+                    await queue.put(event)
+                except BaseException:
+                    self._in_flight.discard(signature)
+                    raise
+            # Finite streams (e.g. tests or an upstream shutdown) drain their
+            # accepted work before this scanner returns. Cancellation skips join.
+            await queue.join()
+        finally:
+            for task in workers:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+            self._in_flight.clear()
+
+    async def _process_event(
+        self,
+        event: dict,
+        callback: Callable[[LaunchCandidate], Awaitable[None]],
+    ) -> bool:
+        signature = str(event.get("signature") or "")
+        tx: dict | None = None
+        for delay in TRANSACTION_RETRY_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
             try:
                 tx = await self.helius.transaction(signature)
-                if not tx:
-                    continue
-                candidate = self._parse_transaction(
-                    signature, event.get("slot"), event.get("logs", []), tx
-                )
-                if candidate and candidate.launchpad == "pump.fun":
-                    curve = await self.read_bonding_curve(candidate.mint)
-                    candidate = LaunchCandidate(
-                        candidate.mint, candidate.launchpad, candidate.signature,
-                        candidate.slot, candidate.created_at_slot,
-                        candidate.developer_buy_sol, candidate.source_logs, curve,
-                    )
-                if candidate:
-                    await callback(candidate)
-                    if candidate.launchpad == "pump.fun" and candidate.bonding_curve and not candidate.bonding_curve.complete:
-                        old = self._curve_tasks.get(candidate.mint)
-                        if old is None or old.done():
-                            self._curve_tasks[candidate.mint] = asyncio.create_task(
-                                self._watch_curve(candidate, callback),
-                                name=f"9n8-curve-{candidate.mint[:8]}",
-                            )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.debug("Launch transaction %s ignored: %s", signature, type(exc).__name__)
+                logger.debug(
+                    "Helius transaction lookup %s retrying after %s",
+                    signature[:16],
+                    type(exc).__name__,
+                )
+                tx = None
+            if tx is not None:
+                break
+        if tx is None:
+            # Do not mark the signature as seen. Helius replay/reconnect or a
+            # subsequent notification can make it available for another attempt.
+            return False
+
+        candidate = self._parse_transaction(
+            signature, event.get("slot"), event.get("logs", []), tx
+        )
+        if candidate and candidate.launchpad == "pump.fun":
+            try:
+                curve = await self.read_bonding_curve(candidate.mint)
+            except Exception as exc:
+                logger.debug(
+                    "Pump.fun curve lookup %s unavailable: %s",
+                    candidate.mint[:12],
+                    type(exc).__name__,
+                )
+                curve = None
+            candidate = LaunchCandidate(
+                candidate.mint, candidate.launchpad, candidate.signature,
+                candidate.slot, candidate.created_at_slot,
+                candidate.developer_buy_sol, candidate.source_logs, curve,
+            )
+        if candidate:
+            await callback(candidate)
+            if (
+                candidate.launchpad == "pump.fun"
+                and candidate.bonding_curve
+                and not candidate.bonding_curve.complete
+            ):
+                old = self._curve_tasks.get(candidate.mint)
+                if old is None or old.done():
+                    self._curve_tasks[candidate.mint] = asyncio.create_task(
+                        self._watch_curve(candidate, callback),
+                        name=f"9n8-curve-{candidate.mint[:8]}",
+                    )
+        return True
 
     async def read_bonding_curve(self, mint: str) -> BondingCurveState | None:
         """Read Pump.fun's bonding-curve PDA using its published account layout."""
