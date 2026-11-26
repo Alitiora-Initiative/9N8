@@ -287,9 +287,22 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📜 Trade History", callback_data="history:show"),
         ],
         [
-            InlineKeyboardButton(text="⚙️ Live Settings", callback_data="settings:show"),
-            InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show"),
+            InlineKeyboardButton(text="🧪 Paper Positions", callback_data="positions:paper"),
+            InlineKeyboardButton(text="🔴 Live Positions", callback_data="positions:live"),
         ],
+        [
+            InlineKeyboardButton(text="📖 Paper History", callback_data="history:paper"),
+            InlineKeyboardButton(text="🧾 Live Receipts", callback_data="history:live"),
+        ],
+        [
+            InlineKeyboardButton(text="🎯 Paper Quick Snipe", callback_data="paper:snipe"),
+            InlineKeyboardButton(text="⚡ Manual Live Snipe", callback_data="live:snipe"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Paper Settings", callback_data="paper:settings"),
+            InlineKeyboardButton(text="⚙️ Live Settings", callback_data="settings:show"),
+        ],
+        [InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show")],
         [
             InlineKeyboardButton(text="💼 Manage Wallet", callback_data="network:wallets"),
             InlineKeyboardButton(text="Import Wallet", callback_data="wallet:import"),
@@ -1815,6 +1828,7 @@ async def cmd_help(message: Message) -> None:
     )
 
 
+@router.message(Command("dashboard"))
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
     if not _is_private(message):
