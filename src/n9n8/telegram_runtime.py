@@ -17,7 +17,7 @@ def should_poll_telegram(worker_only: bool, transport: str | None = None) -> boo
     """
     if worker_only:
         return False
-    mode = (transport or "webhook").strip().lower()
+    mode = "webhook" if transport is None else transport.strip().lower()
     if mode not in {"webhook", "polling"}:
         raise ValueError("N9N8_TELEGRAM_TRANSPORT must be 'webhook' or 'polling'.")
     return mode == "polling"
