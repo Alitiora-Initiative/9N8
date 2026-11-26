@@ -30,8 +30,14 @@ class PaperQuoteOnlyClient:
             raise TypeError("Paper quote client requires a callable quote method.")
         self._quote_method = quote_method
 
-    async def quote(self, input_mint: str, output_mint: str, amount_raw: int) -> dict[str, Any]:
-        result = await self._quote_method(input_mint, output_mint, amount_raw)
+    async def quote(
+        self, input_mint: str, output_mint: str, amount_raw: int,
+        slippage_bps: int | None = None,
+    ) -> dict[str, Any]:
+        if slippage_bps is None:
+            result = await self._quote_method(input_mint, output_mint, amount_raw)
+        else:
+            result = await self._quote_method(input_mint, output_mint, amount_raw, slippage_bps)
         if not isinstance(result, dict):
             raise RuntimeError("Quote provider returned an invalid paper quote.")
         return result
@@ -109,7 +115,10 @@ class PaperTradingEngine:
         self._tasks.clear()
         self._session_tasks.clear()
 
-    async def _quote(self, input_mint: str, output_mint: str, amount_raw: int) -> dict[str, Any]:
+    async def _quote(
+        self, input_mint: str, output_mint: str, amount_raw: int,
+        slippage_pct: str | None = None,
+    ) -> dict[str, Any]:
         if amount_raw <= 0:
             raise ValueError("Quote amount must be positive.")
         # Jupiter keyless access is deliberately kept below its published request rate.
@@ -118,7 +127,13 @@ class PaperTradingEngine:
             wait = interval - (time.monotonic() - self._last_quote_at)
             if wait > 0:
                 await asyncio.sleep(wait)
-            quote = await self.quote_client.quote(input_mint, output_mint, amount_raw)
+            slippage_bps = (
+                int(dec(slippage_pct) * Decimal(100))
+                if slippage_pct is not None else None
+            )
+            quote = await self.quote_client.quote(
+                input_mint, output_mint, amount_raw, slippage_bps
+            )
             self._last_quote_at = time.monotonic()
         if not isinstance(quote, dict) or int(quote.get("outAmount") or 0) <= 0:
             raise RuntimeError("Jupiter did not return a usable quote.")
@@ -180,7 +195,10 @@ class PaperTradingEngine:
             await self.notify(telegram_id, "Paper entry skipped: buy amount exceeds the configured per-position cap.")
             return
         spend = to_lamports(amount_sol)
-        quote = await self._quote(SOL_MINT, candidate.mint, spend)
+        quote = await self._quote(
+            SOL_MINT, candidate.mint, spend,
+            str(config.get("buy_slippage_pct", config.get("slippage_pct", "15"))),
+        )
         received = int(quote.get("otherAmountThreshold") or quote.get("outAmount") or 0)
         if received <= 0:
             return
@@ -239,7 +257,10 @@ class PaperTradingEngine:
         if amount_sol <= 0 or amount_sol > self.max_position_sol:
             return {"passed": False, "reasons": ["Buy amount exceeds the configured safety cap."], "mint": mint}
         amount = to_lamports(amount_sol)
-        quote = await self._quote(SOL_MINT, mint, amount)
+        quote = await self._quote(
+            SOL_MINT, mint, amount,
+            str(config.get("buy_slippage_pct", config.get("slippage_pct", "15"))),
+        )
         return {
             "passed": True, "mint": mint, "launchpad": "raydium",
             "buy_amount_sol": str(from_lamports(amount)),
@@ -314,7 +335,10 @@ class PaperTradingEngine:
                 telegram_id = int(position["telegram_id"])
                 config = await self.store.settings(telegram_id, "paper")
                 amount = int(position["token_amount_raw"])
-                quote = await self._quote(str(position["mint"]), SOL_MINT, amount)
+                quote = await self._quote(
+                    str(position["mint"]), SOL_MINT, amount,
+                    str(config.get("sell_slippage_pct", config.get("slippage_pct", "20"))),
+                )
                 expected = int(quote.get("outAmount") or 0)
                 minimum = int(quote.get("otherAmountThreshold") or expected)
                 if expected <= 0 or minimum <= 0:
@@ -398,7 +422,10 @@ class PaperTradingEngine:
         telegram_id = int(position["telegram_id"])
         mint = str(position["mint"])
         config = await self.store.settings(telegram_id, "paper")
-        quote = quote_override or await self._quote(mint, SOL_MINT, tokens)
+        quote = quote_override or await self._quote(
+            mint, SOL_MINT, tokens,
+            str(config.get("sell_slippage_pct", config.get("slippage_pct", "20"))),
+        )
         gross = int(quote.get("otherAmountThreshold") or quote.get("outAmount") or 0)
         if gross <= 0:
             raise RuntimeError("No usable Jupiter quote for paper exit.")
