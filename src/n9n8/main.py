@@ -31,6 +31,7 @@ from .telemetry import TelemetryHub
 from .wallet import WalletManager
 from .webapp_server import create_webapp
 from .worker_bridge import VercelWorkerBridge, WorkerBridgeError
+from .telegram_runtime import should_poll_telegram
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -82,55 +83,61 @@ async def run(worker_only: bool = False) -> None:
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
 
-    # Keep Telegram's native command menu and public description in sync with
-    # the two separate trading modes.
-    try:
-        await bot.set_my_description(
-            "9N8 lets you practise with virtual SOL or manage a separate live Solana wallet. "
-            "Paper funds never move on-chain. Live trading needs safety checks, a separate "
-            "start switch and confirmation before manual buys."
-        )
-        await bot.set_my_short_description(
-            "Solana paper trading and a separately controlled live sniper."
-        )
-        private_commands = [
-            BotCommand(command="start", description="Open your 9N8 dashboard"),
-            BotCommand(command="chains", description="Select Solana or view EVM network status"),
-            BotCommand(command="network", description="Open the network selector"),
-            BotCommand(command="paper", description="Open virtual practice mode"),
-            BotCommand(command="paper_on", description="Start paper trading"),
-            BotCommand(command="paper_off", description="Pause paper entries"),
-            BotCommand(command="paper_snipe", description="Preview a virtual buy"),
-            BotCommand(command="paper_positions", description="View virtual positions"),
-            BotCommand(command="paper_history", description="View paper trade history"),
-            BotCommand(command="paper_settings", description="Edit paper rules"),
-            BotCommand(command="live", description="Check live trading readiness"),
-            BotCommand(command="live_on", description="Request live mode"),
-            BotCommand(command="live_off", description="Stop new live entries"),
-            BotCommand(command="snipe", description="Preview a real-wallet buy"),
-            BotCommand(command="live_snipe", description="Alias for live snipe preview"),
-            BotCommand(command="settings", description="Open trading settings"),
-            BotCommand(command="live_positions", description="View real positions"),
-            BotCommand(command="live_history", description="View on-chain receipts"),
-            BotCommand(command="live_settings", description="Edit live risk rules"),
-            BotCommand(command="safety", description="View anti-rug rules"),
-            BotCommand(command="positions", description="Choose paper or live positions"),
-            BotCommand(command="history", description="Choose paper or live history"),
-            BotCommand(command="withdraw", description="Withdraw real SOL"),
-            BotCommand(command="stop", description="Stop new live entries"),
-            BotCommand(command="status", description="Refresh dashboard and mode status"),
-            BotCommand(command="dashboard", description="Open the main trading dashboard"),
-            BotCommand(command="help", description="Show all commands"),
-        ]
-        # Telegram resolves the private-chat scope ahead of the default command list.
-        # Publish to both so the updated commands appear in the actual owner DM.
-        await bot.set_my_commands(private_commands)
-        await bot.set_my_commands(
-            private_commands,
-            scope=BotCommandScopeAllPrivateChats(),
-        )
-    except Exception:
-        logger.exception("Could not update Telegram bot description/command menu.")
+    # Supabase owns Telegram updates in production. Only an explicitly opted-in
+    # local polling process may register Telegram commands or call getUpdates.
+    telegram_transport = os.getenv("N9N8_TELEGRAM_TRANSPORT", "webhook")
+    telegram_polling_enabled = should_poll_telegram(worker_only, telegram_transport)
+    logger.info(
+        "Telegram transport=%s; aiogram polling=%s",
+        "polling" if telegram_polling_enabled else "webhook/outbound-only",
+        telegram_polling_enabled,
+    )
+    if telegram_polling_enabled:
+        try:
+            await bot.set_my_description(
+                "9N8 lets you practise with virtual SOL or manage a separate live Solana wallet. "
+                "Paper funds never move on-chain. Live trading needs safety checks, a separate "
+                "start switch and confirmation before manual buys."
+            )
+            await bot.set_my_short_description(
+                "Solana paper trading and a separately controlled live sniper."
+            )
+            private_commands = [
+                BotCommand(command="start", description="Open your 9N8 dashboard"),
+                BotCommand(command="chains", description="Select Solana or view EVM network status"),
+                BotCommand(command="network", description="Open the network selector"),
+                BotCommand(command="paper", description="Open virtual practice mode"),
+                BotCommand(command="paper_on", description="Start paper trading"),
+                BotCommand(command="paper_off", description="Pause paper entries"),
+                BotCommand(command="paper_snipe", description="Preview a virtual buy"),
+                BotCommand(command="paper_positions", description="View virtual positions"),
+                BotCommand(command="paper_history", description="View paper trade history"),
+                BotCommand(command="paper_settings", description="Edit paper rules"),
+                BotCommand(command="live", description="Check live trading readiness"),
+                BotCommand(command="live_on", description="Request live mode"),
+                BotCommand(command="live_off", description="Stop new live entries"),
+                BotCommand(command="snipe", description="Preview a real-wallet buy"),
+                BotCommand(command="live_snipe", description="Alias for live snipe preview"),
+                BotCommand(command="settings", description="Open trading settings"),
+                BotCommand(command="live_positions", description="View real positions"),
+                BotCommand(command="live_history", description="View on-chain receipts"),
+                BotCommand(command="live_settings", description="Edit live risk rules"),
+                BotCommand(command="safety", description="View anti-rug rules"),
+                BotCommand(command="positions", description="Choose paper or live positions"),
+                BotCommand(command="history", description="Choose paper or live history"),
+                BotCommand(command="withdraw", description="Withdraw real SOL"),
+                BotCommand(command="stop", description="Stop new live entries"),
+                BotCommand(command="status", description="Refresh dashboard and mode status"),
+                BotCommand(command="dashboard", description="Open the main trading dashboard"),
+                BotCommand(command="help", description="Show all commands"),
+            ]
+            await bot.set_my_commands(private_commands)
+            await bot.set_my_commands(
+                private_commands,
+                scope=BotCommandScopeAllPrivateChats(),
+            )
+        except Exception:
+            logger.exception("Could not update Telegram bot description/command menu.")
 
 
     async def notify(telegram_id: int, message: str) -> None:
@@ -423,11 +430,43 @@ async def run(worker_only: bool = False) -> None:
         logger.info("Starting aiogram polling; trading mode=%s", settings.trading_mode)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
 
-    polling_task = asyncio.create_task(poll_telegram(), name="9n8-telegram")
-    queue_task = asyncio.create_task(queue_loop(), name="9n8-vercel-queue")
-    tasks = {polling_task, queue_task, asyncio.create_task(stop_event.wait(), name="9n8-shutdown")}
-    if server_task is not None:
-        tasks.add(server_task)
+    async def heartbeat_loop() -> None:
+        if not hasattr(db, "heartbeat"):
+            return
+        while not stop_event.is_set():
+            try:
+                await db.heartbeat(
+                    worker_id,
+                    "running",
+                    settings.trading_mode,
+                    {
+                        "active_users": len(active_users),
+                        "worker_only": worker_only,
+                        "telegram_polling": telegram_polling_enabled,
+                    },
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Could not refresh 9N8 worker heartbeat (%s).", type(exc).__name__)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=30)
+            except asyncio.TimeoutError:
+                continue
+
+    # The Vercel worker is outbound-only for Telegram: Supabase owns the webhook.
+    # Queue polling is optional for local combined mode, so do not add a task that
+    # immediately returns and would otherwise trigger FIRST_COMPLETED shutdown.
+    tasks = {
+        asyncio.create_task(stop_event.wait(), name="9n8-shutdown"),
+    }
+    if worker_bridge is not None:
+        tasks.add(asyncio.create_task(queue_loop(), name="9n8-vercel-queue"))
+    if hasattr(db, "heartbeat"):
+        tasks.add(asyncio.create_task(heartbeat_loop(), name="9n8-heartbeat"))
+    if telegram_polling_enabled:
+        tasks.add(asyncio.create_task(poll_telegram(), name="9n8-telegram"))
+
 
     logger.info(
         "9N8 %s started: mode=%s postgres=%s helius=%s treasury=%s",

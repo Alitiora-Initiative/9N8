@@ -33,8 +33,9 @@ def create_serverless_app():
     bot = Bot(settings.telegram_bot_token)
     worker_queue = VercelQueueClient(settings.vercel_queue_region)
 
-    # Vercel handles only request/response work. The Daemon owns Telegram
-    # polling, Helius subscriptions, launch detection and transaction execution.
+    # Vercel handles request/response work. Supabase owns inbound Telegram
+    # webhook updates and command menus. The Daemon is outbound-only for Telegram
+    # notifications and owns Helius subscriptions, launch detection and execution.
     app = create_webapp(
         settings=settings,
         db=db,

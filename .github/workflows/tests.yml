@@ -4,6 +4,7 @@ on:
     branches: [main, feature/solana-telegram-sniper, feature/9n8-neon-platform-split, feature/solana-live-controls-completion, feature/9n8-telegram-network-controls]
   pull_request:
     branches: [main, feature/solana-live-controls-completion]
+  workflow_dispatch:
 permissions:
   contents: read
 
@@ -34,6 +35,29 @@ jobs:
       - name: Install web dependencies
         working-directory: web
         run: npm install --no-audit --no-fund
+      - name: Report npm dependency advisories
+        working-directory: web
+        run: |
+          npm audit --json > /tmp/9n8-npm-audit.json || true
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("/tmp/9n8-npm-audit.json", "utf8"));
+          const counts = report.metadata?.vulnerabilities ?? {};
+          const findings = Object.entries(report.vulnerabilities ?? {}).map(([name, item]) => ({
+            name,
+            severity: item.severity,
+            direct: item.isDirect,
+            range: item.range,
+            fixAvailable: item.fixAvailable,
+            advisories: (item.via ?? []).filter((v) => typeof v === "object").map((v) => ({
+              title: v.title,
+              url: v.url,
+              range: v.range
+            }))
+          }));
+          console.log("NPM AUDIT SUMMARY:", JSON.stringify(counts));
+          console.log("NPM AUDIT FINDINGS:", JSON.stringify(findings, null, 2));
+          NODE
       - name: Build web app
         working-directory: web
         run: npm run build
@@ -59,17 +83,22 @@ jobs:
       - name: Type-check Supabase edge functions
         run: deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts
 
-  # Runs only on the dedicated one-time sync commit; never prints or exports secret values.
+  # Send backend secrets only to a dedicated backend project, never the public Vite frontend.
   sync-production-runtime:
-    name: Sync existing production secrets to Vercel
-    if: github.event_name == 'push' && github.event.head_commit.message == 'Sync 9N8 production runtime environment'
+    name: Sync backend runtime secrets to Vercel
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'Sync 9N8 production runtime environment')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: main
+          persist-credentials: true
       - name: Validate and sync runtime secrets without printing values
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_BACKEND_PROJECT_ID: ${{ vars.VERCEL_BACKEND_PROJECT_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           AUTHORIZED_USER_ID: ${{ secrets.AUTHORIZED_USER_ID }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -87,8 +116,12 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          project = "prj_ArbUq9ud6TwcO7r89DiQjed604Ue"
+          project = os.environ.get("VERCEL_BACKEND_PROJECT_ID", "").strip()
+          frontend_project = "prj_ArbUq9ud6TwcO7r89DiQjed604Ue"
           team = "team_Mlpz0l6o2HlH9tE8hetluFH3"
+          if not re.fullmatch(r"prj_[A-Za-z0-9]+", project) or project == frontend_project:
+              print("Set GitHub Actions variable VERCEL_BACKEND_PROJECT_ID to a dedicated backend Vercel project ID. Refusing to sync backend secrets into the frontend project.")
+              sys.exit(1)
           token = os.environ.get("VERCEL_TOKEN", "").strip()
           authorized = (os.environ.get("AUTHORIZED_USER_ID", "").strip()
                         or os.environ.get("TELEGRAM_CHAT_ID", "").strip())
@@ -110,7 +143,7 @@ jobs:
               sys.exit(1)
           if missing:
               print("Runtime sync not run. Missing GitHub Actions secrets: " + ", ".join(missing))
-              print("Add the named secrets to the 9N8 repository or grant this repository access to the organisation secrets, then rerun this workflow.")
+              print("Add the named secrets and VERCEL_BACKEND_PROJECT_ID variable to the 9N8 repository, then rerun this workflow.")
               sys.exit(1)
 
           endpoint = ("https://api.vercel.com/v10/projects/" + project +
@@ -143,49 +176,12 @@ jobs:
           print("Synced sensitive production variables to Vercel: " + ", ".join(synced))
           print("Existing encryption key was copied unchanged. Paper mode and live-trading lock were not modified.")
           PY
-
-  web-security-audit:
-    name: Web dependency security audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Install web dependencies
-        working-directory: web
-        run: npm install --no-audit --no-fund
-      - name: Generate dependency audit report
-        working-directory: web
-        shell: bash
+      - name: Trigger Vercel Git deployment after environment sync
         run: |
-          npm audit --json > npm-audit-report.json || true
-          node --input-type=commonjs <<'NODE'
-          const fs = require("node:fs");
-          const report = JSON.parse(fs.readFileSync("npm-audit-report.json", "utf8"));
-          const summary = report.metadata?.vulnerabilities ?? {};
-          const entries = Object.entries(report.vulnerabilities ?? {});
-          console.log("Web dependency audit:", JSON.stringify(summary));
-          for (const [name, item] of entries) {
-            const fixes = item.fixAvailable === true ? "fix available" :
-              item.fixAvailable === false ? "no automatic fix" :
-              item.fixAvailable ? JSON.stringify(item.fixAvailable) : "not stated";
-            console.log(`${item.severity.toUpperCase()} ${name}@${item.range} — ${fixes}`);
-          }
-          const lines = [
-            "## Web dependency audit",
-            "",
-            `Total: ${summary.total ?? 0} · Critical: ${summary.critical ?? 0} · High: ${summary.high ?? 0} · Moderate: ${summary.moderate ?? 0} · Low: ${summary.low ?? 0}`,
-            "",
-            ...entries.map(([name, item]) => `- **${item.severity.toUpperCase()}** \`${name}@${item.range}\` — ${item.fixAvailable === true ? "fix available" : item.fixAvailable === false ? "no automatic fix" : JSON.stringify(item.fixAvailable ?? "not stated")}`)
-          ];
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
-          NODE
-      - name: Upload machine-readable audit report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: web-npm-audit-report
-          path: web/npm-audit-report.json
-          if-no-files-found: warn
-          retention-days: 7
+          mkdir -p ops
+          printf 'Production runtime variables synchronized by workflow run %s at %s.\n' "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ops/production-runtime-env-sync.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ops/production-runtime-env-sync.md
+          git commit -m "Trigger Vercel deployment after runtime environment sync"
+          git push origin HEAD:main

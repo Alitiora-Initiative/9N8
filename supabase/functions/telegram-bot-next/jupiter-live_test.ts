@@ -1,5 +1,8 @@
 import {
   assertSolanaOrder,
+  assertJupiterBlockHeightValid,
+  assertJupiterOrderExpiry,
+  assertJupiterRfqQuoteValid,
   assertSwapExecution,
   base58Encode,
   base64ToBytes,
@@ -68,4 +71,36 @@ Deno.test("message hash is SHA-256 hex", async () => {
   if (hash !== "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824") {
     throw new Error("sha256_hex_incorrect");
   }
+});
+
+Deno.test("Jupiter aggregator orders require a hard block-height expiry", () => {
+  const order = { router: "metis", lastValidBlockHeight: "12345" };
+  const expiresAt = assertJupiterOrderExpiry(order, 1_000_000);
+  if (Date.parse(expiresAt) !== 1_055_000) throw new Error("aggregator_soft_expiry_incorrect");
+  assertJupiterBlockHeightValid("12345", 12345);
+  assertJupiterBlockHeightValid(12345, 12344);
+  let rejected = false;
+  try { assertJupiterBlockHeightValid("12345", "12346"); } catch { rejected = true; }
+  if (!rejected) throw new Error("expired_aggregator_order_accepted");
+  rejected = false;
+  try { assertJupiterOrderExpiry({ router: "metis" }, 1_000_000); } catch { rejected = true; }
+  if (!rejected) throw new Error("aggregator_without_blockheight_accepted");
+});
+Deno.test("JupiterZ RFQ orders obey the maker expiry and safety margin", () => {
+  const now = 1_800_000_000_000;
+  const expireAt = new Date(now + 10_000).toISOString();
+  const localExpiry = assertJupiterOrderExpiry({ router: "jupiterz", expireAt }, now);
+  if (Date.parse(localExpiry) >= Date.parse(expireAt)) throw new Error("rfq_safety_margin_not_applied");
+  assertJupiterRfqQuoteValid(expireAt, now);
+  let rejected = false;
+  try { assertJupiterOrderExpiry({ router: "jupiterz", expireAt: new Date(now + 1_000).toISOString() }, now); } catch { rejected = true; }
+  if (!rejected) throw new Error("near_expiry_rfq_accepted");
+  rejected = false;
+  try { assertJupiterRfqQuoteValid("not-a-date", now); } catch { rejected = true; }
+  if (!rejected) throw new Error("malformed_rfq_expiry_accepted");
+});
+Deno.test("unknown Jupiter routers fail closed during expiry validation", () => {
+  let rejected = false;
+  try { assertJupiterOrderExpiry({ router: "future-router", lastValidBlockHeight: "12345" }, 1_000_000); } catch { rejected = true; }
+  if (!rejected) throw new Error("unknown_router_accepted");
 });
