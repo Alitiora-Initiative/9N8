@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from datetime import datetime, timezone
@@ -348,16 +349,67 @@ class AutonomousEngine:
             jito_tip_lamports=jito_tip,
             use_jito=use_jito,
         )
-        token_amount = await self.helius.token_balance_raw(str(wallet_key.pubkey()), candidate.mint)
-        if token_amount <= 0:
-            raise ExecutionError("Swap confirmed but no token balance was found; position was not recorded.")
-        supply = await self.helius.token_supply(candidate.mint)
-        decimals = int(supply["value"]["decimals"])
-        sol_usd = await self.oracle.sol_usd()
-        token_units = Decimal(token_amount) / (Decimal(10) ** decimals)
-        entry_price = (amount_sol * sol_usd / token_units) if token_units > 0 else Decimal(0)
+        # Read transaction metadata first: confirmed account indexing can lag the
+        # successful swap by a few RPC updates.
         tx_data = await self.helius.transaction(result.signature)
-        network_fee = int(((tx_data or {}).get("meta") or {}).get("fee") or 5000)
+        tx_meta = (tx_data or {}).get("meta") or {}
+        network_fee = int(tx_meta.get("fee") or 5000)
+        wallet_address = str(wallet_key.pubkey())
+        token_amount = 0
+        token_decimals: int | None = None
+        try:
+            token_amount = await self.helius.token_balance_raw(wallet_address, candidate.mint)
+        except Exception:
+            logger.warning("Post-swap token balance query failed for %s", candidate.mint)
+        if token_amount <= 0:
+            for balance_row in tx_meta.get("postTokenBalances") or []:
+                if balance_row.get("mint") != candidate.mint:
+                    continue
+                if balance_row.get("owner") not in {None, wallet_address}:
+                    continue
+                amount_info = balance_row.get("uiTokenAmount") or {}
+                token_amount += int(amount_info.get("amount") or 0)
+                if amount_info.get("decimals") is not None:
+                    token_decimals = int(amount_info["decimals"])
+        if token_amount <= 0:
+            for _attempt in range(6):
+                await asyncio.sleep(0.5)
+                try:
+                    token_amount = await self.helius.token_balance_raw(wallet_address, candidate.mint)
+                except Exception:
+                    token_amount = 0
+                if token_amount > 0:
+                    break
+        if token_amount <= 0:
+            # The confirmed route quote is retained as the provisional position
+            # size so this trade is not silently forgotten if RPC indexing lags.
+            token_amount = int(result.output_amount)
+            await self.notify(
+                telegram_id,
+                f"WARNING: swap {result.signature} is confirmed, but Helius has not indexed the token account yet. "
+                "9N8 is recording the route output provisionally and will keep checking the wallet. "
+                "Verify the fill on Solscan before submitting another trade.",
+            )
+        if token_decimals is None:
+            try:
+                supply = await self.helius.token_supply(candidate.mint)
+                token_decimals = int(supply["value"]["decimals"])
+            except Exception:
+                try:
+                    mint_info = await self.helius.account_info(candidate.mint, "base64")
+                    mint_raw = base64.b64decode(mint_info["data"][0], validate=True)
+                    token_decimals = int(mint_raw[44])
+                except Exception:
+                    token_decimals = None
+        entry_price = Decimal(0)
+        if token_decimals is not None and token_decimals >= 0:
+            try:
+                sol_usd = await self.oracle.sol_usd()
+                token_units = Decimal(token_amount) / (Decimal(10) ** token_decimals)
+                if token_units > 0:
+                    entry_price = amount_sol * sol_usd / token_units
+            except Exception:
+                logger.warning("Entry valuation unavailable for confirmed swap %s", result.signature)
         total_basis = trade_lamports + network_fee + jito_tip
         position_id = await self.db.create_position(
             telegram_id, candidate.mint, token_amount, total_basis,
@@ -407,8 +459,16 @@ class AutonomousEngine:
                     return
                 amount = await self.helius.token_balance_raw(wallet_address, mint)
                 if amount <= 0:
-                    await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
-                    return
+                    # Do not mark a just-confirmed or recently exited position as
+                    # closed on one stale/indexer-lagged zero balance response.
+                    for _attempt in range(5):
+                        await asyncio.sleep(1)
+                        amount = await self.helius.token_balance_raw(wallet_address, mint)
+                        if amount > 0:
+                            break
+                    if amount <= 0:
+                        await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
+                        return
                 quote = await self._rate_limited_quote(mint, amount)
                 current_out = int(quote.get("outAmount") or 0)
                 min_out = int(quote.get("otherAmountThreshold") or current_out)
