@@ -418,6 +418,48 @@ async def _send_sensitive_key(message: Message, address: str, secret: str) -> No
     asyncio.create_task(_delete_after(message.bot, sent.chat.id, sent.message_id, 60))
 
 
+async def _onboarding_text(telegram_id: int, key_revealed: bool = False) -> str:
+    svc = _svc()
+    address = await svc.db.get_wallet_address(telegram_id)
+    if not address:
+        return "9N8 WALLET ONBOARDING\n\nNo Solana wallet is connected."
+    balance_text = "Temporarily unavailable"
+    rpc_latency = "not measured"
+    try:
+        started = time.perf_counter()
+        balance = await svc.wallet.balance(telegram_id)
+        rpc_latency = f"{(time.perf_counter() - started) * 1000:.0f} ms"
+        balance_text = f"{format_sol(balance)} SOL"
+    except Exception:
+        pass
+    jito_status = "configured" if bool(getattr(svc.settings, "jito_base_url", "")) else "not configured"
+    reveal_status = (
+        "Private key reveal: USED — this wallet's one-time reveal has been completed."
+        if key_revealed
+        else "Private key: ENCRYPTED AND HIDDEN. Reveal it once below and store it offline. Telegram message deletion cannot remove screenshots or notification copies."
+    )
+    return (
+        "🔐 9N8 SECURE WALLET ONBOARDING\n\n"
+        "Your dedicated Solana Mainnet trading wallet is stored with its private key encrypted at rest.\n\n"
+        f"Wallet address:\n{address}\n\n"
+        f"Balance: {balance_text}\n"
+        f"Helius RPC response: {rpc_latency}\n"
+        f"Jito Block Engine endpoint: {jito_status}\n\n"
+        f"{reveal_status}\n\n"
+        "EVM wallets are not generated in this release. Base, Ethereum and BNB Chain are not connected for execution."
+    )
+
+
+def _onboarding_keyboard(key_revealed: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if not key_revealed:
+        rows.append([InlineKeyboardButton(text="🔑 Reveal Private Key (One-Time)", callback_data="wallet:reveal")])
+    else:
+        rows.append([InlineKeyboardButton(text="✅ Private Key Revealed", callback_data="wallet:reveal")])
+    rows.append([InlineKeyboardButton(text="➡️ Continue to Main Dashboard", callback_data="home:show")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def _dashboard_text(telegram_id: int) -> str:
     svc = _svc()
     await svc.db.ensure_user(telegram_id)
@@ -667,14 +709,105 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         return
     svc = _svc()
     await state.clear()
-    existing = await svc.db.get_user(message.from_user.id)
+    telegram_id = message.from_user.id
+    existing = await svc.db.get_user(telegram_id)
     if not existing and await svc.db.user_count() >= svc.settings.max_users:
         await message.answer("9N8 is currently at its onboarding capacity. Please contact the operator.")
         return
-    await svc.db.ensure_user(message.from_user.id)
-    await message.answer(
-        await _dashboard_text(message.from_user.id),
-        reply_markup=_home_keyboard(svc.settings.webapp_url),
+    await svc.db.ensure_user(telegram_id)
+    address = await svc.db.get_wallet_address(telegram_id)
+    if not address:
+        try:
+            address, _secret = await svc.wallet.create_wallet(telegram_id)
+            await svc.engine.watch_wallet(telegram_id)
+            await svc.db.security_event(telegram_id, "wallet_created_onboarding", address)
+        except Exception as exc:
+            await message.answer(
+                "9N8 could not create your dedicated Solana wallet. No deposit address is available.\n"
+                f"{type(exc).__name__}: {str(exc)[:180]}"
+            )
+            return
+        await _show_command_panel(
+            message,
+            await _onboarding_text(telegram_id),
+            _onboarding_keyboard(),
+        )
+        return
+    revealed = await svc.db.wallet_key_was_revealed(telegram_id, address)
+    await _show_command_panel(
+        message,
+        await _dashboard_text(telegram_id) if revealed else await _onboarding_text(telegram_id),
+        _home_keyboard(svc.settings.webapp_url) if revealed else _onboarding_keyboard(),
+    )
+
+
+@router.message(Command("chains"))
+@router.message(Command("network"))
+async def cmd_networks(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await _show_command_panel(
+        message,
+        await _network_selector_text(message.from_user.id),
+        _network_selector_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "network:show")
+async def cb_network_show(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(
+        await _network_selector_text(callback.from_user.id),
+        reply_markup=_network_selector_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("network:select:"))
+async def cb_network_select(callback: CallbackQuery) -> None:
+    code = callback.data.rsplit(":", 1)[-1].strip().lower()
+    network = get_network(code)
+    if network is None:
+        await callback.answer("Unknown network.", show_alert=True)
+        return
+    if not execution_enabled(code):
+        await callback.answer(
+            f"{network.name} is not connected. No chain switch was made.",
+            show_alert=True,
+        )
+        await callback.message.edit_text(
+            _network_unavailable_text(code),
+            reply_markup=_network_selector_keyboard(),
+        )
+        return
+    await callback.answer("Solana Mainnet remains selected.")
+    await callback.message.edit_text(
+        await _network_selector_text(callback.from_user.id),
+        reply_markup=_network_selector_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "network:wallets")
+async def cb_network_wallets(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    address = await svc.db.get_wallet_address(callback.from_user.id)
+    rows = []
+    if address:
+        rows.append([InlineKeyboardButton(text="📥 Deposit SOL", callback_data="deposit:show")])
+        if not await svc.db.wallet_key_was_revealed(callback.from_user.id, address):
+            rows.append([InlineKeyboardButton(text="🔑 Reveal Private Key (One-Time)", callback_data="wallet:reveal")])
+    else:
+        rows.extend([
+            [InlineKeyboardButton(text="Create Solana Wallet", callback_data="wallet:create")],
+            [InlineKeyboardButton(text="Import Solana Wallet", callback_data="wallet:import")],
+        ])
+    rows.extend([
+        [InlineKeyboardButton(text="🌐 Back to Networks", callback_data="network:show")],
+        [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+    ])
+    await callback.message.edit_text(
+        await _solana_wallet_text(callback.from_user.id),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
     )
 
 
