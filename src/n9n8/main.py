@@ -9,7 +9,7 @@ from contextlib import suppress
 
 import uvicorn
 from aiogram import Bot, Dispatcher
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
 
 from .autonomous_engine import AutonomousEngine
@@ -78,6 +78,44 @@ async def run(worker_only: bool = False) -> None:
     bot = Bot(settings.telegram_bot_token)
     dispatcher = Dispatcher()
     dispatcher.include_router(router)
+
+    # Keep Telegram's native command menu and public description in sync with
+    # the two separate trading modes.
+    try:
+        await bot.set_my_description(
+            "9N8 lets you practise with virtual SOL or manage a separate live Solana wallet. "
+            "Paper funds never move on-chain. Live trading needs safety checks, a separate "
+            "start switch and confirmation before manual buys."
+        )
+        await bot.set_my_short_description(
+            "Solana paper trading and a separately controlled live sniper."
+        )
+        await bot.set_my_commands([
+            BotCommand(command="start", description="Open your 9N8 dashboard"),
+            BotCommand(command="paper", description="Open virtual practice mode"),
+            BotCommand(command="paper_on", description="Start paper trading"),
+            BotCommand(command="paper_off", description="Pause paper entries"),
+            BotCommand(command="paper_snipe", description="Preview a virtual buy"),
+            BotCommand(command="paper_positions", description="View virtual positions"),
+            BotCommand(command="paper_history", description="View paper trade history"),
+            BotCommand(command="paper_settings", description="Edit paper rules"),
+            BotCommand(command="live", description="Check live trading readiness"),
+            BotCommand(command="live_on", description="Request live mode"),
+            BotCommand(command="live_off", description="Stop new live entries"),
+            BotCommand(command="snipe", description="Preview a real-wallet buy"),
+            BotCommand(command="live_positions", description="View real positions"),
+            BotCommand(command="live_history", description="View on-chain receipts"),
+            BotCommand(command="live_settings", description="Edit live risk rules"),
+            BotCommand(command="safety", description="View anti-rug rules"),
+            BotCommand(command="positions", description="Choose paper or live positions"),
+            BotCommand(command="history", description="Choose paper or live history"),
+            BotCommand(command="withdraw", description="Withdraw real SOL"),
+            BotCommand(command="stop", description="Stop new live entries"),
+            BotCommand(command="help", description="Show all commands"),
+        ])
+    except Exception:
+        logger.exception("Could not update Telegram bot description/command menu.")
+
 
     async def notify(telegram_id: int, message: str) -> None:
         try:
