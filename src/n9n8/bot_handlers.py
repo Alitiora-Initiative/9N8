@@ -406,6 +406,35 @@ async def _positions_text(telegram_id: int) -> str:
     return "\n".join(lines)
 
 
+async def _history_text(telegram_id: int, mode: str = "both") -> str:
+    svc = _svc()
+    lines = ["📜 9N8 TRADE HISTORY", ""]
+    if mode in {"both","paper"}:
+        paper_rows = await svc.engine.paper_engine.store.history(telegram_id,20) if svc.engine.paper_engine else []
+        lines.append("PAPER TRADES · SIMULATED")
+        if not paper_rows:
+            lines.append("No paper trades recorded.")
+        for row in paper_rows[:20]:
+            amount = int(row.get("sol_amount_lamports") or 0)
+            lines.append(
+                f"• {str(row.get('side','')).upper()} {str(row.get('mint',''))[:8]}… · "
+                f"{format_sol(amount)} SOL · {row.get('reason') or 'simulated'}"
+            )
+    if mode in {"both","live"}:
+        live_rows = await svc.db.list_trade_receipts(telegram_id,20)
+        lines.extend(["", "LIVE TRANSACTIONS · BLOCKCHAIN RECEIPTS"])
+        if not live_rows:
+            lines.append("No live blockchain receipts recorded.")
+        for row in live_rows[:20]:
+            signature = str(row.get("signature") or "")
+            lines.append(
+                f"• {str(row.get('event_type','trade')).upper()} · {str(row.get('status','unknown')).upper()} "
+                f"· {str(row.get('mint') or 'SOL')[:8]}…"
+            )
+            lines.append(f"  https://solscan.io/tx/{signature}")
+    return "\n".join(lines)
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     if not _is_private(message):
@@ -824,19 +853,35 @@ async def cmd_safety(message: Message) -> None:
 async def cmd_history(message: Message) -> None:
     if not _is_private(message):
         return
-    svc = _svc()
-    rows = await svc.engine.paper_engine.store.history(message.from_user.id,20)
-    if not rows:
-        await message.answer("No paper trading history yet.")
-        return
-    lines = ["PAPER TRADE HISTORY · SIMULATED",""]
-    for row in rows:
-        amount = int(row.get("sol_amount_lamports") or 0)
-        lines.append(
-            f"{str(row.get('side','')).upper()} {str(row.get('mint',''))[:8]}… · "
-            f"{format_sol(amount)} SOL · {row.get('reason') or ''}"
-        )
-    await message.answer("\n".join(lines))
+    await message.answer(await _history_text(message.from_user.id,"both"))
+
+
+@router.callback_query(F.data == "history:show")
+async def cb_history_show(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(await _history_text(callback.from_user.id,"both"),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Paper History",callback_data="history:paper"),
+         InlineKeyboardButton(text="Live Receipts",callback_data="history:live")],
+        [InlineKeyboardButton(text="Back",callback_data="home:show")],
+    ]))
+
+
+@router.callback_query(F.data == "history:paper")
+async def cb_history_paper(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(await _history_text(callback.from_user.id,"paper"),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")],
+        [InlineKeyboardButton(text="All History",callback_data="history:show")],
+    ]))
+
+
+@router.callback_query(F.data == "history:live")
+async def cb_history_live(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(await _history_text(callback.from_user.id,"live"),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")],
+        [InlineKeyboardButton(text="All History",callback_data="history:show")],
+    ]))
 
 
 @router.message(Command("withdraw"))
