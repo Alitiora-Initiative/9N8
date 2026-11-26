@@ -143,3 +143,49 @@ jobs:
           print("Synced sensitive production variables to Vercel: " + ", ".join(synced))
           print("Existing encryption key was copied unchanged. Paper mode and live-trading lock were not modified.")
           PY
+
+  web-security-audit:
+    name: Web dependency security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install web dependencies
+        working-directory: web
+        run: npm install --no-audit --no-fund
+      - name: Generate dependency audit report
+        working-directory: web
+        shell: bash
+        run: |
+          npm audit --json > npm-audit-report.json || true
+          node --input-type=commonjs <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("npm-audit-report.json", "utf8"));
+          const summary = report.metadata?.vulnerabilities ?? {};
+          const entries = Object.entries(report.vulnerabilities ?? {});
+          console.log("Web dependency audit:", JSON.stringify(summary));
+          for (const [name, item] of entries) {
+            const fixes = item.fixAvailable === true ? "fix available" :
+              item.fixAvailable === false ? "no automatic fix" :
+              item.fixAvailable ? JSON.stringify(item.fixAvailable) : "not stated";
+            console.log(`${item.severity.toUpperCase()} ${name}@${item.range} — ${fixes}`);
+          }
+          const lines = [
+            "## Web dependency audit",
+            "",
+            `Total: ${summary.total ?? 0} · Critical: ${summary.critical ?? 0} · High: ${summary.high ?? 0} · Moderate: ${summary.moderate ?? 0} · Low: ${summary.low ?? 0}`,
+            "",
+            ...entries.map(([name, item]) => `- **${item.severity.toUpperCase()}** \`${name}@${item.range}\` — ${item.fixAvailable === true ? "fix available" : item.fixAvailable === false ? "no automatic fix" : JSON.stringify(item.fixAvailable ?? "not stated")}`)
+          ];
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+          NODE
+      - name: Upload machine-readable audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-npm-audit-report
+          path: web/npm-audit-report.json
+          if-no-files-found: warn
+          retention-days: 7
