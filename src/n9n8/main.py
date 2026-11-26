@@ -22,7 +22,7 @@ from .mev_executor import JupiterJitoExecutor
 from .oracle import PriceOracle
 from .postgres_database import PostgresDatabase
 from .paper_store import PaperStore
-from .paper_engine import PaperTradingEngine
+from .paper_engine import PaperQuoteOnlyClient, PaperTradingEngine
 from .security import TokenSecurity
 from .telemetry import TelemetryHub
 from .wallet import WalletManager
@@ -116,7 +116,7 @@ async def run(worker_only: bool = False) -> None:
         store=paper_store,
         helius=helius,
         oracle=oracle,
-        executor=executor,
+        executor=PaperQuoteOnlyClient(executor.quote),
         security=security,
         notify=notify,
         telemetry=publish,
