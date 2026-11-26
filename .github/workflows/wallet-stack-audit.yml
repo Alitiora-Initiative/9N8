@@ -31,6 +31,40 @@ jobs:
       - name: Verify a clean lockfile install
         working-directory: web
         run: npm ci --no-audit --no-fund
+      - name: Smoke test Solana HTTP JSON-RPC with resolved Jayson
+        working-directory: web
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { createServer } from "node:http";
+          import { Connection } from "@solana/web3.js";
+
+          const server = createServer((req, res) => {
+            let body = "";
+            req.setEncoding("utf8");
+            req.on("data", (chunk) => { body += chunk; });
+            req.on("end", () => {
+              const request = JSON.parse(body);
+              const result = request.method === "getVersion"
+                ? { "solana-core": "1.18.0", "feature-set": 123 }
+                : null;
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+            });
+          });
+
+          await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+          const address = server.address();
+          if (!address || typeof address === "string") throw new Error("Local JSON-RPC test server failed to bind");
+          try {
+            const connection = new Connection(`http://127.0.0.1:${address.port}`, "confirmed");
+            const version = await connection.getVersion();
+            assert.equal(version["solana-core"], "1.18.0");
+            console.log("Solana web3.js HTTP JSON-RPC compatibility smoke test passed.");
+          } finally {
+            await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+          }
+          NODE
       - name: Build Mini App
         working-directory: web
         run: npm run build
@@ -73,19 +107,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package-lock.json
-          if git diff --cached --quiet; then
-            echo "package-lock.json is already committed."
-            exit 0
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(web): lock wallet stack dependencies"
+            git push origin "HEAD:${PR_BRANCH}"
+          else
+            echo "package-lock.json is already up to date."
           fi
-          git commit -m "chore(web): lock wallet stack dependencies"
-          git push origin "HEAD:${PR_BRANCH}"
           LOCK_SHA="$(git rev-parse HEAD)"
           curl --fail-with-body --silent --show-error -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${REPOSITORY}/statuses/${LOCK_SHA}" \
-            -d "{\\"state\\":\\"success\\",\\"description\\":\\"Clean npm ci install and Vite build passed; full dependency audit report uploaded.\\",\\"context\\":\\"9N8 wallet lockfile clean install\\"}"
+            -d '{"state":"success","description":"Clean npm ci install, Vite build and RPC smoke test passed; audit report uploaded.","context":"9N8 wallet lockfile clean install"}'
       - name: Upload dependency lockfile and audit report
         if: always()
         uses: actions/upload-artifact@v4
