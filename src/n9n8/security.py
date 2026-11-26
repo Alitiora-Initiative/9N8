@@ -88,15 +88,19 @@ class TokenSecurity:
         return max(dec(p["liquidity"]["usd"], "pool liquidity") for p in pairs)
 
     @staticmethod
-    def _top_holder_shares(report: dict[str, Any]) -> dict[str, Decimal]:
+    def _top_holder_shares(report: dict[str, Any], excluded_accounts: set[str] | None = None) -> dict[str, Decimal]:
         rows = report.get("topHolders")
         if not isinstance(rows, list) or not rows:
             raise RuntimeError("RugCheck did not return top holder wallet data")
         shares: dict[str, Decimal] = defaultdict(Decimal)
+        excluded = excluded_accounts or set()
         for row in rows:
             if not isinstance(row, dict):
                 continue
+            address = str(row.get("address") or "").strip()
             owner = str(row.get("owner") or "").strip()
+            if address in excluded or owner in excluded:
+                continue
             pct = row.get("pct")
             if not owner or pct is None:
                 continue
@@ -197,7 +201,7 @@ class TokenSecurity:
         holder_shares: dict[str, Decimal] = {}
         if report:
             try:
-                holder_shares = self._top_holder_shares(report)
+                holder_shares = self._top_holder_shares(report, excluded_token_accounts)
                 largest = sorted(holder_shares.values(), reverse=True)
                 concentration = sum(largest[:10], Decimal(0))
                 if concentration > dec(max_top10_pct):
