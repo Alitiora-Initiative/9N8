@@ -36,6 +36,40 @@ Deno.test("Binance accepts a key with combined Spot/Margin/Stock and Futures per
   }
 });
 
+Deno.test("Binance accepts Futures-only keys without Spot permission", () => {
+  const result = assessBinancePermissions({
+    enableReading: true,
+    enableWithdrawals: false,
+    enableInternalTransfer: false,
+    permitsUniversalTransfer: false,
+    enableSpotAndMarginTrading: false,
+    enableMargin: false,
+    enableFutures: true,
+    enableVanillaOptions: false,
+  }, ["futures_usdm", "futures_coinm"]);
+  if (result.marketPermissions.futures_usdm !== "verified" ||
+      result.marketPermissions.futures_coinm !== "verified") {
+    throw new Error("Futures-only key was rejected by a Spot permission check");
+  }
+});
+
+Deno.test("Binance does not assume missing funds-movement flags are disabled", () => {
+  let rejected = false;
+  try {
+    assessBinancePermissions({
+      enableReading: true,
+      enableSpotAndMarginTrading: true,
+      enableMargin: false,
+      enableFutures: false,
+      enableVanillaOptions: false,
+    }, ["spot"]);
+  } catch (error) {
+    rejected = error instanceof Error &&
+      ["withdraw_permission_detected", "binance_transfer_permission_detected"].includes(error.message);
+  }
+  if (!rejected) throw new Error("Unknown withdrawal/transfer permissions were treated as disabled");
+});
+
 Deno.test("Binance does not reject unused Futures/Margin/Options permission fields", () => {
   const result = assessBinancePermissions({
     enableReading: true,
