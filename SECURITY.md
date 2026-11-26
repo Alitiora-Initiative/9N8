@@ -46,3 +46,13 @@
 - Back up the SQLite volume and encryption key separately, securely. Loss of the encryption key makes existing encrypted private keys unrecoverable.
 - Do not host the encrypted wallet database on an ephemeral filesystem. Use a persistent disk or durable database and verify restore procedures before accepting deposits.
 - Do not enable live mode until tests, mainnet transaction construction, Jito bundle landing, withdrawal recovery and security review are complete.
+
+
+## Neon and the persistent worker
+
+- Production wallet ciphertext, settings, positions, risk, transaction receipts and queue data belong in the dedicated `9n8-trading` Neon project, database `n9n8`. Do not reuse the separate brokerage `vyra-markets` database.
+- `ENCRYPTION_MASTER_KEY` must be identical for the Vercel request app and the worker, stored as an encrypted environment secret, and backed up separately. Database backups without the key cannot recover wallet secrets; the key without database backups cannot recover the rows.
+- The Vercel request app may enqueue a transfer or panic-sell job but must never tell the user it is confirmed until the daemon has actually submitted and reconciled it.
+- Worker jobs that may have submitted an on-chain transaction but lost confirmation are marked `unknown`, never blindly retried. The operator/user must inspect the transaction signature and wallet state before retrying.
+- Vercel Daemons use ephemeral containers. Never store private keys, receipts, queue state or position state on the daemon filesystem.
+- Live execution stays locked until post-confirmation net-PnL accounting, restart/reconciliation, key-backup recovery, worker failover, and small-value mainnet execution have been independently verified.
