@@ -523,6 +523,16 @@ class Database:
             )
             await db.commit()
 
+    async def list_security_events(self, telegram_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT event_type,detail,created_at FROM security_events "
+                "WHERE telegram_id=? ORDER BY id DESC LIMIT ?",
+                (int(telegram_id), max(1, min(int(limit), 100))),
+            )
+            return [dict(row) for row in await cur.fetchall()]
+
     async def set_payout_address(self, telegram_id: int, address: str) -> None:
         async with self._lock, aiosqlite.connect(self.path) as db:
             await db.execute(
