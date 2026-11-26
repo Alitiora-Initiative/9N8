@@ -687,88 +687,119 @@ class AutonomousEngine:
     async def _monitor_position(self, position_id: int) -> None:
         try:
             while not self._stopping:
-                position = await self.db.get_position(position_id)
-                if not position or position["status"] != "open":
-                    return
-                telegram_id = int(position["telegram_id"])
-                config = await self.db.get_settings(telegram_id)
-                mint = str(position["mint"])
-                wallet_address = await self.db.get_wallet_address(telegram_id)
-                if not wallet_address:
-                    return
-                amount = await self.helius.token_balance_raw(wallet_address, mint)
-                if amount <= 0:
-                    # Do not mark a just-confirmed or recently exited position as
-                    # closed on one stale/indexer-lagged zero balance response.
-                    for _attempt in range(5):
-                        await asyncio.sleep(1)
-                        amount = await self.helius.token_balance_raw(wallet_address, mint)
-                        if amount > 0:
-                            break
+                try:
+                    position = await self.db.get_position(position_id)
+                    if not position or position["status"] != "open":
+                        return
+                    telegram_id = int(position["telegram_id"])
+                    config = await self.db.get_settings(telegram_id)
+                    mint = str(position["mint"])
+                    wallet_address = await self.db.get_wallet_address(telegram_id)
+                    if not wallet_address:
+                        await self.notify(telegram_id, "Live position monitoring paused: wallet address is unavailable. No exit was fabricated.")
+                        return
+                    amount = await self.helius.token_balance_raw(wallet_address, mint)
                     if amount <= 0:
-                        await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
-                        return
-                quote = await self._rate_limited_quote(mint, amount)
-                current_out = int(quote.get("outAmount") or 0)
-                min_out = int(quote.get("otherAmountThreshold") or current_out)
-                if current_out <= 0 or min_out <= 0:
-                    await asyncio.sleep(1)
-                    continue
-                basis_lamports = int(position["initial_cost_lamports"])
-                estimated_exit_cost = (
-                    int(config.get("priority_fee_lamports", 10000))
-                    + (int(config.get("jito_tip_lamports", 1_000_000)) if config.get("mev_shield", True) else 0)
-                    + 5000
-                )
-                current_value_lamports = max(0, min_out - estimated_exit_cost)
-                profit = net_profit_pct(
-                    from_lamports(current_value_lamports),
-                    from_lamports(basis_lamports),
-                )
-                opened = datetime.fromisoformat(str(position["opened_at"]))
-                if opened.tzinfo is None:
-                    opened = opened.replace(tzinfo=timezone.utc)
-                elapsed = Decimal(str((datetime.now(timezone.utc) - opened).total_seconds()))
-                already_partial = position.get("exit_reason") == "take_profit_partial"
-                reason = None
-                if already_partial:
-                    if elapsed >= Decimal(int(config.get("max_hold_seconds", 60))):
+                        # Confirm the zero balance on repeated indexer reads before
+                        # closing the database position.
+                        for _attempt in range(5):
+                            await asyncio.sleep(1)
+                            amount = await self.helius.token_balance_raw(wallet_address, mint)
+                            if amount > 0:
+                                break
+                        if amount <= 0:
+                            await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
+                            return
+
+                    quote = await self._rate_limited_quote(mint, amount)
+                    current_out = int(quote.get("outAmount") or 0)
+                    min_out = int(quote.get("otherAmountThreshold") or current_out)
+                    if current_out <= 0 or min_out <= 0:
+                        await asyncio.sleep(1)
+                        continue
+                    basis_lamports = int(position["initial_cost_lamports"])
+                    if basis_lamports <= 0:
+                        await asyncio.sleep(1)
+                        continue
+                    estimated_exit_cost = (
+                        int(config.get("priority_fee_lamports", 10000))
+                        + (int(config.get("jito_tip_lamports", 2_000_000)) if config.get("mev_shield", True) else 0)
+                        + 5000
+                    )
+                    current_value_lamports = max(0, min_out - estimated_exit_cost)
+                    profit = net_profit_pct(
+                        from_lamports(current_value_lamports),
+                        from_lamports(basis_lamports),
+                    )
+                    peak_value = max(
+                        int(position.get("peak_value_lamports") or 0),
+                        current_value_lamports,
+                    )
+                    await self.db.update_position_metrics(
+                        position_id, current_value_lamports, peak_value,
+                        str(profit.quantize(Decimal("0.01"))),
+                    )
+
+                    opened = datetime.fromisoformat(str(position["opened_at"]))
+                    if opened.tzinfo is None:
+                        opened = opened.replace(tzinfo=timezone.utc)
+                    elapsed = Decimal(str((datetime.now(timezone.utc) - opened).total_seconds()))
+                    tp1_done = bool(position.get("tp1_done")) or position.get("exit_reason") in {
+                        "take_profit_partial", "take_profit_1"
+                    }
+                    tp2_done = bool(position.get("tp2_done"))
+                    reason = None
+
+                    # The hard stop is always evaluated before profit targets.
+                    if profit <= -dec(config.get("stop_loss_pct", "30")):
+                        reason = "hard_stop"
+                    elif not tp1_done and profit >= dec(config.get("take_profit_pct", "100")):
+                        reason = "take_profit_1"
+                    elif tp1_done and not tp2_done and profit >= dec(config.get("take_profit_2_pct", "300")):
+                        reason = "take_profit_2"
+                    elif tp1_done and peak_value > 0 and Decimal(current_value_lamports) <= (
+                        Decimal(peak_value)
+                        * (Decimal(1) - dec(config.get("trailing_stop_pct", "20")) / Decimal(100))
+                    ):
+                        reason = "trailing_stop"
+                    elif elapsed >= Decimal(int(config.get("max_hold_seconds", 14400))):
                         reason = "max_hold"
-                else:
-                    reason = should_exit(
-                        profit,
-                        elapsed,
-                        config.get("take_profit_pct", "10"),
-                        config.get("stop_loss_pct", "15"),
-                        int(config.get("max_hold_seconds", 60)),
-                    )
-                if reason:
-                    await self._execute_exit(
-                        position_id, reason, amount, int(position["token_amount_raw"]), config
-                    )
-                    refreshed = await self.db.get_position(position_id)
-                    if not refreshed or refreshed["status"] != "open":
-                        return
-                if self.telemetry:
-                    await self.telemetry(telegram_id, {
-                        "type": "position_update", "position_id": position_id,
-                        "mint": mint, "pnl_pct": str(profit.quantize(Decimal("0.01"))),
-                        "current_value_sol": str(from_lamports(current_value_lamports)),
-                        "elapsed_seconds": int(elapsed),
-                        "max_hold_seconds": int(config.get("max_hold_seconds", 60)),
-                    })
-                await asyncio.sleep(1.0)
+
+                    if reason:
+                        await self._execute_exit(
+                            position_id, reason, amount, int(position["token_amount_raw"]), config
+                        )
+                        refreshed = await self.db.get_position(position_id)
+                        if not refreshed or refreshed["status"] != "open":
+                            return
+
+                    if self.telemetry:
+                        await self.telemetry(telegram_id, {
+                            "type": "live_position_update", "position_id": position_id,
+                            "mint": mint, "pnl_pct": str(profit.quantize(Decimal("0.01"))),
+                            "current_value_sol": str(from_lamports(current_value_lamports)),
+                            "peak_value_sol": str(from_lamports(peak_value)),
+                            "tp1_done": tp1_done or reason == "take_profit_1",
+                            "tp2_done": tp2_done or reason == "take_profit_2",
+                            "elapsed_seconds": int(elapsed),
+                            "max_hold_seconds": int(config.get("max_hold_seconds", 14400)),
+                        })
+                    await asyncio.sleep(1.0)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("Live position monitor iteration failed: %s", position_id)
+                    position = await self.db.get_position(position_id)
+                    if position:
+                        await self.notify(
+                            int(position["telegram_id"]),
+                            f"Live position monitor temporarily unavailable for {position['mint'][:8]}…: "
+                            f"{type(exc).__name__}. The position remains open; verify wallet and prices. "
+                            "The monitor will retry.",
+                        )
+                    await asyncio.sleep(3)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            logger.exception("Position monitor failed: %s", position_id)
-            position = await self.db.get_position(position_id)
-            if position:
-                await self.notify(
-                    int(position["telegram_id"]),
-                    f"Position monitor paused for {position['mint'][:8]}…: {type(exc).__name__}. "
-                    "No fabricated exit was recorded; inspect the wallet before restarting.",
-                )
         finally:
             self._position_tasks.pop(position_id, None)
 
@@ -786,14 +817,16 @@ class AutonomousEngine:
         if current_balance <= 0:
             await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
             return
-        partial = (
-            reason == "take_profit"
-            and Decimal(str(config.get("moon_bag_pct", "15"))) > 0
-        )
-        if partial:
+        partial = reason in {"take_profit_1", "take_profit_2"}
+        if reason == "take_profit_1":
+            # First target: return half the position and keep the other half running.
             sell_amount, _retained = moon_bag_split(
-                current_balance, config.get("moon_bag_pct", "15")
+                current_balance, config.get("moon_bag_pct", "50")
             )
+        elif reason == "take_profit_2":
+            # Second target: sell 25% of the remaining bag.
+            sell_fraction = dec(config.get("take_profit_2_sell_pct", "25")) / Decimal(100)
+            sell_amount = int((Decimal(current_balance) * sell_fraction).to_integral_value(rounding="ROUND_DOWN"))
         else:
             sell_amount = current_balance
         if sell_amount <= 0:
@@ -920,7 +953,7 @@ class AutonomousEngine:
             )
         await self.db.close_position(
             position_id, remaining,
-            "take_profit_partial" if partial and not fully_closed else reason,
+            reason,
             net_realized_lamports, result.signature, fully_closed,
         )
         await self.db.record_daily_pnl(telegram_id, utc_day(), net_realized_lamports)
