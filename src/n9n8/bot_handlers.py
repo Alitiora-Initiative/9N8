@@ -56,6 +56,7 @@ class AppServices:
 
 services: AppServices | None = None
 _pending_paper_snipes: dict[int, dict] = {}
+_pending_paper_snipes: dict[int, dict] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
