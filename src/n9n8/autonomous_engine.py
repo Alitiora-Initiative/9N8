@@ -203,6 +203,11 @@ class AutonomousEngine:
         except Exception as exc:
             raise ExecutionError(f"Live token safety checks could not be completed: {type(exc).__name__}.") from exc
         if not risk.passed:
+            await self.db.security_event(
+                telegram_id,
+                "live_manual_snipe_rejected",
+                canonical_mint + ": " + "; ".join(risk.reasons[:8]),
+            )
             raise ExecutionError("Token rejected by the safety gate: " + "; ".join(risk.reasons[:5]))
 
         async with self._quote_lock:
@@ -632,6 +637,11 @@ class AutonomousEngine:
             excluded_token_accounts=excluded_token_accounts,
         )
         if not risk.passed:
+            await self.db.security_event(
+                telegram_id,
+                "live_entry_rejected",
+                candidate.mint + ": " + "; ".join(risk.reasons[:8]),
+            )
             await self.notify(
                 telegram_id,
                 f"SECURITY FILTER REJECTED {candidate.mint[:8]}…\n"
