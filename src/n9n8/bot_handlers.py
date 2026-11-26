@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from decimal import Decimal, InvalidOperation
 
@@ -21,6 +22,7 @@ from .math_engine import format_sol, to_lamports, usd_to_lamports
 from .oracle import PriceOracle
 from .wallet import WalletError, WalletManager
 from .autonomous_engine import AutonomousEngine
+from .networks import NETWORKS, execution_enabled, get_network
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -65,6 +67,8 @@ services: AppServices | None = None
 _pending_paper_snipes: dict[int, dict] = {}
 _pending_live_snipes: dict[int, dict] = {}
 _withdraw_locks: dict[int, asyncio.Lock] = {}
+_dashboard_message_ids: dict[int, int] = {}
+_pending_detected_mints: dict[int, str] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
@@ -96,6 +100,7 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
             web_app=WebAppInfo(url=webapp_url),
         )])
     rows.extend([
+        [InlineKeyboardButton(text="🌐 Switch Network / Chains", callback_data="network:show")],
         [
             InlineKeyboardButton(text="🧪 Paper Trading", callback_data="paper:menu"),
             InlineKeyboardButton(text="🔴 Live Solana Sniper", callback_data="live:menu"),
@@ -120,6 +125,120 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="Refresh Dashboard", callback_data="status:show")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _network_selector_text(telegram_id: int) -> str:
+    svc = _svc()
+    address = await svc.db.get_wallet_address(telegram_id)
+    sol_balance = "Wallet not created"
+    if address:
+        try:
+            sol_balance = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
+        except Exception:
+            sol_balance = "Temporarily unavailable"
+
+    lines = [
+        "🌐 9N8 NETWORK SELECTOR",
+        "",
+        "Selected execution network: 🟣 SOLANA MAINNET",
+        "",
+        f"🟣 Solana — ACTIVE · {sol_balance}",
+        "Markets: Pump.fun and Raydium",
+        "Data: Helius · Swaps: Jupiter · Private routing: Jito",
+        "",
+    ]
+    for network in NETWORKS:
+        if network.code == "solana":
+            continue
+        lines.extend([
+            f"{network.name} — NOT CONNECTED",
+            f"Native asset: {network.native_symbol}",
+            f"DEX targets: {network.dex_targets} (not wired)",
+            "Wallet and live balance: not configured",
+            "",
+        ])
+    lines.extend([
+        "EVM network selection is currently blocked. This runtime has no EVM wallet vault, RPC listener, contract-risk adapter, DEX swap executor, or EVM position watchdog.",
+        "Selecting an unavailable network will not change the active engine. Do not send ETH or BNB assets to the Solana deposit address.",
+    ])
+    return "\\n".join(lines)
+
+
+def _network_selector_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟣 Solana — ACTIVE", callback_data="network:select:solana")],
+        [
+            InlineKeyboardButton(text="🔵 Base — NOT CONNECTED", callback_data="network:select:base"),
+            InlineKeyboardButton(text="🔷 Ethereum — NOT CONNECTED", callback_data="network:select:ethereum"),
+        ],
+        [InlineKeyboardButton(text="🟡 BNB Chain — NOT CONNECTED", callback_data="network:select:bnb")],
+        [InlineKeyboardButton(text="💼 Manage Solana Wallet", callback_data="network:wallets")],
+        [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+    ])
+
+
+def _network_unavailable_text(code: str) -> str:
+    network = get_network(code)
+    if network is None:
+        return "Unknown network. The active execution network remains Solana Mainnet."
+    return (
+        f"⛔ {network.name.upper()} IS NOT CONNECTED\\n\\n"
+        "No chain switch was made. Solana Mainnet remains the only execution-enabled network.\\n\\n"
+        f"Requested DEX targets: {network.dex_targets}\\n"
+        f"Status: {network.execution_note}\\n\\n"
+        "No wallet was generated, no balance was queried, and no transaction can be submitted for this network in the current release."
+    )
+
+
+async def _solana_wallet_text(telegram_id: int) -> str:
+    svc = _svc()
+    address = await svc.db.get_wallet_address(telegram_id)
+    if not address:
+        return (
+            "💼 SOLANA WALLET MANAGEMENT\\n\\n"
+            "No Solana trading wallet is connected. Create a dedicated wallet or import an existing Solana key."
+        )
+    try:
+        balance = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
+    except Exception:
+        balance = "Temporarily unavailable"
+    return (
+        "💼 SOLANA WALLET MANAGEMENT\\n\\n"
+        f"Network: Solana Mainnet\\n"
+        f"Address: {address}\\n"
+        f"Balance: {balance}\\n\\n"
+        "Only send Solana-native assets to this address. Base, Ethereum and BNB Chain deposits are not supported here."
+    )
+
+
+async def _show_command_panel(
+    message: Message, text: str, keyboard: InlineKeyboardMarkup,
+) -> None:
+    telegram_id = message.from_user.id
+    existing_id = _dashboard_message_ids.get(telegram_id)
+    if existing_id is not None:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=existing_id,
+                text=text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            if "message is not modified" not in str(exc).lower():
+                existing_id = None
+    if existing_id is None:
+        sent = await message.answer(
+            text,
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
+        )
+        _dashboard_message_ids[telegram_id] = sent.message_id
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 
 def _mode_keyboard(mode: str, enabled: bool) -> InlineKeyboardMarkup:
@@ -275,6 +394,8 @@ async def _dashboard_text(telegram_id: int) -> str:
     scanner_status = "RUNNING" if scanner_task and not scanner_task.done() else "IDLE"
     return (
         "⚡ 9N8 · SOLANA TRADING CONTROL\n\n"
+        "Execution network: SOLANA MAINNET · only connected trading engine\n"
+        "EVM networks: visible in the network selector, not execution-enabled\n\n"
         "TWO SEPARATE MODES\n"
         f"🧪 Paper Trading: {'RUNNING' if paper_on else 'PAUSED'}\n"
         f"Virtual cash: {paper_balance}\n"
@@ -449,10 +570,79 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         await message.answer("9N8 is currently at its onboarding capacity. Please contact the operator.")
         return
     await svc.db.ensure_user(message.from_user.id)
-    await message.answer(
+    await _show_command_panel(
+        message,
         await _dashboard_text(message.from_user.id),
-        reply_markup=_home_keyboard(svc.settings.webapp_url),
+        _home_keyboard(svc.settings.webapp_url),
     )
+
+
+@router.message(Command("chains"))
+@router.message(Command("network"))
+async def cmd_networks(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await _show_command_panel(
+        message,
+        await _network_selector_text(message.from_user.id),
+        _network_selector_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "network:show")
+async def cb_network_show(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(
+        await _network_selector_text(callback.from_user.id),
+        reply_markup=_network_selector_keyboard(),
+    )
+
+
+@router.callback_query(F.data.startswith("network:select:"))
+async def cb_network_select(callback: CallbackQuery) -> None:
+    code = callback.data.rsplit(":", 1)[-1].strip().lower()
+    network = get_network(code)
+    if network is None:
+        await callback.answer("Unknown network.", show_alert=True)
+        return
+    if not execution_enabled(code):
+        await callback.answer(
+            f"{network.name} is not connected. No chain switch was made.",
+            show_alert=True,
+        )
+        await callback.message.edit_text(
+            _network_unavailable_text(code),
+            reply_markup=_network_selector_keyboard(),
+        )
+        return
+    await callback.answer("Solana Mainnet remains selected.")
+    await callback.message.edit_text(
+        await _network_selector_text(callback.from_user.id),
+        reply_markup=_network_selector_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "network:wallets")
+async def cb_network_wallets(callback: CallbackQuery) -> None:
+    await callback.answer()
+    address = await _svc().db.get_wallet_address(callback.from_user.id)
+    rows = []
+    if address:
+        rows.append([InlineKeyboardButton(text="📥 Deposit SOL", callback_data="deposit:show")])
+    else:
+        rows.extend([
+            [InlineKeyboardButton(text="Create Solana Wallet", callback_data="wallet:create")],
+            [InlineKeyboardButton(text="Import Solana Wallet", callback_data="wallet:import")],
+        ])
+    rows.extend([
+        [InlineKeyboardButton(text="🌐 Back to Networks", callback_data="network:show")],
+        [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+    ])
+    await callback.message.edit_text(
+        await _solana_wallet_text(callback.from_user.id),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+    )
+
 
 
 
@@ -1217,6 +1407,8 @@ async def cmd_help(message: Message) -> None:
     await message.answer(
         "9N8 COMMANDS · PAPER AND LIVE ARE SEPARATE\n\n"
         "/start — main dashboard\n"
+        "/chains — network selector and connection status\n"
+        "/network — alias for /chains\n"
         "/paper — virtual practice account\n"
         "/paper_on — start paper entries\n"
         "/paper_off — pause paper entries\n"
@@ -1845,3 +2037,79 @@ async def cb_panic_sell(callback: CallbackQuery) -> None:
         await callback.message.answer("Panic sell submitted. Check the trade alert for confirmation.")
     except Exception as exc:
         await callback.message.answer(f"Panic sell failed: {exc}")
+
+
+@router.callback_query(F.data == "detected:paper")
+async def cb_detected_paper(callback: CallbackQuery) -> None:
+    mint = _pending_detected_mints.pop(callback.from_user.id, None)
+    if not mint:
+        await callback.answer("Token detection expired. Paste the address again.", show_alert=True)
+        return
+    await callback.answer("Preparing a paper-only quote…")
+    await _show_paper_snipe_preview(callback.message, callback.from_user.id, mint)
+
+
+@router.callback_query(F.data == "detected:live")
+async def cb_detected_live(callback: CallbackQuery) -> None:
+    mint = _pending_detected_mints.pop(callback.from_user.id, None)
+    if not mint:
+        await callback.answer("Token detection expired. Paste the address again.", show_alert=True)
+        return
+    await callback.answer("Preparing a live safety preview. No order is sent.")
+    await _show_live_snipe_preview(callback.message, callback.from_user.id, mint)
+
+
+@router.callback_query(F.data == "detected:cancel")
+async def cb_detected_cancel(callback: CallbackQuery) -> None:
+    _pending_detected_mints.pop(callback.from_user.id, None)
+    await callback.answer("Cancelled. No trade was submitted.")
+    await callback.message.edit_text(
+        "Token-address detection cancelled. No trade was submitted.",
+        reply_markup=_home_keyboard(_svc().settings.webapp_url),
+    )
+
+
+@router.message(F.text)
+async def auto_detect_pasted_address(message: Message, state: FSMContext) -> None:
+    if not _is_private(message):
+        return
+    if await state.get_state():
+        return
+    candidate = (message.text or "").strip()
+    if not candidate:
+        return
+
+    evm_match = re.fullmatch(r"0x[a-fA-F0-9]{40}", candidate)
+    if evm_match:
+        await message.answer(
+            "🔷 EVM CONTRACT ADDRESS DETECTED\\n\\n"
+            "This address format belongs to an EVM network, but Base, Ethereum and BNB Chain are not connected to 9N8's execution runtime yet. "
+            "No token scan, wallet lookup, quote or transaction was attempted.\\n\\n"
+            "Open the network selector to review the current connection status.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🌐 Network Selector", callback_data="network:show")],
+                [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+            ]),
+        )
+        return
+
+    if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", candidate):
+        return
+    try:
+        mint = str(Pubkey.from_string(candidate))
+    except Exception:
+        return
+    if mint == "So11111111111111111111111111111111111111112":
+        return
+
+    _pending_detected_mints[message.from_user.id] = mint
+    await message.answer(
+        "🎯 SOLANA TOKEN ADDRESS DETECTED\\n\\n"
+        f"Mint: {mint}\\n\\n"
+        "Choose which isolated account should preview this token. A Live choice only prepares a quote and safety report; it does not buy until you review and confirm.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧪 Paper Preview", callback_data="detected:paper")],
+            [InlineKeyboardButton(text="🔴 Live Safety Preview", callback_data="detected:live")],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="detected:cancel")],
+        ]),
+    )
