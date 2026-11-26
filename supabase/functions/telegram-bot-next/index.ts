@@ -2561,7 +2561,31 @@ async function handleMessage(update: any) {
     );
     return;
   }
-  if (command === "/connect") {
+  if (command === "/sniper" || command === "/dashboard") {
+    await send(chatId,
+      "🚀 SOLANA SNIPER CONTROL\n\nPaper and Live are separate. Use the dashboard for engine controls, positions, exit rules, safety filters and wallet actions.",
+      solanaPanelKeyboard("dashboard"));
+    return;
+  }
+  if (command === "/solana_live") {
+    await send(chatId,
+      "🔴 SOLANA LIVE CONTROLS\n\nLive trading is a separate real-wallet mode. The dashboard shows the current operator switch and activation, wallet, Paper-practice and balance readiness gates. The panel itself does not submit an order.",
+      solanaPanelKeyboard("live"));
+    return;
+  }
+  if (command === "/positions") {
+    await send(chatId, "📊 SOLANA POSITIONS\n\nOpen the dashboard to inspect Paper positions and separately recorded Live positions and receipts.", solanaPanelKeyboard("positions"));
+    return;
+  }
+  if (command === "/settings") {
+    await send(chatId, "⚙️ SOLANA SNIPER SETTINGS\n\nOpen the dashboard to edit paper buy size, slippage, take-profit, trailing-stop, hard-stop and holding-time settings. Live controls remain subject to server-side limits.", solanaPanelKeyboard("settings"));
+    return;
+  }
+  if (command === "/safety") {
+    await send(chatId, "🛡️ SOLANA SAFETY FILTERS\n\nOpen the dashboard to review mint/freeze authority, liquidity-lock and holder-concentration gates. Unverified safety data must fail closed.", solanaPanelKeyboard("safety"));
+    return;
+  }
+    if (command === "/connect") {
     await send(chatId, "Open this private secure form to connect Binance, Bybit or OKX. Choose the markets you want to use. Keep Withdraw and account transfers disabled. Never send API credentials, private keys or seed phrases in Telegram chat.", {
       inline_keyboard: [[{ text: "Open secure connections", web_app: { url: MINI_APP_URL } }]],
     });
@@ -2614,13 +2638,15 @@ async function handleMessage(update: any) {
     await send(chatId, await liveStatusText(row.id));
     return;
   }
-  if (command === "/paper") {
-    await send(chatId, await paperStatusText(row.id), {
-      inline_keyboard: [[{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
-    });
+  if (command === "/paper" || command === "/solana_paper") {
+    await send(chatId,
+      "🧪 SOLANA PAPER TRADING\n\n" +
+      "This is the isolated virtual account. It reads live Solana market data but does not sign, submit or broadcast real transactions. Paper balance, fills, positions and PnL are kept separate from Live.\n\n" +
+      "Open the Paper section to start or pause the paper engine, edit buy size and exit rules, inspect positions and review simulated fills.",
+      solanaPanelKeyboard("paper"));
     return;
   }
-  if (command === "/simulator") {
+    if (command === "/simulator") {
     await send(chatId, "LIVE-MARKET PAPER SIMULATOR\\n\\nReal Binance Spot candles, ticker and order-book data. Paper orders use virtual cash, visible depth VWAP and estimated fees; no real order is submitted.", {
       inline_keyboard: [[{ text: "📈 Open 9N8 simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
     });
