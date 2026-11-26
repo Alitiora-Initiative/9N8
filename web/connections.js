@@ -44,10 +44,10 @@ function syncExchangeFields() {
   marketFieldset.classList.toggle("hidden", autoDetect);
 
   const stocks = $("stocksMarketOption");
-  stocks.classList.toggle("hidden", !isBinance);
+  stocks.classList.add("hidden");
   const stockInput = stocks.querySelector("input");
-  stockInput.disabled = !isBinance;
-  if (!isBinance) stockInput.checked = false;
+  stockInput.disabled = true;
+  stockInput.checked = false;
 
   if (isBinance) {
     marketHint.textContent = autoDetect
