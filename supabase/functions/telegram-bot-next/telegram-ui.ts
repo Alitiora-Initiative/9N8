@@ -14,7 +14,7 @@ export function buildMainKeyboard(solanaControlUrl: string, walletAndJupiterUrl:
   ] };
 }
 
-export function buildNetworkSelectorText(networks: Record<string, { note: string }>): string {
+export function buildNetworkSelectorText(networks: { base?: { note: string }; ethereum?: { note: string }; bnb?: { note: string } }): string {
   return [
     "🌐 SELECT ACTIVE TRADING NETWORK", "",
     "🟣 SOLANA MAINNET — ACTIVE",
