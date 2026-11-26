@@ -246,23 +246,54 @@ async def _show_command_panel(
 async def _render_quick_snipe_panel(
     message: Message, telegram_id: int, text: str, keyboard: InlineKeyboardMarkup,
 ) -> None:
-    panel_id = _dashboard_message_ids.get(telegram_id)
-    if panel_id == message.message_id:
+    if message.from_user is not None and message.from_user.is_bot:
         try:
             await message.edit_text(
                 text,
                 reply_markup=keyboard,
                 disable_web_page_preview=True,
             )
+            _dashboard_message_ids[telegram_id] = message.message_id
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                _dashboard_message_ids[telegram_id] = message.message_id
+                return
+            logger.warning(
+                "Could not edit the originating quick-snipe message for Telegram account %s (%s)",
+                telegram_id,
+                type(exc).__name__,
+            )
+
+    panel_id = _dashboard_message_ids.get(telegram_id)
+    if panel_id is not None:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=panel_id,
+                text=text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+            if (
+                message.from_user is not None
+                and message.from_user.id == telegram_id
+                and message.chat.type == "private"
+            ):
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
             return
         except Exception as exc:
             if "message is not modified" in str(exc).lower():
                 return
             logger.warning(
-                "Could not edit the current quick-snipe panel for Telegram account %s (%s)",
+                "Could not edit stored quick-snipe panel for Telegram account %s (%s)",
                 telegram_id,
                 type(exc).__name__,
             )
+
     sent = await message.answer(
         text,
         reply_markup=keyboard,
@@ -273,7 +304,6 @@ async def _render_quick_snipe_panel(
         message.chat.type == "private"
         and message.from_user is not None
         and message.from_user.id == telegram_id
-        and (message.text or "").startswith("/")
     ):
         try:
             await message.delete()
