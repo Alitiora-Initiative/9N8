@@ -30,7 +30,8 @@ def _position(row: asyncpg.Record | None) -> dict[str, Any] | None:
     item = dict(row)
     # Preserve the full unsigned-sized token / lamport values without JSON float
     # conversion or JavaScript's 53-bit integer precision loss.
-    for key in ("token_amount_raw", "initial_cost_lamports", "moon_bag_raw", "realized_lamports"):
+    for key in ("token_amount_raw", "initial_cost_lamports", "moon_bag_raw", "realized_lamports",
+                "peak_value_lamports", "last_value_lamports"):
         if item.get(key) is not None:
             item[key] = str(item[key])
     if item.get("entry_price_usd") is not None:
