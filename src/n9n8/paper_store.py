@@ -175,6 +175,11 @@ class PaperStore:
             raise ValueError("mode must be live or paper")
         await self.db.ensure_user(telegram_id)
         if self.is_postgres:
+            await self.db._pool().execute(
+                """INSERT INTO public.n9n8_paper_settings(telegram_id,config_json)
+                   VALUES($1,$2::jsonb) ON CONFLICT(telegram_id) DO NOTHING""",
+                int(telegram_id),json.dumps(PAPER_DEFAULT_SETTINGS,separators=(",",":")),
+            )
             raw=await self.db._pool().fetchval(
                 "SELECT config_json FROM public.n9n8_paper_settings WHERE telegram_id=$1",int(telegram_id)
             )
@@ -182,6 +187,11 @@ class PaperStore:
             except (TypeError,json.JSONDecodeError): values={}
         else:
             async with aiosqlite.connect(self.db.path) as conn:
+                await conn.execute(
+                    "INSERT OR IGNORE INTO paper_settings(telegram_id,config_json,updated_at) VALUES(?,?,?)",
+                    (int(telegram_id),json.dumps(PAPER_DEFAULT_SETTINGS,separators=(",",":")),_now()),
+                )
+                await conn.commit()
                 cur=await conn.execute("SELECT config_json FROM paper_settings WHERE telegram_id=?",(int(telegram_id),))
                 row=await cur.fetchone()
             try: values=json.loads(row[0]) if row else {}
@@ -424,7 +434,7 @@ class PaperStore:
             )
             await conn.execute(
                 """INSERT INTO paper_trades(telegram_id,position_id,side,mint,launchpad,token_amount_raw,sol_amount_lamports,fee_lamports,price_usd,reason,reference_signature,quote_json,created_at)
-                   VALUES(?,?,'sell',?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,'sell',?,?,?,?,?,?,?,?,?,?)""",
                 (int(telegram_id),int(position_id),pos["mint"],pos["launchpad"],tokens,gross,fee,pos["entry_price_usd"],reason,reference,json.dumps(quote,separators=(",",":")),now)
             )
             await conn.commit()
