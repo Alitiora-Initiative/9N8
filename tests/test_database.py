@@ -44,3 +44,20 @@ async def test_daily_risk_ledger_persists_trade_count_and_pnl(tmp_path):
         "realized_pnl_lamports": -250,
         "trade_count": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_fee_receipt_is_idempotency_lookup_and_daily_baseline_can_initialize(tmp_path):
+    db = Database(str(tmp_path / "db.sqlite3"), Fernet.generate_key())
+    await db.initialize()
+    await db.ensure_user(22)
+    await db.record_fee(22, "activation", 5_000_000, "sig-123", "activation:22")
+    receipt = await db.fee_receipt("activation:22")
+    assert receipt is not None
+    assert receipt["tx_signature"] == "sig-123"
+    assert receipt["amount_lamports"] == 5_000_000
+
+    await db.start_daily_risk(22, "2026-11-26", 0)
+    await db.start_daily_risk(22, "2026-11-26", 700_000)
+    snapshot = await db.daily_risk_snapshot(22, "2026-11-26")
+    assert snapshot["starting_equity_lamports"] == 700_000
