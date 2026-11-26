@@ -23,6 +23,7 @@ from .security import TokenSecurity
 from .telemetry import TelemetryHub
 from .wallet import WalletManager
 from .webapp_server import create_webapp
+from .vercel_queue import VercelQueueClient, VercelQueueError
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -36,11 +37,18 @@ async def run(worker_only: bool = False) -> None:
     settings = Settings.from_env()
     if worker_only and not settings.database_url:
         raise RuntimeError("The persistent 9N8 worker requires DATABASE_URL; SQLite is local-development only.")
+    queue_token = os.getenv("VERCEL_OIDC_TOKEN") or os.getenv("VERCEL_QUEUE_API_TOKEN", "")
+    if worker_only and not queue_token:
+        raise RuntimeError(
+            "The Vercel Daemon requires an OIDC token for Vercel Queue poll mode. "
+            "Verify that VERCEL_OIDC_TOKEN is available to this Daemon runtime."
+        )
     if settings.database_url:
         db = PostgresDatabase(settings.database_url, settings.encryption_key)
     else:
         db = Database(settings.database_path, settings.encryption_key)
     await db.initialize()
+    worker_queue = VercelQueueClient(settings.vercel_queue_region)
     if hasattr(db, "mark_stale_jobs_unknown"):
         stale_jobs = await db.mark_stale_jobs_unknown()
         if stale_jobs:
@@ -122,7 +130,7 @@ async def run(worker_only: bool = False) -> None:
         except Exception as exc:
             logger.error("Could not resume Telegram account %s (%s)", telegram_id, type(exc).__name__)
 
-    worker_id = os.getenv("RENDER_INSTANCE_ID") or os.getenv("HOSTNAME") or "9n8-worker"
+    worker_id = os.getenv("VERCEL_DEPLOYMENT_ID") or os.getenv("HOSTNAME") or os.getenv("RENDER_INSTANCE_ID") or "9n8-worker"
 
     async def run_worker_job(job: dict) -> None:
         job_id = int(job["id"])
