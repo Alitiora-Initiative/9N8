@@ -50,13 +50,18 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-        authorized_raw = os.getenv("AUTHORIZED_USER_ID", "").strip()
+        # Accept the existing GitHub Actions secret name as a fallback.
+        # TELEGRAM_CHAT_ID must be a positive private-chat ID; group/channel IDs are rejected.
+        authorized_raw = (
+            os.getenv("AUTHORIZED_USER_ID", "").strip()
+            or os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        )
         try:
             authorized_user_id = int(authorized_raw)
             if authorized_user_id <= 0:
                 raise ValueError
         except (TypeError, ValueError) as exc:
-            raise RuntimeError("AUTHORIZED_USER_ID must be a positive Telegram user ID.") from exc
+            raise RuntimeError("Set AUTHORIZED_USER_ID or a positive private TELEGRAM_CHAT_ID matching the authorized user ID.") from exc
         helius_key = os.getenv("HELIUS_API_KEY", "").strip()
         supplied_rpc = os.getenv("SOLANA_RPC_URL", "").strip()
         supplied_wss = os.getenv("SOLANA_WSS_URL", "").strip()
