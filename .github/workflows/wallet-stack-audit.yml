@@ -27,11 +27,7 @@ jobs:
         working-directory: web
         shell: bash
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
+          npm install --no-audit --no-fund
       - name: Verify a clean lockfile install
         working-directory: web
         run: npm ci --no-audit --no-fund
