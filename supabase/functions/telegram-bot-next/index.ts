@@ -23,6 +23,7 @@ import {
   type BinanceBook,
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
+import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
@@ -210,12 +211,35 @@ function solanaPanelKeyboard(section = "dashboard"): Obj {
   ] };
 }
 
+function networkSelectorText(): string {
+  return [
+    "🌐 9N8 NETWORK SELECTOR", "",
+    "Active execution network: Solana Mainnet",
+    "Solana is the only connected on-chain execution path. Its existing Paper and Live safety controls remain separate.", "",
+    "BASE · NOT CONNECTED", NETWORKS.base.note, "",
+    "ETHEREUM · NOT CONNECTED", NETWORKS.ethereum.note, "",
+    "BNB CHAIN · NOT CONNECTED", NETWORKS.bnb.note, "",
+    "Selecting an unsupported chain never connects a wallet, requests a quote, or submits a transaction. Do not deposit funds on an unsupported network.",
+  ].join("\n");
+}
+
+function networkSelectorKeyboard(): Obj {
+  return { inline_keyboard: [
+    [{ text: "✅ Solana Mainnet · Active", callback_data: "n8:network:solana" }],
+    [{ text: "Base · Not connected", callback_data: "n8:network:base" }],
+    [{ text: "Ethereum · Not connected", callback_data: "n8:network:ethereum" }],
+    [{ text: "BNB Chain · Not connected", callback_data: "n8:network:bnb" }],
+    [{ text: "↩ Back to 9N8 dashboard", callback_data: "n8:services" }],
+  ] };
+}
+
 function mainKeyboard(): Obj {
   return { inline_keyboard: [
     [{ text: "🚀 OPEN SOLANA SNIPER CONTROL", web_app: { url: SOLANA_SNIPER_URL } }],
     [{ text: "🧪 Paper Trading", callback_data: "n8:solana_paper" }, { text: "🔴 Live Controls", callback_data: "n8:solana_live" }],
     [{ text: "📊 Positions", callback_data: "n8:solana_positions" }, { text: "⚙️ Trading Settings", callback_data: "n8:solana_settings" }],
     [{ text: "🛡 Safety Filters", callback_data: "n8:solana_safety" }],
+    [{ text: "🌐 Networks / Chains", callback_data: "n8:networks" }],
     [{ text: "Connect Exchanges", web_app: { url: MINI_APP_URL } }, { text: "Wallet Watch", web_app: { url: SOLANA_SNIPER_URL + "#live" } }],
     [{ text: "📚 Services", callback_data: "n8:services" }, { text: "📡 Live Status", callback_data: "n8:live_status" }],
   ] };
@@ -2449,6 +2473,7 @@ async function setBotProfileAndCommands(): Promise<void> {
         { command: "sniper", description: "Open the complete Solana Sniper control panel" },
         { command: "solana_paper", description: "Open separate Solana Paper Trading controls" },
         { command: "solana_live", description: "Open gated Solana Live Trading controls" },
+        { command: "networks", description: "Show connected and unavailable blockchains" },
         { command: "positions", description: "View Paper and Live positions" },
         { command: "settings", description: "Open sniper trading settings" },
         { command: "safety", description: "Open anti-rug safety filters" },
@@ -2492,6 +2517,7 @@ function serviceOverview(): string {
     "/sniper — open the Solana Sniper dashboard",
     "/solana_paper — open isolated virtual Solana trading",
     "/solana_live — open gated live-wallet controls",
+    "/networks — show supported and unavailable chains",
     "/positions — open Paper and Live positions",
     "/settings — open sniper rules and exit settings",
     "/safety — open the anti-rug gatekeeper",
@@ -2508,7 +2534,31 @@ async function handleMessage(update: any) {
   const chatType = String(m.chat.type ?? "");
   const chatId = Number(m.chat.id);
   const text = String(m.text ?? "").trim();
-  if (!text.startsWith("/")) return;
+  if (!text.startsWith("/")) {
+    if (chatType !== "private") return;
+    if (isEvmAddressCandidate(text)) {
+      await userRow(m.from);
+      await send(chatId,
+        "EVM address format detected. Base, Ethereum and BNB Chain are not connected to 9N8 execution, so no wallet lookup, quote or trade was attempted. Use /networks to see the current chain status.",
+        networkSelectorKeyboard());
+      return;
+    }
+    if (isSolanaAddressCandidate(text)) {
+      try {
+        const address = new PublicKey(text);
+        if (address.toBase58() === text) {
+          await userRow(m.from);
+          await send(chatId,
+            "Solana address format detected. Pasting an address never starts a buy or signs a transaction. Open the Solana Sniper dashboard to review its supported scanner and keep Paper and Live controls separate.",
+            solanaPanelKeyboard("dashboard"));
+          return;
+        }
+      } catch {
+        // Not a valid 32-byte Solana public key; ignore ordinary chat text.
+      }
+    }
+    return;
+  }
   const parts = text.split(/\s+/);
   const command = (parts[0].split("@")[0] ?? "").toLowerCase();
   const args = parts.slice(1);
@@ -2540,6 +2590,10 @@ async function handleMessage(update: any) {
     await send(chatId, serviceOverview(), mainKeyboard());
     return;
   }
+  if (command === "/networks" || command === "/chains" || command === "/network") {
+    await send(chatId, networkSelectorText(), networkSelectorKeyboard());
+    return;
+  }
   if (command === "/help") {
     await send(chatId,
       "9N8 COMMANDS\n" +
@@ -2556,6 +2610,7 @@ async function handleMessage(update: any) {
       "/sniper — open complete Solana Sniper dashboard\n" +
       "/solana_paper — separate virtual Solana trading\n" +
       "/solana_live — gated Solana live-wallet controls\n" +
+       "/networks — show supported and unavailable chains\n" +
       "/positions — open Paper and Live positions\n" +
       "/settings — open sniper trade settings\n" +
       "/safety — open anti-rug filters\n" +
@@ -2695,6 +2750,26 @@ async function handleCallback(update: any) {
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
   if (q.data === "n8:services") await send(Number(chat.id), serviceOverview(), mainKeyboard());
+  if (q.data === "n8:networks") {
+    await send(Number(chat.id), networkSelectorText(), networkSelectorKeyboard());
+  }
+  if (String(q.data ?? "").startsWith("n8:network:")) {
+    const networkCode = String(q.data).slice("n8:network:".length);
+    const network = getNetwork(networkCode);
+    if (!network) {
+      await send(Number(chat.id), "Unknown network. Solana Mainnet remains the only supported execution path.", networkSelectorKeyboard());
+    } else if (!networkExecutionEnabled(network.code)) {
+      await audit(row.id, Number(chat.id), "unsupported_network_selection_blocked", "rejected", { network: network.code });
+      await send(Number(chat.id),
+        network.label.toUpperCase() + " IS NOT CONNECTED\n\n" + network.note +
+        "\n\nSolana Mainnet remains the only active execution network. No RPC, wallet, quote or transaction was attempted.",
+        networkSelectorKeyboard());
+    } else {
+      await send(Number(chat.id),
+        "✅ SOLANA MAINNET REMAINS ACTIVE\n\nPaper and Live remain separate. Live trading is still governed by the existing operator, wallet, risk and activation gates.",
+        mainKeyboard());
+    }
+  }
   if (q.data === "n8:solana_paper") {
     await send(Number(chat.id), "🧪 SOLANA PAPER TRADING\n\nLive market data · virtual SOL · separate practice ledger · no blockchain transaction is signed or broadcast.", solanaPanelKeyboard("paper"));
   }
