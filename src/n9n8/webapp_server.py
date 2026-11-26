@@ -6,7 +6,6 @@ import hmac
 import json
 import logging
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
@@ -236,9 +235,11 @@ def create_webapp(
                 raise HTTPException(status_code=404, detail="Open position not found.")
             job = await db.enqueue_job(
                 telegram_id, "panic_sell", {"position_id": position_id},
-                f"webapp:panic:{telegram_id}:{position_id}:{uuid.uuid4().hex}",
+                f"webapp:panic:{telegram_id}:{position_id}",
             )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Panic sell queued for the persistent worker."}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -262,7 +263,7 @@ def create_webapp(
             await db.update_settings(telegram_id, {"enabled": False})
             job = await db.enqueue_job(
                 telegram_id, "withdraw_all", {"destination": destination},
-                f"webapp:withdraw:{telegram_id}:{uuid.uuid4().hex}",
+                f"webapp:withdraw:{telegram_id}:{await db.get_wallet_address(telegram_id)}",
             )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Withdrawal queued. The bot will send its result in Telegram."}
         except Exception as exc:
@@ -300,7 +301,7 @@ def create_webapp(
             await db.update_settings(telegram_id, {"enabled": False})
             job = await db.enqueue_job(
                 telegram_id, "rotate_wallet", {"destination": destination},
-                f"webapp:rotate:{telegram_id}:{uuid.uuid4().hex}",
+                f"webapp:rotate:{telegram_id}:{await db.get_wallet_address(telegram_id)}",
             )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Wallet rotation queued for the persistent worker."}
         except Exception as exc:
