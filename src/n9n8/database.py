@@ -221,7 +221,23 @@ class Database:
             ):
                 if column not in position_columns:
                     await db.execute(f"ALTER TABLE positions ADD COLUMN {column} {definition}")
-            await db.commit()
+                            CREATE TABLE IF NOT EXISTS trade_receipts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+                    event_type TEXT NOT NULL,
+                    signature TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    mint TEXT,
+                    position_id INTEGER,
+                    amount_lamports INTEGER,
+                    token_amount_raw INTEGER,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    confirmed_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_trade_receipts_user_time
+                    ON trade_receipts(telegram_id,created_at DESC);
+await db.commit()
 
 
     async def user_count(self) -> int:
@@ -362,6 +378,44 @@ class Database:
             )
             await db.commit()
 
+
+    async def record_trade_receipt(
+        self, telegram_id: int, event_type: str, signature: str, status: str,
+        mint: str | None = None, position_id: int | None = None,
+        amount_lamports: int | None = None, token_amount_raw: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        now = utc_now()
+        confirmed = now if status in {"confirmed","finalized"} else None
+        async with self._lock, aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """INSERT INTO trade_receipts
+                   (telegram_id,event_type,signature,status,mint,position_id,amount_lamports,
+                    token_amount_raw,metadata_json,created_at,confirmed_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(signature) DO UPDATE SET status=excluded.status,
+                     metadata_json=excluded.metadata_json,
+                     confirmed_at=COALESCE(excluded.confirmed_at,trade_receipts.confirmed_at)""",
+                (int(telegram_id),event_type,signature,status,mint,position_id,amount_lamports,
+                 token_amount_raw,json.dumps(metadata or {},separators=(",",":")),now,confirmed),
+            )
+            await db.commit()
+
+    async def list_trade_receipts(self, telegram_id: int, limit: int = 30) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT * FROM trade_receipts WHERE telegram_id=? ORDER BY id DESC LIMIT ?",
+                (int(telegram_id),max(1,min(int(limit),100))),
+            )
+            rows = await cur.fetchall()
+        result=[]
+        for row in rows:
+            item=dict(row)
+            try: item["metadata"]=json.loads(item.pop("metadata_json"))
+            except (TypeError,json.JSONDecodeError): item["metadata"]={}
+            result.append(item)
+        return result
 
     async def fee_receipt(self, idempotency_key: str) -> dict[str, Any] | None:
         async with aiosqlite.connect(self.path) as db:
