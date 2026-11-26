@@ -38,6 +38,12 @@ These are point-in-time observations, not guarantees about future provider state
 
 GitHub Actions run #437 for commit `3ab8f3a48db4e19b789941eafcffe8439f4d4aab` completed successfully: Python checks and pytest passed, Deno paper/exchange/Jupiter checks passed, and the Vite production build passed. The secret-sync job was skipped by design. A green CI run does not prove the production Daemon is running.
 
+
+
+### Web dependency advisories
+
+The inspected Vercel build log reported **39 npm advisories (16 moderate, 23 high)** during `npm install`. The exact affected packages and fix paths were not included in the deployment summary. CI now runs a report-only `npm audit` and prints package, severity, affected range and available fix metadata before the web build. Do not run `npm audit fix --force` blindly: the wallet-connect dependency tree needs reviewed, tested upgrades rather than unreviewed major-version changes.
+
 ## Hosting and deployment gap
 
 The repository contains two distinct runtime shapes:

@@ -35,6 +35,29 @@ jobs:
       - name: Install web dependencies
         working-directory: web
         run: npm install --no-audit --no-fund
+      - name: Report npm dependency advisories
+        working-directory: web
+        run: |
+          npm audit --json > /tmp/9n8-npm-audit.json || true
+          node - <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("/tmp/9n8-npm-audit.json", "utf8"));
+          const counts = report.metadata?.vulnerabilities ?? {};
+          const findings = Object.entries(report.vulnerabilities ?? {}).map(([name, item]) => ({
+            name,
+            severity: item.severity,
+            direct: item.isDirect,
+            range: item.range,
+            fixAvailable: item.fixAvailable,
+            advisories: (item.via ?? []).filter((v) => typeof v === "object").map((v) => ({
+              title: v.title,
+              url: v.url,
+              range: v.range
+            }))
+          }));
+          console.log("NPM AUDIT SUMMARY:", JSON.stringify(counts));
+          console.log("NPM AUDIT FINDINGS:", JSON.stringify(findings, null, 2));
+          NODE
       - name: Build web app
         working-directory: web
         run: npm run build
