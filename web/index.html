@@ -84,7 +84,7 @@ button:disabled{opacity:.55;cursor:wait}
   <section id="connectPage">
     <span class="pill">PRIVATE ACCOUNT & MARKET CONTROL</span>
     <h1>Trade with live market context.</h1>
-    <p>Connect Binance Spot or OKX Spot, or link Trust Wallet, Phantom, MetaMask and other WalletConnect-compatible wallets. The simulator uses real market data and virtual trades; it never touches your exchange balance.</p>
+    <p>Connect your Binance, Bybit or OKX account and choose the markets your API key is allowed to use. You can also link Trust Wallet, Phantom or MetaMask. The practice simulator uses real prices and virtual money.</p>
     <div class="tabs" role="tablist">
       <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Exchange accounts</button>
       <button class="tab" id="walletTab" role="tab" aria-selected="false" type="button">Wallet watch</button>
@@ -92,16 +92,29 @@ button:disabled{opacity:.55;cursor:wait}
     </div>
     <section class="card" id="exchangePanel">
       <h2>Exchange account connections</h2>
-      <p class="muted">Connect Binance Spot or OKX Spot with API credentials created in your exchange account. Credentials are validated on the 9N8 backend and stored encrypted in Supabase Vault. They are not saved in this browser.</p>
-      <div class="notice">Create a dedicated Spot API key. For Binance enable Read + Spot Trading only; disable withdrawals, all transfers, margin, futures and options. For OKX enable Read + Trade only, leave Withdraw disabled, and do not grant funding transfers. OKX permission scopes are not exposed by the account-read API, so 9N8 records them as unverified until separately certified. Use IP restrictions when your deployment has a stable outbound IP. Never enter your seed phrase or wallet private key.</div>
+      <p class="muted">Use the API key and secret from your exchange. OKX also needs the passphrase you created with the key. 9N8 checks the permissions, then saves the connection encrypted.</p>
+      <div class="notice">Choose the markets you need below. On Binance, the “Spot &amp; Margin &amp; Stock Trading” permission covers Spot and related eligible products; Futures and Options have their own switches. Bybit uses one API key for Spot and derivatives. OKX uses one broad Trade permission and account modes determine which products are available. Keep Withdraw and account transfers turned OFF. Never paste a seed phrase or wallet private key.</div>
       <form id="exchangeForm" autocomplete="off">
         <label for="provider">Exchange</label>
         <select id="provider" required>
-          <option value="binance">Binance Spot · LIVE</option>
-          <option value="okx">OKX Spot · LIVE</option>
+          <option value="binance">Binance</option>
+          <option value="bybit">Bybit</option>
+          <option value="okx">OKX</option>
         </select>
-        <label for="environment">Environment</label>
-        <select id="environment" required><option value="live">Spot Mainnet · LIVE</option></select>
+        <label for="environment">Account</label>
+        <select id="environment" required><option value="live">My real exchange account</option></select>
+        <fieldset class="scanner-panel" id="marketPermissions" style="border:1px solid #344b63;border-radius:14px;padding:14px;margin:16px 0">
+          <legend style="padding:0 6px;font-weight:700">Which markets should this key cover?</legend>
+          <div class="grid">
+            <label><input type="checkbox" name="exchangeMarket" value="spot" checked style="width:auto;margin-right:8px">Spot</label>
+            <label><input type="checkbox" name="exchangeMarket" value="margin" style="width:auto;margin-right:8px">Margin</label>
+            <label id="stocksMarketOption"><input type="checkbox" name="exchangeMarket" value="stocks" style="width:auto;margin-right:8px">Eligible stock-linked products</label>
+            <label><input type="checkbox" name="exchangeMarket" value="futures_usdm" style="width:auto;margin-right:8px">USDT / USDC Futures</label>
+            <label><input type="checkbox" name="exchangeMarket" value="futures_coinm" style="width:auto;margin-right:8px">Coin-M Futures</label>
+            <label><input type="checkbox" name="exchangeMarket" value="options" style="width:auto;margin-right:8px">Options</label>
+          </div>
+          <p class="muted" id="marketPermissionHint">9N8 will check each selection against the permissions returned by Binance.</p>
+        </fieldset>
         <div class="grid">
           <div><label for="apiKey">API key</label><input id="apiKey" type="password" maxlength="512" autocomplete="off" required></div>
           <div><label for="apiSecret">API secret</label><input id="apiSecret" type="password" maxlength="1024" autocomplete="off" required></div>
@@ -114,7 +127,7 @@ button:disabled{opacity:.55;cursor:wait}
         <div class="status" id="exchangeStatus" role="status"></div>
         <div class="divider"></div>
         <h3>Connected account balances</h3>
-        <p class="muted">Fetches balances from the selected exchange account using its stored API key. OKX trade, withdrawal and transfer permissions are not certified by this read-only check. API secrets are never returned to the Web App.</p>
+        <p class="muted">Reads the available balances from the connected exchange. This does not place an order. API secrets are never returned to the Web App.</p>
         <button class="secondary" id="loadBinanceBalance" type="button">↻ Refresh connected exchange balances</button>
         <div class="status" id="binanceBalance" role="status">Connect Binance or OKX to view balances.</div>
         <div class="divider"></div>
