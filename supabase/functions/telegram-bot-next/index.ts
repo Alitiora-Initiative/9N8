@@ -5,7 +5,14 @@ import {
   jupiterApi, MAX_SWAP_SOL_LAMPORTS, DAILY_SWAP_SOL_LAMPORTS,
   priceImpactFraction, rawToDecimal, sha256HexBytes, SOL_MINT, SWAP_QUOTE_TTL_SECONDS,
 } from "./jupiter-live.ts";
-import { validateOkxSpotRead, type OkxRegion } from "./okx-live.ts";
+import type { OkxRegion } from "./okx-live.ts";
+import {
+  assessBinancePermissions,
+  assessBybitPermissions,
+  assessOkxPermissions,
+  normalizeRequestedMarkets,
+  type ExchangeMarket,
+} from "./exchange-permissions.ts";
 import {
   binanceSignedRequest,
   buildSpotMarketOrder,
@@ -45,8 +52,15 @@ const CORS_HEADERS = {
 };
 const enc = new TextEncoder();
 
-type Provider = "okx" | "binance";
-type Credentials = { apiKey: string; apiSecret: string; passphrase?: string; region?: OkxRegion };
+type Provider = "okx" | "binance" | "bybit";
+type BybitRegion = "global" | "eea" | "uae" | "turkey" | "kazakhstan" | "georgia" | "indonesia" | "japan";
+type Credentials = {
+  apiKey: string;
+  apiSecret: string;
+  passphrase?: string;
+  region?: OkxRegion;
+  bybitRegion?: BybitRegion;
+};
 type Obj = Record<string, unknown>;
 
 function response(data: Obj, status = 200): Response {
@@ -185,7 +199,7 @@ function mainKeyboard(): Obj {
   return { inline_keyboard: [
     [{ text: "▶ Start / view live-market paper run", callback_data: "n8:paper_start_crypto" }],
     [{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }],
-    [{ text: "Connect exchange · Binance / OKX", web_app: { url: MINI_APP_URL } }],
+    [{ text: "Connect exchange · Binance / Bybit / OKX", web_app: { url: MINI_APP_URL } }],
     [{ text: "Wallet watch / connect", web_app: { url: "https://9n8-secure-connect.vercel.app/connect?view=wallet" } }],
     [{ text: "📚 Services & features", callback_data: "n8:services" }],
     [{ text: "My exchange connections", callback_data: "n8:connections" }],
@@ -221,84 +235,130 @@ async function jsonGet(url: string, headers: Record<string, string>): Promise<an
   if (!r.ok) throw new Error("exchange_credentials_rejected");
   return data;
 }
-async function validateOKX(c: Credentials) {
+const OKX_API_ORIGINS: Record<OkxRegion, string> = {
+  global: "https://openapi.okx.com",
+  us: "https://us.okx.com",
+  eea: "https://eea.okx.com",
+};
+
+async function validateOKX(c: Credentials, markets: ExchangeMarket[]) {
   if (!c.passphrase) throw new Error("okx_passphrase_required");
-  const path = "/api/v5/account/config";
-  const timeResponse = await fetch("https://www.okx.com/api/v5/public/time");
+  const region = c.region ?? "global";
+  const origin = OKX_API_ORIGINS[region];
+  if (!origin) throw new Error("okx_region_unsupported");
+  const timeResponse = await fetch(origin + "/api/v5/public/time", { cache: "no-store" });
   const timeJson = await timeResponse.json().catch(() => ({}));
-  const ms = Number(timeJson?.data?.[0]?.ts);
-  if (!timeResponse.ok || !Number.isFinite(ms)) throw new Error("exchange_temporarily_unavailable");
-  const timestamp = new Date(ms).toISOString();
+  const milliseconds = Number(timeJson?.data?.[0]?.ts);
+  if (!timeResponse.ok || String(timeJson?.code ?? "") !== "0" || !Number.isFinite(milliseconds)) {
+    throw new Error("exchange_temporarily_unavailable");
+  }
+  const timestamp = new Date(milliseconds).toISOString();
+  const path = "/api/v5/account/config";
   const signature = b64(await mac(enc.encode(c.apiSecret), timestamp + "GET" + path));
-  const data = await jsonGet("https://www.okx.com" + path, {
+  const data = await jsonGet(origin + path, {
     "OK-ACCESS-KEY": c.apiKey,
     "OK-ACCESS-SIGN": signature,
     "OK-ACCESS-TIMESTAMP": timestamp,
     "OK-ACCESS-PASSPHRASE": c.passphrase,
-    "x-simulated-trading": "1",
     accept: "application/json",
   });
-  if (String(data?.code ?? "") !== "0" || !data?.data?.[0]) throw new Error("exchange_credentials_rejected");
-  const permissions = String(data.data[0].perm ?? "").toLowerCase().split(",").map((v: string) => v.trim());
-  if (permissions.includes("withdraw")) throw new Error("withdraw_permission_detected");
+  if (String(data?.code ?? "") !== "0" || !data?.data?.[0]) {
+    throw new Error("exchange_credentials_rejected");
+  }
+  const account = data.data[0];
+  const assessment = assessOkxPermissions(account, markets);
+  const permissions = String(account.perm ?? "").toLowerCase().split(",").map((value: string) => value.trim());
   return {
-    label: "OKX Demo",
+    label: "OKX LIVE · " + region.toUpperCase(),
     permissions: {
-      read: permissions.includes("read"),
-      spotTrade: permissions.includes("trade"),
+      read: permissions.includes("read_only") || permissions.includes("trade"),
+      trade: permissions.includes("trade"),
       withdraw: false,
-      okxTradeScopeMayAlsoAllowFundingTransfers: permissions.includes("trade"),
+      ...assessment,
+      accountLevel: String(account.acctLv ?? "unknown"),
+      spotBorrowEnabled: account.enableSpotBorrow === true,
+      tradeScopeWarning: "OKX has one account-wide Trade permission. It is not split into Spot/Futures permissions and may also allow internal funding transfers. 9N8 does not call transfer or withdrawal endpoints.",
     },
+    accountHint: "OKX " + region.toUpperCase() + " account · authenticated",
   };
 }
+
 async function binanceSignedGet(c: Credentials, path: string): Promise<any> {
   const query = "recvWindow=5000&timestamp=" + Date.now();
   const signature = hex(await mac(enc.encode(c.apiSecret), query));
   return await jsonGet("https://api.binance.com" + path + "?" + query + "&signature=" + signature, {
-    "X-MBX-APIKEY": c.apiKey, accept: "application/json",
+    "X-MBX-APIKEY": c.apiKey,
+    accept: "application/json",
   });
 }
-async function validateBinanceLive(c: Credentials) {
-  // Binance exposes the API key's own scope through this signed SAPI endpoint.
-  // Fail closed unless read + Spot are enabled and withdrawal/transfer scopes are off.
+
+async function validateBinanceLive(c: Credentials, markets: ExchangeMarket[]) {
   const restrictions = await binanceSignedGet(c, "/sapi/v1/account/apiRestrictions");
-  if (restrictions?.enableReading !== true) throw new Error("binance_read_permission_required");
-  if (restrictions?.enableSpotAndMarginTrading !== true) throw new Error("binance_spot_permission_required");
-  if (restrictions?.enableWithdrawals !== false) throw new Error("withdraw_permission_detected");
-  if (restrictions?.enableInternalTransfer !== false || restrictions?.permitsUniversalTransfer !== false) {
-    throw new Error("binance_transfer_permission_detected");
+  const assessment = assessBinancePermissions(restrictions, markets);
+
+  // Read the Spot account only when the user requested a Spot-family product.
+  // Futures-only API keys are not forced to carry Spot permissions.
+  let account: any = null;
+  if (markets.some((market) => ["spot", "margin", "stocks"].includes(market))) {
+    account = await binanceSignedGet(c, "/api/v3/account");
+    if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
+      throw new Error("exchange_credentials_rejected");
+    }
+    if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
   }
-  if (restrictions?.enableFutures !== false || restrictions?.enableMargin !== false ||
-      restrictions?.enableVanillaOptions !== false || restrictions?.enablePortfolioMarginTrading === true) {
-    throw new Error("binance_non_spot_permission_detected");
-  }
-  const account = await binanceSignedGet(c, "/api/v3/account");
-  if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
-    throw new Error("exchange_credentials_rejected");
-  }
-  if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
+
   return {
-    label: "Binance Spot LIVE",
+    label: "Binance LIVE · " + markets.map((market) => market.toUpperCase()).join(" + "),
     permissions: {
       read: true,
-      spotTrade: true,
       withdraw: false,
       internalTransfer: false,
-      universalTransfer: restrictions.permitsUniversalTransfer === true,
-      margin: restrictions.enableMargin === true,
-      futures: restrictions.enableFutures === true,
-      options: restrictions.enableVanillaOptions === true,
+      universalTransfer: false,
+      ...assessment,
+      spotAndMarginTrading: restrictions.enableSpotAndMarginTrading === true,
+      marginApiPermission: restrictions.enableMargin === true,
+      futuresApiPermission: restrictions.enableFutures === true,
+      optionsApiPermission: restrictions.enableVanillaOptions === true,
+      portfolioMarginTrading: restrictions.enablePortfolioMarginTrading === true,
       ipRestricted: restrictions.ipRestrict === true,
-      accountCanTrade: true,
+      stockProductsNote: markets.includes("stocks")
+        ? "Uses the same Spot & Margin & Stock Trading API-key permission. Product availability depends on your Binance region and eligible instruments."
+        : undefined,
     },
-    accountHint: account.uid == null ? null : "Binance UID · " + mask(String(account.uid)),
+    accountHint: account?.uid == null ? null : "Binance UID · " + mask(String(account.uid)),
   };
 }
-async function validateBybit(c: Credentials) {
+
+const BYBIT_API_ORIGINS: Record<BybitRegion, string> = {
+  global: "https://api.bybit.com",
+  eea: "https://api.bybit.eu",
+  uae: "https://api.bybit.ae",
+  turkey: "https://api.bybit.tr",
+  kazakhstan: "https://api.bybit.kz",
+  georgia: "https://api.bybitgeorgia.ge",
+  indonesia: "https://api.bybit.id",
+  japan: "https://api.manepa.jp",
+};
+
+async function bybitSignedGet(
+  c: Credentials,
+  path: string,
+  params: Record<string, string> = {},
+): Promise<any> {
   const timestamp = String(Date.now());
   const recvWindow = "5000";
-  const signature = hex(await mac(enc.encode(c.apiSecret), timestamp + c.apiKey + recvWindow));
-  const data = await jsonGet("https://api-demo.bybit.com/v5/user/query-api", {
+  const queryString = new URLSearchParams(
+    Object.entries(params).sort(([a], [b]) => a.localeCompare(b)),
+  ).toString();
+  const signature = hex(await mac(
+    enc.encode(c.apiSecret),
+    timestamp + c.apiKey + recvWindow + queryString,
+  ));
+  const region = c.bybitRegion ?? "global";
+  const origin = BYBIT_API_ORIGINS[region];
+  if (!origin) throw new Error("bybit_region_unsupported");
+  const url = origin + path + (queryString ? "?" + queryString : "");
+  return await jsonGet(url, {
     "X-BAPI-API-KEY": c.apiKey,
     "X-BAPI-SIGN": signature,
     "X-BAPI-SIGN-TYPE": "2",
@@ -306,26 +366,46 @@ async function validateBybit(c: Credentials) {
     "X-BAPI-RECV-WINDOW": recvWindow,
     accept: "application/json",
   });
-  if (Number(data?.retCode) !== 0 || !data?.result) throw new Error("exchange_credentials_rejected");
-  const permissions = data.result.permissions ?? {};
-  const walletScopes = Array.isArray(permissions.Wallet) ? permissions.Wallet : [];
-  if (walletScopes.length) throw new Error("wallet_transfer_or_withdraw_scope_detected");
-  const spot = Array.isArray(permissions.Spot) ? permissions.Spot : [];
+}
+
+async function validateBybit(c: Credentials, markets: ExchangeMarket[]) {
+  const data = await bybitSignedGet(c, "/v5/user/query-api");
+  if (Number(data?.retCode) !== 0 || !data?.result) {
+    throw new Error("exchange_credentials_rejected");
+  }
+  const assessment = assessBybitPermissions(data.result, markets);
   return {
-    label: "Bybit Demo",
+    label: "Bybit LIVE · " + (c.bybitRegion ?? "global").toUpperCase() + " · " + markets.map((market) => market.toUpperCase()).join(" + "),
     permissions: {
-      read: true, spotTrade: spot.includes("SpotTrade"), withdraw: false,
-      walletScopes: [], readOnly: Number(data.result.readOnly) === 1,
-      derivativesScopes: (permissions.Derivatives?.length ?? 0) + (permissions.ContractTrade?.length ?? 0) > 0,
+      read: true,
+      withdraw: false,
+      walletTransfers: false,
+      ...assessment,
+      readOnly: Number(data.result.readOnly) === 1,
+      region: c.bybitRegion ?? "global",
+      marginNote: markets.includes("margin")
+        ? "Bybit does not show a separate Margin API-key scope. SpotTrade is checked; your Unified Account must also have margin enabled."
+        : undefined,
     },
+    accountHint: data.result.note ? "Bybit API key · " + clean(data.result.note, 40) : "Bybit account · authenticated",
   };
 }
-async function validateExchange(provider: Provider, environment: string, c: Credentials) {
-  if (!c.apiKey || !c.apiSecret) throw new Error("api_key_and_secret_required");
-  if (c.apiKey.length > 512 || c.apiSecret.length > 1024) throw new Error("credential_field_too_long");
-  if (provider === "binance" && environment === "live") return await validateBinanceLive(c);
-  if (provider === "okx" && environment === "live") return await validateOkxSpotRead({ apiKey: c.apiKey, apiSecret: c.apiSecret, passphrase: c.passphrase ?? "", region: c.region ?? "global" });
-  throw new Error("unsupported_provider_environment");
+
+async function validateExchange(
+  provider: Provider,
+  environment: string,
+  credentials: Credentials,
+  markets: ExchangeMarket[],
+) {
+  if (!credentials.apiKey || !credentials.apiSecret) throw new Error("api_key_and_secret_required");
+  if (credentials.apiKey.length > 512 || credentials.apiSecret.length > 1024) {
+    throw new Error("credential_field_too_long");
+  }
+  if (environment !== "live") throw new Error("unsupported_provider_environment");
+  if (provider === "binance") return await validateBinanceLive(credentials, markets);
+  if (provider === "bybit") return await validateBybit(credentials, markets);
+  if (provider === "okx") return await validateOKX(credentials, markets);
+  throw new Error("unsupported_provider");
 }
 async function saveExchange(telegramId: number, provider: Provider, environment: string,
   label: string, credentials: Credentials, permissions: Obj, accountHint: string | null = null): Promise<string> {
@@ -623,16 +703,27 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     apiKey: clean(credentials?.apiKey, 512),
     apiSecret: clean(credentials?.apiSecret, 1024),
   };
-  await validateBinanceLive(exchangeCredentials);
-  const account = await binanceSignedRequest<any>(
-    exchangeCredentials,
-    "GET",
-    "/api/v3/account",
-    { omitZeroBalances: "true" },
-  );
+  const markets = Array.isArray(connection.permissions?.selectedMarkets)
+    ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
+    : ["spot" as ExchangeMarket];
+  const validation = await validateBinanceLive(exchangeCredentials, markets);
+
+  if (!markets.some((market) => ["spot", "margin", "stocks"].includes(market))) {
+    return {
+      connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
+      balances: [],
+      permissions: validation.permissions,
+      updatedAt: new Date().toISOString(),
+      liveOrdersEnabled: false,
+      note: "Your selected permissions are for derivatives/options. This balance panel currently displays Spot balances only.",
+    };
+  }
+
+  const account = await binanceSignedGet(exchangeCredentials, "/api/v3/account");
   if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
     throw new Error("exchange_credentials_rejected");
   }
+  if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
   const balances = account.balances
     .map((entry: any) => ({
       asset: String(entry.asset ?? ""),
@@ -649,8 +740,6 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     connectionId: connection.id,
     quoteAsset: "USDT",
     availableQuote: quote.free,
-    // USDT is the exchange's quote unit for this release; it is valued at its USD peg
-    // for risk gating and the exact USDT quantity is preserved alongside this USD proxy.
     availableQuoteUsdValuation: "USDT nominal USD peg at 1.00",
     balances,
     accountCanTrade: true,
@@ -679,8 +768,11 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
     balances,
     quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, availableUsdApprox: quote.free },
+    permissions: validation.permissions,
     accountCanTrade: true,
     updatedAt: observedAt,
+    liveOrdersEnabled: false,
+    note: "Spot balances only. Your other selected permissions are listed separately; no order was placed.",
   };
 }
 async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
@@ -695,27 +787,59 @@ async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
     p_connection_id: connection.id,
   });
   const regionValue = String(stored?.region ?? "global");
-  const credentials = {
+  const credentials: Credentials = {
     apiKey: clean(stored?.apiKey, 512),
     apiSecret: clean(stored?.apiSecret, 1024),
     passphrase: clean(stored?.passphrase, 256),
     region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
   };
-  const validation = await validateOkxSpotRead(credentials);
-  const quote = validation.quoteBalance;
+  const markets = Array.isArray(connection.permissions?.selectedMarkets)
+    ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
+    : ["spot" as ExchangeMarket];
+  const validation = await validateOKX(credentials, markets);
+  const origin = OKX_API_ORIGINS[credentials.region ?? "global"];
+  const timestampResponse = await fetch(origin + "/api/v5/public/time", { cache: "no-store" });
+  const timePayload = await timestampResponse.json().catch(() => ({}));
+  const milliseconds = Number(timePayload?.data?.[0]?.ts);
+  if (!timestampResponse.ok || String(timePayload?.code ?? "") !== "0" || !Number.isFinite(milliseconds)) {
+    throw new Error("exchange_temporarily_unavailable");
+  }
+  const timestamp = new Date(milliseconds).toISOString();
+  const path = "/api/v5/account/balance";
+  const signature = b64(await mac(
+    enc.encode(credentials.apiSecret),
+    timestamp + "GET" + path,
+  ));
+  const balancePayload = await jsonGet(origin + path, {
+    "OK-ACCESS-KEY": credentials.apiKey,
+    "OK-ACCESS-SIGN": signature,
+    "OK-ACCESS-TIMESTAMP": timestamp,
+    "OK-ACCESS-PASSPHRASE": credentials.passphrase ?? "",
+    accept: "application/json",
+  });
+  if (String(balancePayload?.code ?? "") !== "0" || !balancePayload?.data?.[0]) {
+    throw new Error("exchange_credentials_rejected");
+  }
+  const account = balancePayload.data[0];
+  const details = Array.isArray(account.details) ? account.details : [];
+  const balances = details.map((entry: any) => ({
+    asset: String(entry.ccy ?? ""),
+    free: Number(entry.availBal ?? 0),
+    locked: Math.max(0, Number(entry.eq ?? 0) - Number(entry.availBal ?? 0)),
+  })).filter((entry: any) => Number.isFinite(entry.free) && Number.isFinite(entry.locked) &&
+    entry.free + entry.locked > 0).slice(0, 100);
+  const quote = balances.find((entry: any) => entry.asset === "USDT") ?? { free: 0, locked: 0 };
   const observedAt = new Date().toISOString();
   const evidence = {
-    source: "okx_signed_spot_account",
+    source: "okx_signed_account_balance",
     connectionId: connection.id,
-    region: validation.region,
+    region: credentials.region,
     quoteAsset: "USDT",
     availableQuote: quote.free,
     availableQuoteUsdValuation: "USDT nominal USD peg at 1.00",
-    balances: validation.balances,
-    accountLevel: validation.permissions.accountLevel,
-    spotTradeScope: "not_verified",
-    withdrawalScope: "not_verified",
-    transferScope: "not_verified",
+    balances,
+    accountLevel: account.acctLv ?? null,
+    permissions: validation.permissions,
     observedAt,
   };
   await db("n8_live_balance_checks", "POST", {
@@ -727,7 +851,7 @@ async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
     available_quote: quote.free,
     available_quote_usd: quote.free,
     observed_at: observedAt,
-    source: "okx_signed_spot_account",
+    source: "okx_signed_account_balance",
     evidence_hash: await sha256Hex(canonicalJson(evidence)),
     evidence,
   }, "return=minimal");
@@ -736,16 +860,75 @@ async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
     quote_asset: "USDT",
     available_quote: quote.free,
     observed_at: observedAt,
-    permission_scopes: "read validated; trade/withdraw/transfer not verified",
+    permission_scopes: "checked from signed account config",
   });
   return {
     connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
-    balances: validation.balances,
-    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, equity: quote.equity, availableUsdApprox: quote.free },
+    balances,
+    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, equity: Number(account.totalEq ?? 0), availableUsdApprox: quote.free },
     permissions: validation.permissions,
-    accountEquityUsdApprox: validation.accountEquityUsd,
+    accountEquityUsdApprox: Number(account.totalEq ?? 0),
     updatedAt: observedAt,
     liveOrdersEnabled: false,
+    note: "Account balances only. OKX product availability still depends on your account mode and supported instruments; no order was placed.",
+  };
+}
+
+async function liveBybitAccount(user: any, userId: string): Promise<Obj> {
+  const rows = await db(
+    "n8_exchange_connections?select=id,label,account_hint,permissions,last_validated_at&user_id=eq." +
+      encodeURIComponent(userId) + "&provider=eq.bybit&environment=eq.live&status=eq.active&order=created_at.desc&limit=1"
+  );
+  const connection = Array.isArray(rows) ? rows[0] : null;
+  if (!connection?.id) throw new Error("bybit_live_connection_missing");
+  const stored = await db("rpc/n8_get_exchange_credentials", "POST", {
+    p_telegram_user_id: Number(user.id),
+    p_connection_id: connection.id,
+  });
+  const regionValue = String(stored?.bybitRegion ?? "global");
+  const credentials: Credentials = {
+    apiKey: clean(stored?.apiKey, 512),
+    apiSecret: clean(stored?.apiSecret, 1024),
+    bybitRegion: (["global", "eea", "uae", "turkey", "kazakhstan", "georgia", "indonesia", "japan"].includes(regionValue)
+      ? regionValue : "global") as BybitRegion,
+  };
+  const markets = Array.isArray(connection.permissions?.selectedMarkets)
+    ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
+    : ["spot" as ExchangeMarket];
+  const validation = await validateBybit(credentials, markets);
+  const payload = await bybitSignedGet(credentials, "/v5/account/wallet-balance", { accountType: "UNIFIED" });
+  if (Number(payload?.retCode) !== 0 || !payload?.result?.list?.[0]) {
+    throw new Error("bybit_unified_account_balance_unavailable");
+  }
+  const account = payload.result.list[0];
+  const coins = Array.isArray(account.coin) ? account.coin : [];
+  const balances = coins.map((entry: any) => {
+    const total = Number(entry.walletBalance ?? 0);
+    const free = Number(entry.availableToWithdraw ?? entry.transferBalance ?? entry.walletBalance ?? 0);
+    return {
+      asset: String(entry.coin ?? ""),
+      free,
+      locked: Math.max(0, total - free),
+    };
+  }).filter((entry: any) => Number.isFinite(entry.free) && Number.isFinite(entry.locked) &&
+    entry.free + entry.locked > 0).slice(0, 100);
+  const quote = balances.find((entry: any) => entry.asset === "USDT") ?? { free: 0, locked: 0 };
+  const observedAt = new Date().toISOString();
+  await audit(userId, null, "bybit_balance_refreshed", "ok", {
+    connection_id: connection.id,
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    observed_at: observedAt,
+  });
+  return {
+    connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
+    balances,
+    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, availableUsdApprox: quote.free },
+    accountEquityUsdApprox: Number(account.totalEquity ?? 0),
+    permissions: validation.permissions,
+    updatedAt: observedAt,
+    liveOrdersEnabled: false,
+    note: "Bybit Unified Account balances only. Margin mode must be enabled in Bybit where required; no order was placed.",
   };
 }
 
@@ -1569,6 +1752,7 @@ async function handleMiniApp(body: any): Promise<Response> {
       "live_pause",
       "binance_account",
       "okx_account",
+      "bybit_account",
       "wallet_revoke",
       "jupiter_swap_status",
       "jupiter_trigger_history",
@@ -1581,24 +1765,33 @@ async function handleMiniApp(body: any): Promise<Response> {
     if (body.action === "connect_exchange") {
       const provider = String(body.provider) as Provider;
       const environment = String(body.environment);
-      if (!["okx", "binance"].includes(provider)) throw new Error("unsupported_provider");
+      if (!["binance", "bybit", "okx"].includes(provider)) throw new Error("unsupported_provider");
+      const requestedMarkets = normalizeRequestedMarkets(body?.requestedMarkets);
       const regionValue = clean(body?.credentials?.region, 16);
+      const bybitRegionValue = clean(body?.credentials?.bybitRegion, 20);
       const credentials: Credentials = {
         apiKey: clean(body?.credentials?.apiKey, 512),
         apiSecret: clean(body?.credentials?.apiSecret, 1024),
         passphrase: clean(body?.credentials?.passphrase, 256),
         region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
+        bybitRegion: (["global", "eea", "uae", "turkey", "kazakhstan", "georgia", "indonesia", "hongkong", "japan"].includes(bybitRegionValue)
+          ? bybitRegionValue : "global") as BybitRegion,
       };
-      if (!["binance", "okx"].includes(provider) || environment !== "live") throw new Error("unsupported_provider_environment");
-      const validation = await validateExchange(provider, environment, credentials);
+      const validation = await validateExchange(provider, environment, credentials, requestedMarkets);
       const id = await saveExchange(Number(user.id), provider, environment, validation.label, credentials,
         validation.permissions, validation.accountHint ?? null);
-      await audit(row.id, null, "exchange_connected", "ok", { provider, environment, connection_id: id, permissions: validation.permissions });
+      await audit(row.id, null, "exchange_connected", "ok", {
+        provider, environment, connection_id: id, permissions: validation.permissions,
+      });
       return response({
-        ok: true, label: validation.label, connectionId: id,
+        ok: true,
+        label: validation.label,
+        connectionId: id,
+        selectedMarkets: requestedMarkets,
         permissions: validation.permissions,
         accountHint: validation.accountHint ?? null,
         liveOrdersEnabled: false,
+        message: "Account access checked and saved. 9N8 does not place an exchange order from this connection step.",
       });
     }
     if (body.action === "watch_wallet") {
@@ -1627,8 +1820,12 @@ async function handleMiniApp(body: any): Promise<Response> {
     }
     if (body.action === "binance_account") {
       return response({ ok: true, ...(await liveBinanceAccount(user, row.id)) });
-    }    if (body.action === "okx_account") {
+    }
+    if (body.action === "okx_account") {
       return response({ ok: true, ...(await liveOkxAccount(user, row.id)) });
+    }
+    if (body.action === "bybit_account") {
+      return response({ ok: true, ...(await liveBybitAccount(user, row.id)) });
     }
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
@@ -1663,7 +1860,7 @@ async function handleMiniApp(body: any): Promise<Response> {
           public_address: mask(String(w.public_address)),
         })) : [],
         liveTradingEnabled: false,
-        message: "Binance Spot and OKX Spot accounts can be linked for account access. OKX read access is validated separately from trade and withdrawal scopes. Real orders remain locked until each connector passes release checks and each exact order has owner approval. A verified wallet still requires a separate owner-controlled trade permission.",
+        message: "Binance, Bybit and OKX API connections can be checked for the markets selected by each user. Account links do not place orders. Real exchange trading remains locked until each connector is separately certified and each exact order has owner approval.",
       });
     }
     if (body.action === "live_status") {
@@ -1686,19 +1883,34 @@ async function handleMiniApp(body: any): Promise<Response> {
       telegram_auth_expired: "This page expired. Reopen the secure form from 9N8.",
       private_chat_required: "Personal connections can only be created from a private Telegram chat.",
       backend_not_configured: "The secure backend is not configured yet. No credentials were saved.",
+      select_at_least_one_market: "Choose at least one market to connect.",
+      exchange_market_not_supported: "One of the selected markets is not supported by this connection.",
+      binance_spot_margin_stock_permission_required: "On Binance, turn on “Spot & Margin & Stock Trading” for this API key.",
+      binance_margin_permission_required: "Your Binance key does not have Margin access enabled.",
+      binance_futures_permission_required: "Your Binance key does not have Futures access enabled.",
+      binance_options_permission_required: "Your Binance key does not have Options access enabled.",
+      bybit_api_key_is_read_only: "This Bybit key is read-only. Create a key with the trading permissions you selected.",
+      bybit_spot_trade_permission_required: "Enable Spot Trading permission on this Bybit API key.",
+      bybit_derivatives_trade_permission_required: "Enable Contract or Derivatives Trading permission on this Bybit API key.",
+      bybit_options_trade_permission_required: "Enable Options Trading permission on this Bybit API key.",
+      bybit_stock_products_not_supported_by_this_connection: "Stock-linked products are not available through this Bybit connection.",
+      bybit_unified_account_balance_unavailable: "Bybit could not return Unified Account balances. Check that your account uses Unified Trading and try again.",
+      okx_read_permission_required: "Enable Read permission on your OKX API key.",
+      okx_trade_permission_required: "Enable Trade permission on your OKX API key for the markets you selected.",
+      okx_stock_products_not_supported_by_this_connection: "Stock-linked products are not available through this OKX connection.",
       binance_read_permission_required: "Enable Read permission for this Binance API key.",
-      binance_spot_permission_required: "Enable Spot Trading permission only. Futures, margin and options are not supported here.",
+      binance_spot_permission_required: "On Binance, turn on “Spot & Margin & Stock Trading” for this API key when you select Spot, Margin or eligible stock-linked products.",
       binance_transfer_permission_detected: "Disable internal transfers and universal transfers on the Binance API key.",
-      binance_non_spot_permission_detected: "This key has margin, futures or options permission. Create a Spot-only key.",
-      binance_live_connection_missing: "Connect your Binance Spot Live account first.",
-      okx_live_connection_missing: "Connect your OKX Spot Live account first.",
+      binance_non_spot_permission_detected: "The selected product permissions do not match this key. Review your market choices and exchange API settings.",
+      binance_live_connection_missing: "Connect your Binance account first.",
+      okx_live_connection_missing: "Connect your OKX account first.",
       okx_api_key_secret_and_passphrase_required: "Enter your OKX API key, secret and API passphrase.",
       okx_passphrase_required: "Enter the API passphrase configured when you created this OKX API key.",
       withdraw_permission_detected: "This API key has withdrawal permission. Revoke it and create a new key with withdrawals disabled.",
       wallet_transfer_or_withdraw_scope_detected: "This Bybit key has Wallet transfer/withdrawal permissions. Create a key without Wallet permissions.",
       exchange_credentials_rejected: "The exchange rejected the credentials or the key belongs to a different environment.",
       exchange_temporarily_unavailable: "The exchange is temporarily unavailable. Try again shortly.",
-      unsupported_provider_environment: "Choose Binance Spot or OKX Spot Live. Demo, testnet, margin and derivatives connectors are not accepted in this release.",
+      unsupported_provider_environment: "Choose a supported live Binance, Bybit or OKX account.",
       wallet_address_or_network_invalid: "The public address format does not match the selected network.",
       credential_storage_failed: "Credentials were checked but could not be saved. No connection was created.",
       user_registration_failed: "Could not register your Telegram account. Try again.",
@@ -2208,76 +2420,65 @@ async function startCryptoPaper(userId: string, chatId: number): Promise<{ ok: b
 }
 
 async function setBotProfileAndCommands(): Promise<void> {
-  // Keep Telegram's pre-Start description, profile bio and command menu aligned
-  // with the actual deployed feature set. Metadata failure must never block /start.
+  // Keep the bot's public description and command list easy to understand.
   try {
     await telegram("setMyDescription", {
-      description: "9N8 combines a real-market crypto paper simulator, Binance and OKX Spot account connections, self-custody wallet linking, trade approvals and risk controls. Paper fills are virtual; real order execution is separately gated."
+      description: "Welcome to 9N8. Follow markets, practise with virtual money, and connect Binance, Bybit or OKX. Choose Spot, Margin, Futures or Options access. Connecting an account does not place a trade. Real exchange orders remain locked."
     });
     await telegram("setMyShortDescription", {
-      short_description: "Binance / OKX account connections, multi-wallet links, live market charts and paper trading."
+      short_description: "Practise with virtual money and connect Binance, Bybit or OKX markets."
     });
     await telegram("setMyCommands", {
       commands: [
-        { command: "start", description: "Start 9N8 and show services" },
-        { command: "services", description: "List features and limits" },
-        { command: "paper", description: "Show virtual equity, positions and simulated fills" },
-        { command: "simulator", description: "Open live Binance charts and paper simulator" },
-        { command: "connect", description: "Connect Binance, OKX or wallet" },
-        { command: "connections", description: "View exchange connections" },
-        { command: "wallets", description: "View linked wallets" },
-        { command: "live", description: "Show live-trading lock" },
-        { command: "risk", description: "View risk limits" },
-        { command: "approvals", description: "View pending approvals" },
-        { command: "pause", description: "Pause strategies" },
-        { command: "stop", description: "Emergency stop" },
-        { command: "help", description: "Show all commands" }
+        { command: "start", description: "Start 9N8" },
+        { command: "services", description: "See what 9N8 can do" },
+        { command: "paper", description: "See your virtual practice account" },
+        { command: "simulator", description: "Open live-price practice charts" },
+        { command: "connect", description: "Connect Binance, Bybit or OKX" },
+        { command: "connections", description: "See your connected accounts" },
+        { command: "wallets", description: "See linked wallets" },
+        { command: "live", description: "See what is enabled for live use" },
+        { command: "risk", description: "See your safety limits" },
+        { command: "approvals", description: "See requests waiting for approval" },
+        { command: "pause", description: "Pause new activity" },
+        { command: "stop", description: "Stop the bot" },
+        { command: "help", description: "Get help" }
       ]
     });
   } catch {
-    // Telegram metadata is secondary; never block trading controls or /start.
+    // Telegram metadata is secondary; never block the /start response.
   }
 }
 
 function serviceOverview(): string {
   return [
-    "WHAT 9N8 PROVIDES",
+    "WELCOME TO 9N8",
+    "One place to follow markets, practise with virtual money and manage your connected accounts.",
     "",
-    "📡 MARKET INTELLIGENCE",
-    "Live public market observations, price and volume context, token/symbol lookups and strategy scans. The deployed paper pilot currently reads real Binance public spot candles for its supported USDT pairs.",
+    "📊 FOLLOW THE MARKET",
+    "See live prices, charts and market activity. The practice simulator uses real Binance market prices.",
     "",
-    "🧪 PAPER TRADING",
-    "Use a $1,000 virtual account against real Binance Spot candles, ticker and order-book depth. Paper entries and exits use visible ask/bid VWAP, a configurable fee estimate, and spread/slippage gates. No exchange order is sent.",
+    "🧪 PRACTISE WITHOUT RISKING REAL MONEY",
+    "Start with $1,000 in virtual money. Try the strategy and see how your practice results change. These are practice trades, not real orders.",
     "",
-    "📈 STRATEGY & SIGNALS",
-    "The current crypto paper strategy uses EMA 9 / EMA 21 crossover with RSI 14 confirmation on closed one-minute candles. Signals are observations, not guaranteed predictions.",
+    "🔗 CONNECT YOUR EXCHANGE",
+    "Connect Binance, Bybit or OKX. Choose the access you want to check: Spot, Margin, Futures or Options. Binance also has one combined Spot & Margin & Stock Trading permission for eligible products.",
+    "Each exchange has its own permission rules. 9N8 checks the key, shows what was verified, and saves it securely. Keep Withdraw and account transfers turned off.",
     "",
-    "🔗 EXCHANGE & WALLET CONNECTIONS",
-    "Connect a Binance Spot Live API key with Read + Spot Trading permissions only; withdrawals, internal transfers, futures, margin and options must be disabled. Link EVM or Solana wallets for ownership verification or watch public addresses.",
-    "",
-    "🛡️ APPROVALS & RISK CONTROLS",
-    "Review linked accounts, risk limits, pending proposals, pause controls and the emergency stop. Private connections are attached to the Telegram account that opened the bot.",
-    "",
-    "🚦 LIVE-TRADING READINESS",
-    "9N8 includes a readiness assessment and a hard live-execution lock. Connecting Binance or verifying a wallet does not by itself authorize real-money orders.",
-    "",
-    "CURRENT LIMITS — PLEASE READ",
-    "• Binance Spot Live account credentials can be connected and stored encrypted, but real-money order submission remains locked until the live connector is certified and the exact order is approved.",
-    "• WalletConnect currently verifies wallet ownership only. No swap, token approval or background wallet trade-signing is enabled.",
-    "• Stocks, forex, perps, unattended copy trading, launch sniping and DCA are not active in the deployed paper pilot.",
-    "• Trojan is a feature reference, not a connected execution provider. 9N8 must use its own documented market-data and swap/exchange integrations.",
+    "🛡️ YOU STAY IN CONTROL",
+    "Connecting an exchange does not place an order. Real-money exchange trading is still locked. Wallet links are separate and do not give 9N8 permission to move your funds.",
     "",
     "GET STARTED",
-    "/paper — view virtual equity, positions and simulated fills",
-    "/simulator — open live Binance charts and paper trading",
-    "/connect — connect Binance Spot Live or wallet",
-    "/connections — review exchange connections",
-    "/wallets — review verified wallets and watch addresses",
-    "/risk — view your configured risk limits",
-    "/live — view live-trading readiness and lock status",
-    "/pause — pause strategies and block new entries",
-    "/stop — activate the emergency stop",
-    "/help — view all commands"
+    "/paper — see your virtual balance and practice trades",
+    "/simulator — open the live-price practice charts",
+    "/connect — connect Binance, Bybit or OKX",
+    "/connections — see your connected accounts",
+    "/wallets — see linked wallets",
+    "/risk — see your safety limits",
+    "/live — check live-trading status",
+    "/pause — pause new activity",
+    "/stop — stop the bot",
+    "/help — get help",
   ].join("\n");
 }
 
@@ -2306,14 +2507,14 @@ async function handleMessage(update: any) {
     await audit(row.id, chatId, "private_start");
     const started = await startCryptoPaper(row.id, chatId);
     const sessionLine = started.ok
-      ? "PAPER SESSION: STARTED\n$1,000 virtual starting balance · Binance public spot candles · simulated fills only."
-      : "PAPER SESSION: NOT STARTED\n" + started.message;
+      ? "YOUR PRACTICE ACCOUNT IS READY\n$1,000 virtual money · real Binance market prices · no real orders."
+      : "YOUR PRACTICE ACCOUNT DID NOT START\n" + started.message;
     await send(chatId,
-      "⚡ WELCOME TO 9N8\n" +
-      "Trading intelligence, paper testing and account controls in one private Telegram workspace.\n\n" +
+      "👋 WELCOME TO 9N8\n" +
+      "Watch the market, practise with virtual money and connect your own exchange account.\n\n" +
       serviceOverview() +
       "\n\n" + sessionLine +
-      "\n\nUse the buttons below to open your control panel. Send /services any time to review these features.",
+      "\n\nUse the buttons below to get started. Send /services any time to see this guide again.",
       mainKeyboard());
     return;
   }
@@ -2327,7 +2528,7 @@ async function handleMessage(update: any) {
       "/services — what 9N8 does and current feature status\n" +
       "/start — open private control panel\n" +
       "/status — inspect account and system state\n" +
-      "/connect — connect Binance Spot Live or wallet\n" +
+      "/connect — connect Binance, Bybit, OKX or a wallet\n" +
       "/connections — list your exchange connections\n" +
       "/wallets — list your verified wallets\n" +
       "/migrate — assess live eligibility (does not enable live trading)\n" +
@@ -2344,7 +2545,7 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/connect") {
-    await send(chatId, "Open this private secure form to connect Binance Spot or OKX Spot, or link a self-custody wallet. Use restricted API keys with withdrawals and transfers disabled. Never send API credentials, private keys or seed phrases in Telegram chat.", {
+    await send(chatId, "Open this private secure form to connect Binance, Bybit or OKX. Choose the markets you want to use. Keep Withdraw and account transfers disabled. Never send API credentials, private keys or seed phrases in Telegram chat.", {
       inline_keyboard: [[{ text: "Open secure connections", web_app: { url: MINI_APP_URL } }]],
     });
     return;

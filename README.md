@@ -1,6 +1,6 @@
 # 9N8 — Telegram Trading Intelligence and Live-Market Paper Simulator
 
-9N8 is a Telegram-first trading intelligence workspace with a private web app, a real-market paper simulator, Binance and OKX Spot account connections, self-custody wallet sessions, and risk controls. The current crypto paper pilot uses public Binance Spot data. Paper trades use virtual balances and never submit exchange orders.
+9N8 is a Telegram-first trading intelligence workspace with a private web app, a real-market paper simulator, Binance/Bybit/OKX account connections, self-custody wallet sessions, and risk controls. The current crypto paper pilot uses public Binance Spot data. Paper trades use virtual balances and never submit exchange orders.
 
 **Current release state:** real-market paper trading and Binance/OKX account-connection APIs are deployed in Supabase. OKX account reads are validated, but OKX trade/withdraw/transfer permissions are not certified. The hosted web preview is behind the latest working branch while the Vercel Hobby deployment quota is exhausted. Real Binance or OKX order placement is not enabled in this release.
 
@@ -16,15 +16,16 @@
 - The paper engine is server-side and continues scanning while a session is running. The web app is a view and control surface.
 - Paper results and positions are stored separately from live exchange balances and orders.
 
-### Binance and OKX Spot account connections
+### Binance, Bybit and OKX exchange account connections
 
-- The private Telegram Mini App accepts Binance Spot LIVE and OKX Spot LIVE account credentials. Demo/testnet, margin and derivatives are not enabled by this connection layer.
-- Binance validation checks the API key's read and Spot-trade scopes and rejects keys that expose withdrawal or transfer permissions.
-- OKX validation signs account-config and account-balance reads using the API key, secret and passphrase. The UI supports Global, US/Australia and EEA API regions.
-- OKX account-read responses do not expose API-key trade/withdraw/transfer scopes. 9N8 therefore records those scopes as **not verified**; users must create restricted keys with Read + Trade only, Withdraw disabled, and no funding transfer permissions.
-- Exchange credentials are stored server-side in Supabase Vault. They are not returned to the browser or posted into Telegram.
-- Balance refreshes store timestamped USDT evidence for the server-side risk assessment. OKX USDT is recorded with a nominal 1.00 USD valuation assumption.
-- The account-connection layer is not an order executor. Both providers remain unable to submit live orders in this release.
+- The Telegram Mini App accepts live account API keys for Binance, Bybit and OKX. Users select the markets they want the key to cover: Spot, Margin, USDT/USDC Futures, Coin-M Futures and Options. Binance additionally offers eligible stock-linked products under its combined Spot & Margin & Stock Trading permission.
+- **Binance:** the validator reads the signed API restrictions endpoint. Spot and eligible stock-linked products use `enableSpotAndMarginTrading`; Margin additionally requires the reported margin flag; USDT-M and COIN-M Futures use the reported Futures flag; Options uses the Vanilla Options flag. A key is no longer rejected merely because it has Futures or Margin enabled when those products are selected. Withdrawals, internal transfers and universal transfers are still rejected.
+- **Bybit:** the connector supports the V5 `query-api` endpoint on the selected regional host. Spot, Contract/Derivatives and Options permissions are checked separately. Bybit does not return a distinct Margin API-key scope, so Margin is recorded as requiring the correct Unified Account setting. Any Wallet transfer or withdrawal scope is rejected. The connector uses system-generated HMAC API keys.
+- **OKX:** the connector signs the account configuration request against the selected Global, US/Australia or EEA host. OKX has broad `Read` / `Trade` / `Withdraw` scopes rather than one API-key permission per product. A Trade key is required for selected trading markets, Withdraw is rejected, and the selected account mode is recorded. OKX Trade may also permit internal funding transfers; 9N8 does not call transfer or withdrawal endpoints.
+- The form reports which selected permissions were verified and which depend on account mode or regional product availability. It never claims that an unsupported or unreported scope is verified.
+- Exchange credentials are stored server-side in Supabase Vault. They are not returned to the browser or posted into Telegram. Never send keys or secrets in Telegram chat.
+- The existing balance view can read Binance Spot, OKX account balance and Bybit Unified Account balances. The current readiness/risk gate still uses its existing USDT account evidence and does not certify every derivatives product.
+- **Connecting an account does not place an order.** Spot, Margin, Futures, Options and stock-linked live order execution remain separately locked; no live orders are enabled by this connection change.
 
 ### Jupiter live swaps and Trigger automation
 
@@ -48,9 +49,9 @@
 
 ## What is not enabled yet
 
-- **No real Binance or OKX order is currently submitted by the deployed bot.** Both connections validate account access and read balances; neither is a released live order executor.
+- **No real Binance, Bybit or OKX order is submitted by the exchange connection flow.** The connection layer checks key access and reads account information; it is not a released order executor.
 - The standalone Binance order helper module validates Spot market-order parameters and signs requests, but it is not the same as a fully released, approval-to-order execution and reconciliation service.
-- Exchange withdrawals and transfers, unattended wallet signing, futures and margin are not available. Jupiter transactions require owner wallet signing; Trigger automation uses its separate managed-vault model and remains disabled until certification.
+- Exchange withdrawals and account transfers are not supported. Futures, Margin and Options API permissions can be checked and stored, but their real order submission is not enabled. Unattended wallet signing remains disabled. Jupiter transactions require owner wallet signing; Trigger automation uses its separate managed-vault model and remains disabled until certification.
 - The 9N8 paper run must not be treated as a live account or a guarantee of profitability.
 
 Do not deposit funds on the assumption that real trading is ready. Do not share an API secret, private key or seed phrase in Telegram, GitHub issues, source code or this chat.
@@ -129,3 +130,8 @@ Do not bypass this deployment restriction by promoting an unrelated branch or an
 - Treat HTTP timeouts and Binance 5XX order responses as **unknown execution state**, not as proof the order failed. Reconcile by client order ID before any retry.
 - Do not turn on live trading or connector readiness manually to bypass the database gates.
 - Paper P&L is virtual and does not predict live profitability.
+
+
+## Universal exchange-key permission update
+
+The branch `feature/universal-exchange-api-permissions` adds market selection and provider-specific checks for Binance, Bybit and OKX. It also adds regional Bybit API hosts and rewrites the Telegram `/start` and bot descriptions in plain language. Apply `supabase/migrations/20261126222000_n8_universal_exchange_api_permissions.sql` before deploying the edge function; otherwise the database provider constraint will reject Bybit connections. This work does not enable live exchange order placement.
