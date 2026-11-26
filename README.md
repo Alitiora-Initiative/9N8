@@ -279,3 +279,18 @@ Set `AUTHORIZED_USER_ID` to the numeric Telegram user ID that is permitted to us
 - The current readiness gate includes a $1 first-live activation transfer, at least seven recorded UTC practice days, a connected live wallet, an operator-enabled live switch and at least $10 approximate SOL wallet value.
 - This change has not been independently audited or certified with real mainnet funds. Do not enable live trading until a dedicated test wallet has been used to verify buy, partial sell, full sell, auto-exit, unknown-outcome reconciliation, withdrawal and recovery procedures.
 
+## Telegram network selector and onboarding update
+
+The `feature/9n8-telegram-network-controls` branch builds the network selector and guarded onboarding on top of the current Solana-live implementation.
+
+- `/chains` and `/network` open a Telegram selector for Solana, Base, Ethereum and BNB Chain.
+- Solana Mainnet is the only execution-enabled network. Base, Ethereum and BNB Chain are explicitly marked **NOT CONNECTED** and rejected server-side until their own wallet vaults, RPC/pool listeners, token-risk checks, swap routers, receipt reconciliation and position watchdogs exist.
+- EVM contract addresses are recognized and ask the user to identify Base, Ethereum or BNB Chain. The bot shows the selected network's disabled status and does not query that network, request an approval, obtain a quote or submit a transaction.
+- First `/start` creates the per-user Solana wallet, shows the address, current balance and Helius response time, and presents a deliberate one-time key-reveal step. The key remains Fernet-encrypted at rest; reveal usage is recorded against the wallet address in both SQLite and Neon/Postgres adapters. The delivered key message is auto-deleted after 60 seconds, but deletion cannot remove screenshots or notification copies.
+- Wallet import and wallet rotation return to the same explicit key-reveal step instead of automatically sending the private key.
+- The main Telegram commands and quick-snipe previews reuse the active control-panel message while the bot process is running. Transaction receipts, sensitive key delivery, numeric input prompts and explicit confirmations remain separate messages where required.
+- Live positions show the current marked value when available, realized PnL, estimated net PnL, TP1/moonbag phase, individual 50% and 100% exits, refresh, and confirmed panic-sell-all controls.
+- Manual exits are serialized per position against the automatic watchdog. Automatic TP1/TP2, trailing-stop, hard-stop and panic-exit alerts include the position ID, chart/explorer links and remaining-bag exit action when tokens remain.
+- The existing Paper/Live separation, daily risk circuit breakers, separate buy/sell slippage settings, withdrawal controls, and live activation gates from the Solana-live base are preserved.
+
+This branch does not generate EVM wallets, does not implement EVM trading, does not enable live trading by default, and does not certify unattended mainnet trading. The single-message panel ID is held in process memory; after a worker restart, a new panel is created when the user next opens a command.

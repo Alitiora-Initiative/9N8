@@ -60,6 +60,7 @@ class AutonomousEngine:
         self.paper_engine = paper_engine
         self._scanner_task: asyncio.Task | None = None
         self._position_tasks: dict[int, asyncio.Task] = {}
+        self._exit_locks: dict[int, asyncio.Lock] = {}
         self._wallet_watch_tasks: dict[int, asyncio.Task] = {}
         self._stopping = False
         self._quote_lock = asyncio.Lock()
@@ -983,6 +984,19 @@ class AutonomousEngine:
         self, position_id: int, reason: str, actual_amount: int,
         originally_recorded_amount: int, config: dict,
     ) -> None:
+        lock = self._exit_locks.setdefault(int(position_id), asyncio.Lock())
+        async with lock:
+            position = await self.db.get_position(position_id)
+            if not position or position.get("status") != "open":
+                return
+            await self._execute_exit_once(
+                position_id, reason, actual_amount, originally_recorded_amount, config
+            )
+
+    async def _execute_exit_once(
+        self, position_id: int, reason: str, actual_amount: int,
+        originally_recorded_amount: int, config: dict,
+    ) -> None:
         position = await self.db.get_position(position_id)
         if not position:
             return
@@ -1136,9 +1150,18 @@ class AutonomousEngine:
         )
         await self.db.record_daily_pnl(telegram_id, utc_day(), net_realized_lamports)
         rent_reclaimed = await self._reclaim_empty_accounts(telegram_id, mint, fully_closed)
+        exit_title = {
+            "take_profit_1": "💰 AUTO TAKE-PROFIT 1 TRIGGERED",
+            "take_profit_2": "🎯 AUTO TAKE-PROFIT 2 TRIGGERED",
+            "trailing_stop": "🛡️ TRAILING STOP TRIGGERED",
+            "hard_stop": "🛑 HARD STOP-LOSS TRIGGERED",
+            "manual_panic_sell": "🚨 PANIC SELL CONFIRMED",
+            "manual_sell_50": "💰 MANUAL 50% SELL CONFIRMED",
+        }.get(reason, f"EXIT CONFIRMED · {reason.upper()}")
         await self.notify(
             telegram_id,
-            f"EXIT CONFIRMED · {reason.upper()}\n"
+            f"{exit_title}\n"
+            f"Position: #{position_id}\n"
             f"Mint: {mint}\nSold: {sell_amount} raw units\n"
             f"Expected SOL out: {from_lamports(expected_out)}\n"
             f"Observed wallet delta: {from_lamports(actual_wallet_delta)} SOL\n"
@@ -1202,8 +1225,11 @@ class AutonomousEngine:
             int(position["token_amount_raw"]), config,
         )
     async def sell_position_percent(self, telegram_id: int, position_id: int, percent: int) -> None:
-        if percent != 50:
-            raise ValueError("Only the explicit 50% partial-sell action is available here.")
+        if percent not in {50, 100}:
+            raise ValueError("Supported manual sell percentages are 50% and 100%.")
+        if percent == 100:
+            await self.panic_sell(telegram_id, position_id)
+            return
         position = await self.db.get_position(position_id, telegram_id)
         if not position or position.get("status") != "open":
             raise ValueError("Open live position not found.")

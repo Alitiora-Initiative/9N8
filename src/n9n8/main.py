@@ -92,6 +92,8 @@ async def run(worker_only: bool = False) -> None:
         )
         await bot.set_my_commands([
             BotCommand(command="start", description="Open your 9N8 dashboard"),
+            BotCommand(command="chains", description="Select Solana or view EVM network status"),
+            BotCommand(command="network", description="Open the network selector"),
             BotCommand(command="paper", description="Open virtual practice mode"),
             BotCommand(command="paper_on", description="Start paper trading"),
             BotCommand(command="paper_off", description="Pause paper entries"),
@@ -122,27 +124,72 @@ async def run(worker_only: bool = False) -> None:
     async def notify(telegram_id: int, message: str) -> None:
         try:
             markup = None
-            if message.startswith("ENTRY CONFIRMED"):
+            is_entry = message.startswith("ENTRY CONFIRMED")
+            is_exit = (
+                message.startswith("💰 AUTO TAKE-PROFIT")
+                or message.startswith("🎯 AUTO TAKE-PROFIT")
+                or message.startswith("🛡️ TRAILING STOP")
+                or message.startswith("🛑 HARD STOP")
+                or message.startswith("🚨 PANIC SELL")
+                or message.startswith("💰 MANUAL 50% SELL")
+                or message.startswith("EXIT CONFIRMED")
+            )
+            if is_entry or is_exit:
                 position_match = re.search(r"Position:\s*#?(\d+)", message)
                 mint_match = re.search(r"Mint:\s*([1-9A-HJ-NP-Za-km-z]{32,44})", message)
                 signature_match = re.search(r"Signature:\s*https://solscan\.io/tx/([1-9A-Za-z]+)", message)
+                remaining_match = re.search(r"Remaining tokens:\s*(\d+)", message)
                 if position_match and mint_match:
                     position_id = int(position_match.group(1))
                     mint = mint_match.group(1)
                     rows = [
-                        [InlineKeyboardButton(text="📈 Live Chart", url="https://dexscreener.com/solana/" + mint)],
+                        [InlineKeyboardButton(
+                            text="📈 View DexScreener",
+                            url="https://dexscreener.com/solana/" + mint,
+                        )],
                     ]
                     if signature_match:
-                        rows[0].append(InlineKeyboardButton(text="🔍 Solscan Tx", url="https://solscan.io/tx/" + signature_match.group(1)))
-                    rows.extend([
-                        [InlineKeyboardButton(text="💰 Sell 50%", callback_data=f"position:sell50:{position_id}"),
-                         InlineKeyboardButton(text="🚨 Panic Sell 100%", callback_data=f"position:panic:{position_id}")],
-                        [InlineKeyboardButton(text="📊 Live Positions", callback_data="positions:live")],
-                    ])
+                        rows.append([InlineKeyboardButton(
+                            text="🔍 View Solscan",
+                            url="https://solscan.io/tx/" + signature_match.group(1),
+                        )])
+                    if is_entry:
+                        rows.append([
+                            InlineKeyboardButton(
+                                text="💰 Sell 50%",
+                                callback_data=f"position:sell50:{position_id}",
+                            ),
+                            InlineKeyboardButton(
+                                text="🚨 Panic Sell 100%",
+                                callback_data=f"position:panic:{position_id}",
+                            ),
+                        ])
+                    elif remaining_match and int(remaining_match.group(1)) > 0:
+                        rows.append([InlineKeyboardButton(
+                            text="🚨 Sell Remaining 100%",
+                            callback_data=f"position:panic:{position_id}",
+                        )])
+                    rows.append([InlineKeyboardButton(
+                        text="📊 Refresh Live Positions",
+                        callback_data="positions:live",
+                    )])
+                    rows.append([InlineKeyboardButton(
+                        text="🧨 Panic Sell All",
+                        callback_data="positions:panic_all:ask",
+                    )])
                     markup = InlineKeyboardMarkup(inline_keyboard=rows)
-            await bot.send_message(telegram_id, message, reply_markup=markup, disable_web_page_preview=True)
+            await bot.send_message(
+                telegram_id,
+                message,
+                reply_markup=markup,
+                disable_web_page_preview=True,
+            )
         except Exception as exc:
-            logger.warning("Could not send Telegram notification to %s (%s)", telegram_id, type(exc).__name__)
+            logger.warning(
+                "Could not send Telegram notification to %s (%s)",
+                telegram_id,
+                type(exc).__name__,
+            )
 
     async def publish(telegram_id: int, event: dict) -> None:
         if hasattr(db, "publish_event"):
