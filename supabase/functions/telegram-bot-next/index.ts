@@ -53,7 +53,7 @@ const CORS_HEADERS = {
 const enc = new TextEncoder();
 
 type Provider = "okx" | "binance" | "bybit";
-type BybitRegion = "global" | "eea" | "uae" | "turkey" | "kazakhstan" | "georgia" | "indonesia" | "hongkong" | "japan";
+type BybitRegion = "global" | "eea" | "uae" | "turkey" | "kazakhstan" | "georgia" | "indonesia" | "japan";
 type Credentials = {
   apiKey: string;
   apiSecret: string;
@@ -337,7 +337,6 @@ const BYBIT_API_ORIGINS: Record<BybitRegion, string> = {
   kazakhstan: "https://api.bybit.kz",
   georgia: "https://api.bybitgeorgia.ge",
   indonesia: "https://api.bybit.id",
-  hongkong: "https://api.spark-fintech.com",
   japan: "https://api.manepa.jp",
 };
 
@@ -890,7 +889,7 @@ async function liveBybitAccount(user: any, userId: string): Promise<Obj> {
   const credentials: Credentials = {
     apiKey: clean(stored?.apiKey, 512),
     apiSecret: clean(stored?.apiSecret, 1024),
-    bybitRegion: (["global", "eea", "uae", "turkey", "kazakhstan", "georgia", "indonesia", "hongkong", "japan"].includes(regionValue)
+    bybitRegion: (["global", "eea", "uae", "turkey", "kazakhstan", "georgia", "indonesia", "japan"].includes(regionValue)
       ? regionValue : "global") as BybitRegion,
   };
   const markets = Array.isArray(connection.permissions?.selectedMarkets)
