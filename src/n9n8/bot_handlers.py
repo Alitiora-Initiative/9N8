@@ -16,7 +16,7 @@ from solders.pubkey import Pubkey
 
 from .config import Settings
 from .database import Database
-from .math_engine import format_sol, usd_to_lamports
+from .math_engine import format_sol, to_lamports, usd_to_lamports
 from .oracle import PriceOracle
 from .wallet import WalletError, WalletManager
 from .autonomous_engine import AutonomousEngine
@@ -34,11 +34,17 @@ class ParameterFlow(StatesGroup):
 
 
 class WithdrawFlow(StatesGroup):
+    amount = State()
     destination = State()
 
 
 class SnipeFlow(StatesGroup):
     mint = State()
+
+
+class LiveSnipeFlow(StatesGroup):
+    mint = State()
+    amount = State()
 
 
 class WipeFlow(StatesGroup):
@@ -56,12 +62,19 @@ class AppServices:
 
 services: AppServices | None = None
 _pending_paper_snipes: dict[int, dict] = {}
-_pending_paper_snipes: dict[int, dict] = {}
+_pending_live_snipes: dict[int, dict] = {}
+_withdraw_locks: dict[int, asyncio.Lock] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
     global services
     services = value
+    # This deployment is intentionally single-operator. Filter every message
+    # and callback at the Router boundary, not only individual commands.
+    if not getattr(router, "_n9n8_authorized_filter_installed", False):
+        router.message.filter(F.from_user.id == value.settings.authorized_user_id)
+        router.callback_query.filter(F.from_user.id == value.settings.authorized_user_id)
+        router._n9n8_authorized_filter_installed = True
 
 
 def _svc() -> AppServices:
@@ -86,6 +99,7 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🧪 Paper Trading", callback_data="paper:menu"),
             InlineKeyboardButton(text="🔴 Live Solana Sniper", callback_data="live:menu"),
         ],
+        [InlineKeyboardButton(text="🎯 Manual Live Snipe", callback_data="live:snipe")],
         [
             InlineKeyboardButton(text="📊 Positions", callback_data="positions:show"),
             InlineKeyboardButton(text="📜 Trade History", callback_data="history:show"),
@@ -313,8 +327,10 @@ def _live_menu_keyboard(enabled: bool, ready: bool) -> InlineKeyboardMarkup:
         rows.append([InlineKeyboardButton(text="Confirm Start Live Sniper", callback_data="live:confirm")])
     rows.extend([
         [InlineKeyboardButton(text="Refresh Readiness", callback_data="live:check")],
-        [InlineKeyboardButton(text="Live Positions", callback_data="positions:live"),
-         InlineKeyboardButton(text="Live Settings", callback_data="settings:show")],
+        [InlineKeyboardButton(text="🎯 Manual Snipe", callback_data="live:snipe"),
+         InlineKeyboardButton(text="📊 Live Positions", callback_data="positions:live")],
+        [InlineKeyboardButton(text="⚙️ Live Settings", callback_data="settings:show"),
+         InlineKeyboardButton(text="🛡️ Live Safety", callback_data="safety:live")],
         [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -572,7 +588,7 @@ async def cmd_live(message: Message) -> None:
     svc = _svc()
     readiness = await svc.engine.live_readiness(message.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "live")
-    await message.answer(_live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await message.answer(await _live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
 @router.message(Command("live_on"))
@@ -599,7 +615,7 @@ async def cmd_live_on(message: Message) -> None:
         return
     readiness = await svc.engine.live_readiness(message.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "live")
-    await message.answer(_live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await message.answer(await _live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
 @router.message(Command("live_off"))
@@ -617,7 +633,7 @@ async def cb_live_menu(callback: CallbackQuery) -> None:
     await callback.answer()
     readiness = await svc.engine.live_readiness(callback.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "live")
-    await callback.message.edit_text(_live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await callback.message.edit_text(await _live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
 @router.callback_query(F.data == "live:check")
@@ -626,7 +642,7 @@ async def cb_live_check(callback: CallbackQuery) -> None:
     await callback.answer()
     readiness = await svc.engine.live_readiness(callback.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "live")
-    await callback.message.edit_text(_live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await callback.message.edit_text(await _live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
 @router.callback_query(F.data == "live:confirm")
@@ -673,24 +689,99 @@ async def cb_positions(callback: CallbackQuery) -> None:
     ]))
 
 
+@router.message(Command("paper_positions"))
+async def cmd_paper_positions(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    rows = await svc.engine.paper_engine.store.positions(message.from_user.id) if svc.engine.paper_engine else []
+    if not rows:
+        await message.answer("No open virtual positions. Use /paper to review your practice account.")
+        return
+    await _send_paper_positions(message, rows)
+
+
+async def _send_paper_positions(message: Message, rows: list[dict]) -> None:
+    lines = ["🧪 PAPER POSITIONS · VIRTUAL ONLY", ""]
+    buttons = []
+    for row in rows[:10]:
+        mint = str(row["mint"])
+        lines.append(
+            f"{mint}\n"
+            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"Marked PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Tokens: {row['token_amount_raw']} raw units"
+        )
+        buttons.append([InlineKeyboardButton(text=f"Virtual Sell 100% {mint[:7]}…", callback_data=f"paper:position:sell:{row['id']}")])
+    buttons.append([InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")])
+    await message.answer("\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
 @router.callback_query(F.data == "positions:paper")
 async def cb_paper_positions(callback: CallbackQuery) -> None:
     svc = _svc()
     await callback.answer()
-    rows = await svc.engine.paper_engine.store.positions(callback.from_user.id)
+    rows = await svc.engine.paper_engine.store.positions(callback.from_user.id) if svc.engine.paper_engine else []
     if not rows:
         await callback.message.edit_text("No open virtual positions.",reply_markup=_paper_menu_keyboard(False))
         return
     lines = ["PAPER POSITIONS · VIRTUAL ONLY",""]
+    buttons = []
     for row in rows[:10]:
+        mint = str(row["mint"])
         lines.append(
-            f"Mint: {row['mint']}\n"
-            f"PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Mint: {mint}\n"
+            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"Marked PnL: {row.get('last_pnl_pct','0')}%\n"
             f"Tokens: {row['token_amount_raw']} raw units"
         )
-    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")]
-    ]))
+        buttons.append([InlineKeyboardButton(text=f"Virtual Sell 100% {mint[:7]}…", callback_data=f"paper:position:sell:{row['id']}")])
+    buttons.append([InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")])
+    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("paper:position:sell:"))
+async def cb_paper_position_sell(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Recording a virtual paper exit…")
+    try:
+        position_id = int(callback.data.rsplit(":", 1)[-1])
+        await svc.engine.paper_engine.panic_sell(callback.from_user.id, position_id)
+        await callback.message.answer("Paper position closed with a virtual quote. No real SOL was spent or received.")
+    except Exception as exc:
+        await callback.message.answer(f"Paper exit failed: {type(exc).__name__}: {str(exc)[:180]}")
+
+
+@router.message(Command("live_positions"))
+async def cmd_live_positions(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    rows = await svc.db.active_positions(message.from_user.id)
+    if not rows:
+        await message.answer("No open live positions in your real Solana wallet.")
+        return
+    await _send_live_positions(message, rows)
+
+
+async def _send_live_positions(message: Message, rows: list[dict]) -> None:
+    lines = ["🔴 LIVE POSITIONS · REAL WALLET", ""]
+    buttons = []
+    for row in rows[:8]:
+        mint = str(row["mint"])
+        lines.append(
+            f"{mint}\n"
+            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"Current PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Tokens: {row['token_amount_raw']} raw units\n"
+            f"Exit phase: {row.get('exit_reason') or 'monitoring'}"
+        )
+        buttons.append([
+            InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
+            InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
+        ])
+    buttons.append([InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")])
+    await message.answer("\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
 @router.callback_query(F.data == "positions:live")
@@ -704,10 +795,32 @@ async def cb_live_positions(callback: CallbackQuery) -> None:
     lines = ["LIVE POSITIONS · REAL WALLET",""]
     buttons = []
     for row in rows[:8]:
-        lines.append(f"Mint: {row['mint']}\nTokens: {row['token_amount_raw']} raw\nTarget state: {row.get('exit_reason') or 'monitoring'}")
-        buttons.append([InlineKeyboardButton(text=f"Panic Sell {str(row['mint'])[:7]}…",callback_data=f"position:panic:{row['id']}")])
+        mint = str(row["mint"])
+        lines.append(
+            f"Mint: {mint}\n"
+            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
+            f"Current PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Tokens: {row['token_amount_raw']} raw\n"
+            f"Target state: {row.get('exit_reason') or 'monitoring'}"
+        )
+        buttons.append([
+            InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
+            InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
+        ])
     buttons.append([InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")])
     await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("position:sell50:"))
+async def cb_live_sell50(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Submitting your 50% sell…")
+    try:
+        position_id = int(callback.data.rsplit(":", 1)[-1])
+        await svc.engine.sell_position_percent(callback.from_user.id, position_id, 50)
+        await callback.message.answer("50% sell was processed by the live engine. Check the on-chain receipt before another trade.")
+    except Exception as exc:
+        await callback.message.answer(f"50% sell was not completed: {type(exc).__name__}: {str(exc)[:200]}")
 
 
 @router.message(Command("settings"))
