@@ -193,9 +193,10 @@ async def run(worker_only: bool = False) -> None:
         user = await db.get_user(telegram_id)
         config = await db.get_settings(telegram_id)
         if user and user.get("solana_address") and config.get("enabled"):
-            await engine.watch_wallet(telegram_id)
-            await engine.start_user(telegram_id)
-            active_users.add(telegram_id)
+            if telegram_id not in engine._enabled_users:
+                await engine.watch_wallet(telegram_id)
+                await engine.start_user(telegram_id)
+                active_users.add(telegram_id)
         elif telegram_id in engine._enabled_users:
             await engine.stop_user(telegram_id)
             active_users.discard(telegram_id)
@@ -253,10 +254,6 @@ async def run(worker_only: bool = False) -> None:
             except Exception:
                 logger.exception("9N8 Queue consumer failed; retrying.")
                 await asyncio.sleep(10)
-
-    async def control_loop() -> None:
-        # No recurring Neon polling while idle; Vercel Queues wake this worker.
-        await stop_event.wait()
 
     # Recover pending Neon jobs that may have survived a daemon restart before
     # their Queue wake-up message could be acknowledged.
