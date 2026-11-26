@@ -19,6 +19,7 @@ from .mev_executor import ExecutionError, JupiterJitoExecutor
 from .oracle import PriceOracle
 from .security import TokenSecurity
 from .wallet import WalletError, WalletManager
+from solders.pubkey import Pubkey
 
 logger = logging.getLogger(__name__)
 SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -191,11 +192,37 @@ class AutonomousEngine:
 
         if len(await self.db.active_positions(telegram_id)) >= daily_cap:
             return
+        excluded_token_accounts: set[str] = set()
+        if candidate.launchpad == "pump.fun":
+            curve = candidate.bonding_curve
+            if not curve or curve.complete:
+                return
+            pump_mode = str(config.get("pump_mode", "fresh")).lower()
+            if pump_mode == "migration":
+                threshold = dec(config.get("pump_migration_progress_pct", "80"))
+                if curve.progress_pct < threshold:
+                    return
+            # Exclude Pump.fun's associated bonding-curve token vault from the
+            # top-holder concentration calculation; it is protocol inventory.
+            mint_info = await self.helius.account_info(candidate.mint, "base64")
+            if mint_info:
+                token_program = Pubkey.from_string(str(mint_info["owner"]))
+                curve_pk = Pubkey.from_string(curve.address)
+                mint_pk = Pubkey.from_string(candidate.mint)
+                associated_program = Pubkey.from_string(
+                    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+                )
+                vault, _ = Pubkey.find_program_address(
+                    [bytes(curve_pk), bytes(token_program), bytes(mint_pk)],
+                    associated_program,
+                )
+                excluded_token_accounts.add(str(vault))
         risk = await self.security.inspect(
             candidate.mint,
             launchpad=candidate.launchpad,
             max_top10_pct=str(config.get("max_top10_concentration_pct", "25")),
             min_liquidity_usd=str(config.get("min_liquidity_usd", "5000")),
+            excluded_token_accounts=excluded_token_accounts,
         )
         if not risk.passed:
             await self.notify(
