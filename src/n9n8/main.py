@@ -177,53 +177,100 @@ async def run(worker_only: bool = False) -> None:
                 f"{type(exc).__name__}: {str(exc)[:220]}",
             )
 
-    async def control_loop() -> None:
-        nonlocal active_users
+    async def reconcile_user(telegram_id: int) -> None:
+        user = await db.get_user(telegram_id)
+        config = await db.get_settings(telegram_id)
+        if user and user.get("solana_address") and config.get("enabled"):
+            await engine.watch_wallet(telegram_id)
+            await engine.start_user(telegram_id)
+            active_users.add(telegram_id)
+        else:
+            await engine.stop_user(telegram_id)
+            active_users.discard(telegram_id)
+
+    async def process_queued_jobs() -> None:
+        # Neon is authoritative. Queue deliveries only wake the worker; job rows
+        # are claimed with FOR UPDATE SKIP LOCKED and never replayed when running.
+        while True:
+            jobs = await db.claim_jobs(worker_id, limit=50)
+            if not jobs:
+                return
+            for job in jobs:
+                await run_worker_job(job)
+            if len(jobs) < 50:
+                return
+
+    async def queue_loop() -> None:
+        if not queue_token:
+            return
         while not stop_event.is_set():
             try:
-                if hasattr(db, "enabled_users"):
-                    enabled = {int(x) for x in await db.enabled_users()}
-                    for telegram_id in sorted(enabled - active_users):
-                        try:
-                            await engine.start_user(telegram_id)
-                            active_users.add(telegram_id)
-                        except Exception as exc:
-                            logger.error("Could not start persisted Telegram account %s (%s)", telegram_id, type(exc).__name__)
-                    for telegram_id in sorted(active_users - enabled):
-                        try:
-                            await engine.stop_user(telegram_id)
-                        finally:
-                            active_users.discard(telegram_id)
-
-                if hasattr(db, "claim_jobs"):
-                    jobs = await db.claim_jobs(worker_id, limit=10)
-                    for job in jobs:
-                        await run_worker_job(job)
-                    open_position_count = 0
-                    for active_user_id in active_users:
-                        open_position_count += len(await db.active_positions(active_user_id))
+                messages = await worker_queue.receive(
+                    settings.vercel_queue_topic,
+                    settings.vercel_queue_consumer,
+                    queue_token,
+                    limit=10,
+                    visibility_timeout_seconds=60,
+                )
+                if not messages:
+                    await asyncio.sleep(5)
+                    continue
+                for message in messages:
+                    try:
+                        kind = str(message.body.get("kind") or "")
+                        if kind == "sync_user":
+                            await reconcile_user(int(message.body["telegram_id"]))
+                        elif kind == "job":
+                            await process_queued_jobs()
+                        else:
+                            logger.warning("Ignoring unknown worker wake message type: %s", kind[:40])
+                        await worker_queue.acknowledge(
+                            settings.vercel_queue_topic,
+                            settings.vercel_queue_consumer,
+                            message.receipt_handle,
+                            queue_token,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # If the Neon claim succeeded, the job state prevents a
+                        # redelivery from repeating a transaction.
+                        logger.exception("Could not process Vercel Queue message %s", message.message_id)
+                        break
+                if hasattr(db, "heartbeat"):
                     await db.heartbeat(
                         worker_id,
                         "running",
                         settings.trading_mode,
-                        {"active_users": len(active_users), "open_positions": open_position_count},
+                        {"active_users": len(active_users), "queue_messages": len(messages)},
                     )
             except asyncio.CancelledError:
                 raise
+            except VercelQueueError as exc:
+                logger.warning("Vercel Queue poll failed (%s); retrying.", type(exc).__name__)
+                await asyncio.sleep(10)
             except Exception:
-                logger.exception("9N8 worker control loop iteration failed")
-            try:
-                await asyncio.wait_for(stop_event.wait(), timeout=3 if worker_only else 5)
-            except asyncio.TimeoutError:
-                pass
+                logger.exception("9N8 Queue consumer failed; retrying.")
+                await asyncio.sleep(10)
+
+    async def control_loop() -> None:
+        # No recurring Neon polling while idle; Vercel Queues wake this worker.
+        await stop_event.wait()
+
+    # Recover pending Neon jobs that may have survived a daemon restart before
+    # their Queue wake-up message could be acknowledged.
+    if hasattr(db, "claim_jobs"):
+        await process_queued_jobs()
+    if hasattr(db, "heartbeat"):
+        await db.heartbeat(worker_id, "running", settings.trading_mode, {"startup": True})
 
     async def poll_telegram() -> None:
         logger.info("Starting aiogram polling; trading mode=%s", settings.trading_mode)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
 
     polling_task = asyncio.create_task(poll_telegram(), name="9n8-telegram")
-    control_task = asyncio.create_task(control_loop(), name="9n8-worker-control")
-    tasks = {polling_task, control_task, asyncio.create_task(stop_event.wait(), name="9n8-shutdown")}
+    queue_task = asyncio.create_task(queue_loop(), name="9n8-vercel-queue")
+    tasks = {polling_task, queue_task, asyncio.create_task(stop_event.wait(), name="9n8-shutdown")}
     if server_task is not None:
         tasks.add(server_task)
 
@@ -258,6 +305,7 @@ async def run(worker_only: bool = False) -> None:
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await engine.shutdown()
+        await worker_queue.close()
         if hasattr(db, "heartbeat"):
             try:
                 await db.heartbeat(worker_id, "stopped", settings.trading_mode)
