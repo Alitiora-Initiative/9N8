@@ -50,12 +50,14 @@ class AutonomousEngine:
         security: TokenSecurity,
         notify: Notify,
         telemetry: Callable[[int, dict], Awaitable[None]] | None = None,
+        paper_engine: Any | None = None,
     ):
         self.settings = settings
         self.db, self.helius, self.wallet = db, helius, wallet
         self.oracle, self.executor = oracle, executor
         self.sniper, self.security, self.notify = sniper, security, notify
         self.telemetry = telemetry
+        self.paper_engine = paper_engine
         self._scanner_task: asyncio.Task | None = None
         self._position_tasks: dict[int, asyncio.Task] = {}
         self._wallet_watch_tasks: dict[int, asyncio.Task] = {}
@@ -65,56 +67,149 @@ class AutonomousEngine:
         self._candidate_lock = asyncio.Semaphore(4)
         self._paper_notified: set[tuple[int, str]] = set()
         self._enabled_users: set[int] = set()
+        self._paper_users: set[int] = set()
+        self._live_users: set[int] = set()
 
     @property
     def live_enabled(self) -> bool:
-        return self.settings.trading_mode == "live" and self.settings.live_trading_enabled
+        # This is the operator-wide kill switch. Per-user live consent is stored
+        # separately and checked for every candidate.
+        return bool(self.settings.live_trading_enabled)
 
-    async def start_user(self, telegram_id: int) -> str:
-        await self.db.ensure_user(telegram_id)
+    async def start_paper_user(self, telegram_id: int) -> dict[str, Any]:
+        if self.paper_engine is None:
+            raise ExecutionError("Paper trading engine is not configured.")
+        account = await self.paper_engine.start_user(telegram_id)
+        self._paper_users.add(int(telegram_id))
+        self._enabled_users.add(int(telegram_id))
+        await self._ensure_scanner()
+        await self.db.security_event(telegram_id, "paper_engine_started", "Independent virtual account started; no wallet signer is used.")
+        return account
+
+    async def stop_paper_user(self, telegram_id: int) -> None:
+        if self.paper_engine is None:
+            raise ExecutionError("Paper trading engine is not configured.")
+        await self.paper_engine.stop_user(telegram_id)
+        self._paper_users.discard(int(telegram_id))
+        if int(telegram_id) not in self._live_users:
+            self._enabled_users.discard(int(telegram_id))
+        await self.db.security_event(telegram_id, "paper_engine_stopped", "New virtual entries disabled; virtual positions remain monitored.")
+        await self._stop_scanner_if_idle()
+
+    async def live_readiness(self, telegram_id: int) -> dict[str, Any]:
         user = await self.db.get_user(telegram_id)
-        if not user or not user.get("solana_address"):
-            raise WalletError("Create or import a Solana wallet before executing the bot.")
-        if self.settings.trading_mode == "live":
-            if not self.settings.live_trading_enabled:
-                raise ExecutionError("Live execution is locked by LIVE_TRADING_ENABLED.")
-            if not user.get("activation_paid"):
-                raise ExecutionError("The $1 activation fee has not been confirmed.")
-        await self.db.update_settings(telegram_id, {"enabled": True})
+        checks: dict[str, Any] = {
+            "operator_live_switch": self.live_enabled,
+            "wallet_connected": bool(user and user.get("solana_address")),
+            "activation_confirmed": bool(user and user.get("activation_paid")),
+            "paper_days": 0,
+            "wallet_balance_sol": "0",
+            "wallet_balance_usd": "0",
+            "minimum_wallet_usd": "10",
+            "ready": False,
+            "blockers": [],
+        }
+        if not self.live_enabled:
+            checks["blockers"].append("The operator has not enabled LIVE_TRADING_ENABLED.")
+        if not checks["wallet_connected"]:
+            checks["blockers"].append("Create or import a Solana trading wallet.")
+        if not checks["activation_confirmed"]:
+            checks["blockers"].append("Complete the account activation check.")
+        if self.paper_engine is None:
+            checks["blockers"].append("The separate paper engine is unavailable.")
+        else:
+            checks["paper_days"] = await self.paper_engine.store.active_days(telegram_id)
+            if checks["paper_days"] < 7:
+                checks["blockers"].append(
+                    f"Complete paper practice on at least 7 different UTC days ({checks['paper_days']}/7 recorded)."
+                )
+        if checks["wallet_connected"]:
+            try:
+                lamports = await self.wallet.balance(telegram_id)
+                price = await self.oracle.sol_usd()
+                checks["wallet_balance_sol"] = str(from_lamports(lamports))
+                value = from_lamports(lamports) * price
+                checks["wallet_balance_usd"] = str(value.quantize(Decimal("0.01")))
+                if value < Decimal("10"):
+                    checks["blockers"].append("The connected Solana wallet must hold at least $10 of SOL.")
+            except Exception as exc:
+                checks["blockers"].append("Wallet balance could not be verified: " + type(exc).__name__)
+        checks["ready"] = not checks["blockers"]
+        return checks
+
+    async def resume_live_positions(self, telegram_id: int) -> int:
+        """Resume exits for already-open on-chain positions without enabling new entries."""
+        positions = await self.db.active_positions(telegram_id)
+        for position in positions:
+            position_id = int(position["id"])
+            task = self._position_tasks.get(position_id)
+            if task is None or task.done():
+                self._position_tasks[position_id] = asyncio.create_task(
+                    self._monitor_position(position_id),
+                    name=f"9n8-live-position-{position_id}",
+                )
+        return len(positions)
+
+    async def start_live_user(self, telegram_id: int) -> dict[str, Any]:
+        await self.db.ensure_user(telegram_id)
+        readiness = await self.live_readiness(telegram_id)
+        if not readiness["ready"]:
+            raise ExecutionError("LIVE MODE NOT READY: " + " ".join(readiness["blockers"]))
+        await self.db.update_settings(telegram_id, {
+            "live_enabled": True,
+            "enabled": True,
+        })
+        self._live_users.add(int(telegram_id))
         self._enabled_users.add(int(telegram_id))
         balance = await self.wallet.balance(telegram_id)
         await self.db.start_daily_risk(telegram_id, utc_day(), balance)
         await self.watch_wallet(telegram_id)
         await self._ensure_scanner()
-        # Resume monitoring previously stored positions after a process restart.
         for position in await self.db.active_positions(telegram_id):
             position_id = int(position["id"])
             if position_id not in self._position_tasks or self._position_tasks[position_id].done():
                 self._position_tasks[position_id] = asyncio.create_task(
-                    self._monitor_position(position_id), name=f"9n8-position-{position_id}"
+                    self._monitor_position(position_id), name=f"9n8-live-position-{position_id}"
                 )
-        await self.db.security_event(telegram_id, "engine_started", self.settings.trading_mode)
-        return "LIVE autonomous execution" if self.live_enabled else "PAPER detection only (no simulated fills)"
-
-    async def stop_user(self, telegram_id: int) -> None:
-        await self.db.update_settings(telegram_id, {"enabled": False})
-        self._enabled_users.discard(int(telegram_id))
         await self.db.security_event(
-            telegram_id, "engine_stopped",
-            "New entries disabled; open position monitors remain active.",
+            telegram_id, "live_engine_armed",
+            "User confirmed live mode after global kill switch, wallet, activation, $10 balance and seven paper days passed.",
+        )
+        return readiness
+
+    async def stop_live_user(self, telegram_id: int) -> None:
+        await self.db.update_settings(telegram_id, {"live_enabled": False, "enabled": False})
+        self._live_users.discard(int(telegram_id))
+        if int(telegram_id) not in self._paper_users:
+            self._enabled_users.discard(int(telegram_id))
+        await self.db.security_event(
+            telegram_id, "live_engine_stopped",
+            "New live entries disabled; confirmed on-chain positions remain under exit monitoring.",
         )
         await self.notify(
             telegram_id,
-            "9N8 paused. New entries are disabled; existing positions remain under exit monitoring.",
+            "LIVE SNIPER PAUSED. No new live entries will be opened. Existing on-chain positions remain under exit monitoring.",
         )
-        if not self._enabled_users and self._scanner_task is not None:
-            await self.sniper.stop()
-            scanner = self._scanner_task
-            self._scanner_task = None
-            if not scanner.done():
-                scanner.cancel()
-                await asyncio.gather(scanner, return_exceptions=True)
+        await self._stop_scanner_if_idle()
 
+    async def start_user(self, telegram_id: int) -> str:
+        # Backwards-compatible alias: legacy Execute Bot now means the explicit
+        # live path, never the paper practice engine.
+        await self.start_live_user(telegram_id)
+        return "LIVE Solana sniper armed. Paper account remains separate."
+
+    async def stop_user(self, telegram_id: int) -> None:
+        await self.stop_live_user(telegram_id)
+
+    async def _stop_scanner_if_idle(self) -> None:
+        if self._enabled_users or self._scanner_task is None:
+            return
+        await self.sniper.stop()
+        scanner = self._scanner_task
+        self._scanner_task = None
+        if not scanner.done():
+            scanner.cancel()
+            await asyncio.gather(scanner, return_exceptions=True)
 
     async def watch_wallet(self, telegram_id: int) -> None:
         """Start one Helius accountSubscribe listener to push SOL deposit alerts."""
@@ -197,51 +292,45 @@ class AutonomousEngine:
         self._position_tasks.clear()
         self._wallet_watch_tasks.clear()
         self._enabled_users.clear()
+        if self.paper_engine is not None:
+            await self.paper_engine.shutdown()
 
     async def _on_candidate(self, candidate: LaunchCandidate) -> None:
         if self._stopping or not self._enabled_users:
             return
         async with self._candidate_lock:
-            users = await self.db.all_users_with_wallets()
+            users = await self.paper_engine.store.users() if self.paper_engine is not None else await self.db.all_users_with_wallets()
             for user in users:
                 telegram_id = int(user["telegram_id"])
-                config = await self.db.get_settings(telegram_id)
-                if not config.get("enabled"):
-                    continue
-                selected = str(config.get("launchpad", "both")).lower()
                 source = candidate.launchpad.lower()
-                if selected != "both" and selected != source:
-                    continue
-                if not self.live_enabled:
-                    key = (telegram_id, candidate.mint)
-                    if key not in self._paper_notified:
-                        self._paper_notified.add(key)
-                        if len(self._paper_notified) > 10000:
-                            self._paper_notified.clear()
-                            self._paper_notified.add(key)
-                        await self.notify(
-                            telegram_id,
-                            f"LAUNCH DETECTED · {candidate.launchpad}\\n"
-                            f"Mint: {candidate.mint}\\nSlot: {candidate.slot or 'unknown'}\\n"
-                            "PAPER MODE: detected only. No order or simulated fill was created.",
-                        )
-                    if self.telemetry:
-                        await self.telemetry(telegram_id, {
-                            "type": "launch_detected", "launchpad": candidate.launchpad,
-                            "mint": candidate.mint, "signature": candidate.signature,
-                            "slot": candidate.slot, "mode": "paper",
-                            "curve_progress_pct": str(candidate.bonding_curve.progress_pct)
-                                if candidate.bonding_curve else None,
-                            "curve_complete": candidate.bonding_curve.complete
-                                if candidate.bonding_curve else None,
-                        })
-                    continue
                 try:
-                    await self._consider_entry(telegram_id, candidate, config)
+                    # Paper and live are separate account modes with separate settings,
+                    # balances, positions and entry gates. They can both observe one event.
+                    if self.paper_engine is not None and await self.paper_engine.store.mode_enabled(telegram_id, "paper"):
+                        paper_config = await self.paper_engine.store.settings(telegram_id, "paper")
+                        paper_source = str(paper_config.get("launchpad", "both")).lower()
+                        if paper_source in {"both", source}:
+                            await self.paper_engine.on_candidate(telegram_id, candidate)
+
+                    live_mode_on = (
+                        await self.paper_engine.store.mode_enabled(telegram_id, "live")
+                        if self.paper_engine is not None
+                        else bool((await self.db.get_settings(telegram_id)).get("live_enabled", False))
+                    )
+                    if not self.live_enabled or not live_mode_on:
+                        continue
+                    user_row = await self.db.get_user(telegram_id)
+                    if not user_row or not user_row.get("solana_address"):
+                        continue
+                    live_config = await self.db.get_settings(telegram_id)
+                    live_source = str(live_config.get("launchpad", "both")).lower()
+                    if live_source not in {"both", source}:
+                        continue
+                    await self._consider_entry(telegram_id, candidate, live_config)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.exception("Entry evaluation failed for Telegram account %s", telegram_id)
+                    logger.exception("Candidate evaluation failed for Telegram account %s", telegram_id)
                     await self.notify(
                         telegram_id,
                         f"9N8 skipped {candidate.mint[:8]}…: {type(exc).__name__}: {str(exc)[:180]}",
@@ -382,23 +471,17 @@ class AutonomousEngine:
         if len(await self.db.active_positions(telegram_id)) >= daily_cap:
             return
         excluded_token_accounts: set[str] = set()
-        if candidate.launchpad == "pump.fun":
+        security_launchpad = candidate.launchpad.lower()
+        if candidate.launchpad.lower() == "pump.fun":
             curve = candidate.bonding_curve
-            if not curve or curve.complete:
+            # Live trades wait for Pump.fun migration. The pre-migration bonding
+            # curve is not treated as a locked Raydium liquidity pool.
+            if not curve or not curve.complete:
                 return
-            pump_mode = str(config.get("pump_mode", "fresh")).lower()
-            if pump_mode == "migration":
-                threshold = dec(config.get("pump_migration_progress_pct", "80"))
-                if curve.progress_pct < threshold:
-                    return
-            elif pump_mode == "fresh":
-                if candidate.created_at_slot is None:
-                    return
-                current_slot = int(await self.helius.rpc("getSlot", [{"commitment": "processed"}]))
-                if current_slot - int(candidate.created_at_slot) > 3:
-                    return
-            # Exclude Pump.fun's associated bonding-curve token vault from the
-            # top-holder concentration calculation; it is protocol inventory.
+            threshold = dec(config.get("pump_migration_progress_pct", "80"))
+            if curve.progress_pct < threshold:
+                return
+            security_launchpad = "raydium"
             mint_info = await self.helius.account_info(candidate.mint, "base64")
             if mint_info:
                 token_program = Pubkey.from_string(str(mint_info["owner"]))
@@ -412,11 +495,20 @@ class AutonomousEngine:
                     associated_program,
                 )
                 excluded_token_accounts.add(str(vault))
+        sol_price = await self.oracle.sol_usd()
+        min_liquidity_usd = max(
+            dec(config.get("min_liquidity_sol", "5")) * sol_price,
+            dec(config.get("min_liquidity_usd", "0")),
+        )
         risk = await self.security.inspect(
             candidate.mint,
-            launchpad=candidate.launchpad,
+            launchpad=security_launchpad,
             max_top10_pct=str(config.get("max_top10_concentration_pct", "25")),
-            min_liquidity_usd=str(config.get("min_liquidity_usd", "5000")),
+            min_liquidity_usd=str(min_liquidity_usd),
+            min_lp_locked_pct=str(config.get("min_lp_locked_pct", "80")),
+            max_dev_pct=str(config.get("max_dev_wallet_pct", "5")),
+            require_mint_authority_revoked=bool(config.get("require_mint_authority_revoked", True)),
+            require_freeze_authority_revoked=bool(config.get("require_freeze_authority_revoked", True)),
             excluded_token_accounts=excluded_token_accounts,
         )
         if not risk.passed:
@@ -614,88 +706,119 @@ class AutonomousEngine:
     async def _monitor_position(self, position_id: int) -> None:
         try:
             while not self._stopping:
-                position = await self.db.get_position(position_id)
-                if not position or position["status"] != "open":
-                    return
-                telegram_id = int(position["telegram_id"])
-                config = await self.db.get_settings(telegram_id)
-                mint = str(position["mint"])
-                wallet_address = await self.db.get_wallet_address(telegram_id)
-                if not wallet_address:
-                    return
-                amount = await self.helius.token_balance_raw(wallet_address, mint)
-                if amount <= 0:
-                    # Do not mark a just-confirmed or recently exited position as
-                    # closed on one stale/indexer-lagged zero balance response.
-                    for _attempt in range(5):
-                        await asyncio.sleep(1)
-                        amount = await self.helius.token_balance_raw(wallet_address, mint)
-                        if amount > 0:
-                            break
+                try:
+                    position = await self.db.get_position(position_id)
+                    if not position or position["status"] != "open":
+                        return
+                    telegram_id = int(position["telegram_id"])
+                    config = await self.db.get_settings(telegram_id)
+                    mint = str(position["mint"])
+                    wallet_address = await self.db.get_wallet_address(telegram_id)
+                    if not wallet_address:
+                        await self.notify(telegram_id, "Live position monitoring paused: wallet address is unavailable. No exit was fabricated.")
+                        return
+                    amount = await self.helius.token_balance_raw(wallet_address, mint)
                     if amount <= 0:
-                        await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
-                        return
-                quote = await self._rate_limited_quote(mint, amount)
-                current_out = int(quote.get("outAmount") or 0)
-                min_out = int(quote.get("otherAmountThreshold") or current_out)
-                if current_out <= 0 or min_out <= 0:
-                    await asyncio.sleep(1)
-                    continue
-                basis_lamports = int(position["initial_cost_lamports"])
-                estimated_exit_cost = (
-                    int(config.get("priority_fee_lamports", 10000))
-                    + (int(config.get("jito_tip_lamports", 1_000_000)) if config.get("mev_shield", True) else 0)
-                    + 5000
-                )
-                current_value_lamports = max(0, min_out - estimated_exit_cost)
-                profit = net_profit_pct(
-                    from_lamports(current_value_lamports),
-                    from_lamports(basis_lamports),
-                )
-                opened = datetime.fromisoformat(str(position["opened_at"]))
-                if opened.tzinfo is None:
-                    opened = opened.replace(tzinfo=timezone.utc)
-                elapsed = Decimal(str((datetime.now(timezone.utc) - opened).total_seconds()))
-                already_partial = position.get("exit_reason") == "take_profit_partial"
-                reason = None
-                if already_partial:
-                    if elapsed >= Decimal(int(config.get("max_hold_seconds", 60))):
+                        # Confirm the zero balance on repeated indexer reads before
+                        # closing the database position.
+                        for _attempt in range(5):
+                            await asyncio.sleep(1)
+                            amount = await self.helius.token_balance_raw(wallet_address, mint)
+                            if amount > 0:
+                                break
+                        if amount <= 0:
+                            await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
+                            return
+
+                    quote = await self._rate_limited_quote(mint, amount)
+                    current_out = int(quote.get("outAmount") or 0)
+                    min_out = int(quote.get("otherAmountThreshold") or current_out)
+                    if current_out <= 0 or min_out <= 0:
+                        await asyncio.sleep(1)
+                        continue
+                    basis_lamports = int(position["initial_cost_lamports"])
+                    if basis_lamports <= 0:
+                        await asyncio.sleep(1)
+                        continue
+                    estimated_exit_cost = (
+                        int(config.get("priority_fee_lamports", 10000))
+                        + (int(config.get("jito_tip_lamports", 2_000_000)) if config.get("mev_shield", True) else 0)
+                        + 5000
+                    )
+                    current_value_lamports = max(0, min_out - estimated_exit_cost)
+                    profit = net_profit_pct(
+                        from_lamports(current_value_lamports),
+                        from_lamports(basis_lamports),
+                    )
+                    peak_value = max(
+                        int(position.get("peak_value_lamports") or 0),
+                        current_value_lamports,
+                    )
+                    await self.db.update_position_metrics(
+                        position_id, current_value_lamports, peak_value,
+                        str(profit.quantize(Decimal("0.01"))),
+                    )
+
+                    opened = datetime.fromisoformat(str(position["opened_at"]))
+                    if opened.tzinfo is None:
+                        opened = opened.replace(tzinfo=timezone.utc)
+                    elapsed = Decimal(str((datetime.now(timezone.utc) - opened).total_seconds()))
+                    tp1_done = bool(position.get("tp1_done")) or position.get("exit_reason") in {
+                        "take_profit_partial", "take_profit_1"
+                    }
+                    tp2_done = bool(position.get("tp2_done"))
+                    reason = None
+
+                    # The hard stop is always evaluated before profit targets.
+                    if profit <= -dec(config.get("stop_loss_pct", "30")):
+                        reason = "hard_stop"
+                    elif not tp1_done and profit >= dec(config.get("take_profit_pct", "100")):
+                        reason = "take_profit_1"
+                    elif tp1_done and not tp2_done and profit >= dec(config.get("take_profit_2_pct", "300")):
+                        reason = "take_profit_2"
+                    elif tp1_done and peak_value > 0 and Decimal(current_value_lamports) <= (
+                        Decimal(peak_value)
+                        * (Decimal(1) - dec(config.get("trailing_stop_pct", "20")) / Decimal(100))
+                    ):
+                        reason = "trailing_stop"
+                    elif elapsed >= Decimal(int(config.get("max_hold_seconds", 14400))):
                         reason = "max_hold"
-                else:
-                    reason = should_exit(
-                        profit,
-                        elapsed,
-                        config.get("take_profit_pct", "10"),
-                        config.get("stop_loss_pct", "15"),
-                        int(config.get("max_hold_seconds", 60)),
-                    )
-                if reason:
-                    await self._execute_exit(
-                        position_id, reason, amount, int(position["token_amount_raw"]), config
-                    )
-                    refreshed = await self.db.get_position(position_id)
-                    if not refreshed or refreshed["status"] != "open":
-                        return
-                if self.telemetry:
-                    await self.telemetry(telegram_id, {
-                        "type": "position_update", "position_id": position_id,
-                        "mint": mint, "pnl_pct": str(profit.quantize(Decimal("0.01"))),
-                        "current_value_sol": str(from_lamports(current_value_lamports)),
-                        "elapsed_seconds": int(elapsed),
-                        "max_hold_seconds": int(config.get("max_hold_seconds", 60)),
-                    })
-                await asyncio.sleep(1.0)
+
+                    if reason:
+                        await self._execute_exit(
+                            position_id, reason, amount, int(position["token_amount_raw"]), config
+                        )
+                        refreshed = await self.db.get_position(position_id)
+                        if not refreshed or refreshed["status"] != "open":
+                            return
+
+                    if self.telemetry:
+                        await self.telemetry(telegram_id, {
+                            "type": "live_position_update", "position_id": position_id,
+                            "mint": mint, "pnl_pct": str(profit.quantize(Decimal("0.01"))),
+                            "current_value_sol": str(from_lamports(current_value_lamports)),
+                            "peak_value_sol": str(from_lamports(peak_value)),
+                            "tp1_done": tp1_done or reason == "take_profit_1",
+                            "tp2_done": tp2_done or reason == "take_profit_2",
+                            "elapsed_seconds": int(elapsed),
+                            "max_hold_seconds": int(config.get("max_hold_seconds", 14400)),
+                        })
+                    await asyncio.sleep(1.0)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.exception("Live position monitor iteration failed: %s", position_id)
+                    position = await self.db.get_position(position_id)
+                    if position:
+                        await self.notify(
+                            int(position["telegram_id"]),
+                            f"Live position monitor temporarily unavailable for {position['mint'][:8]}…: "
+                            f"{type(exc).__name__}. The position remains open; verify wallet and prices. "
+                            "The monitor will retry.",
+                        )
+                    await asyncio.sleep(3)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            logger.exception("Position monitor failed: %s", position_id)
-            position = await self.db.get_position(position_id)
-            if position:
-                await self.notify(
-                    int(position["telegram_id"]),
-                    f"Position monitor paused for {position['mint'][:8]}…: {type(exc).__name__}. "
-                    "No fabricated exit was recorded; inspect the wallet before restarting.",
-                )
         finally:
             self._position_tasks.pop(position_id, None)
 
@@ -713,14 +836,16 @@ class AutonomousEngine:
         if current_balance <= 0:
             await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
             return
-        partial = (
-            reason == "take_profit"
-            and Decimal(str(config.get("moon_bag_pct", "15"))) > 0
-        )
-        if partial:
+        partial = reason in {"take_profit_1", "take_profit_2"}
+        if reason == "take_profit_1":
+            # First target: return half the position and keep the other half running.
             sell_amount, _retained = moon_bag_split(
-                current_balance, config.get("moon_bag_pct", "15")
+                current_balance, config.get("moon_bag_pct", "50")
             )
+        elif reason == "take_profit_2":
+            # Second target: sell 25% of the remaining bag.
+            sell_fraction = dec(config.get("take_profit_2_sell_pct", "25")) / Decimal(100)
+            sell_amount = int((Decimal(current_balance) * sell_fraction).to_integral_value(rounding="ROUND_DOWN"))
         else:
             sell_amount = current_balance
         if sell_amount <= 0:
@@ -847,7 +972,7 @@ class AutonomousEngine:
             )
         await self.db.close_position(
             position_id, remaining,
-            "take_profit_partial" if partial and not fully_closed else reason,
+            reason,
             net_realized_lamports, result.signature, fully_closed,
         )
         await self.db.record_daily_pnl(telegram_id, utc_day(), net_realized_lamports)

@@ -37,6 +37,10 @@ class WithdrawFlow(StatesGroup):
     destination = State()
 
 
+class SnipeFlow(StatesGroup):
+    mint = State()
+
+
 class WipeFlow(StatesGroup):
     destination = State()
 
@@ -51,6 +55,8 @@ class AppServices:
 
 
 services: AppServices | None = None
+_pending_paper_snipes: dict[int, dict] = {}
+_pending_paper_snipes: dict[int, dict] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
@@ -72,30 +78,104 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if webapp_url.startswith("https://"):
         rows.append([InlineKeyboardButton(
-            text="Open 9N8 Live Terminal",
+            text="Open 9N8 Control Panel",
             web_app=WebAppInfo(url=webapp_url),
         )])
     rows.extend([
+        [
+            InlineKeyboardButton(text="🧪 Paper Trading", callback_data="paper:menu"),
+            InlineKeyboardButton(text="🔴 Live Solana Sniper", callback_data="live:menu"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Positions", callback_data="positions:show"),
+            InlineKeyboardButton(text="📜 Trade History", callback_data="history:show"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Paper Settings", callback_data="paper:settings"),
+            InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show"),
+        ],
         [
             InlineKeyboardButton(text="Create Wallet", callback_data="wallet:create"),
             InlineKeyboardButton(text="Import Wallet", callback_data="wallet:import"),
         ],
         [
-            InlineKeyboardButton(text="Deposit Funds", callback_data="deposit:show"),
-            InlineKeyboardButton(text="Sniper Setup", callback_data="settings:show"),
+            InlineKeyboardButton(text="Deposit SOL", callback_data="deposit:show"),
+            InlineKeyboardButton(text="Withdraw SOL", callback_data="wallet:exit"),
         ],
-        [
-            InlineKeyboardButton(text="MEV & Fees", callback_data="fees:show"),
-            InlineKeyboardButton(text="Risk Limits", callback_data="settings:risk"),
-        ],
-        [
-            InlineKeyboardButton(text="Execute Bot", callback_data="engine:execute"),
-            InlineKeyboardButton(text="Stop Bot", callback_data="engine:stop"),
-        ],
-        [InlineKeyboardButton(text="Withdraw & Reset", callback_data="wallet:exit")],
-        [InlineKeyboardButton(text="Refresh Status", callback_data="status:show")],
+        [InlineKeyboardButton(text="Refresh Dashboard", callback_data="status:show")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _mode_keyboard(mode: str, enabled: bool) -> InlineKeyboardMarkup:
+    if mode == "paper":
+        rows = [
+            [InlineKeyboardButton(
+                text="⏸ Stop Paper Entries" if enabled else "▶ Start Paper Trading",
+                callback_data="paper:stop" if enabled else "paper:start",
+            )],
+            [
+                InlineKeyboardButton(text="Open Paper Positions", callback_data="positions:paper"),
+                InlineKeyboardButton(text="Paper Settings", callback_data="paper:settings"),
+            ],
+            [
+                InlineKeyboardButton(text="Manual Paper Snipe", callback_data="paper:snipe"),
+                InlineKeyboardButton(text="Paper History", callback_data="history:paper"),
+            ],
+            [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
+        ]
+    else:
+        rows = [
+            [InlineKeyboardButton(
+                text="🔴 Stop Live Entries" if enabled else "Check Live Readiness",
+                callback_data="live:stop" if enabled else "live:check",
+            )],
+            [
+                InlineKeyboardButton(text="Live Positions", callback_data="positions:live"),
+                InlineKeyboardButton(text="Live Settings", callback_data="settings:show"),
+            ],
+            [
+                InlineKeyboardButton(text="Wallet Balance", callback_data="deposit:show"),
+                InlineKeyboardButton(text="Live History", callback_data="history:live"),
+            ],
+            [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
+        ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _paper_settings_keyboard(config: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"Buy {config.get('buy_amount_sol','0.05')} SOL", callback_data="paper:field:buy_amount_sol"),
+            InlineKeyboardButton(text=f"Slippage {config.get('slippage_pct','15')}%", callback_data="paper:field:slippage_pct"),
+        ],
+        [
+            InlineKeyboardButton(text=f"TP1 +{config.get('take_profit_pct','100')}%", callback_data="paper:field:take_profit_pct"),
+            InlineKeyboardButton(text=f"TP2 +{config.get('take_profit_2_pct','300')}%", callback_data="paper:field:take_profit_2_pct"),
+        ],
+        [
+            InlineKeyboardButton(text=f"TP2 Sell {config.get('take_profit_2_sell_pct','25')}%", callback_data="paper:field:take_profit_2_sell_pct"),
+            InlineKeyboardButton(text=f"Trail {config.get('trailing_stop_pct','20')}%", callback_data="paper:field:trailing_stop_pct"),
+        ],
+        [
+            InlineKeyboardButton(text=f"Hard Stop {config.get('stop_loss_pct','30')}%", callback_data="paper:field:stop_loss_pct"),
+            InlineKeyboardButton(text=f"Hold {int(config.get('max_hold_seconds',14400))//3600}h", callback_data="paper:field:max_hold_seconds"),
+        ],
+        [
+            InlineKeyboardButton(text=f"Jito Estimate {format_sol(int(config.get('jito_tip_lamports',2000000)))} SOL", callback_data="paper:field:jito_tip_lamports"),
+            InlineKeyboardButton(text=f"Min Liquidity {config.get('min_liquidity_sol','5')} SOL", callback_data="paper:field:min_liquidity_sol"),
+        ],
+        [
+            InlineKeyboardButton(text=f"LP Locked {config.get('min_lp_locked_pct','80')}%", callback_data="paper:field:min_lp_locked_pct"),
+            InlineKeyboardButton(text=f"Top 10 ≤ {config.get('max_top10_concentration_pct','25')}%", callback_data="paper:field:max_top10_concentration_pct"),
+        ],
+        [InlineKeyboardButton(text=f"Max Developer {config.get('max_dev_wallet_pct','5')}%", callback_data="paper:field:max_dev_wallet_pct")],
+        [
+            InlineKeyboardButton(text="Launchpad: Both" if config.get("launchpad","both")=="both" else f"Launchpad: {config.get('launchpad')}", callback_data="paper:launchpad"),
+            InlineKeyboardButton(text="MEV Shield: " + ("ON" if config.get("mev_shield",True) else "OFF"), callback_data="paper:mev"),
+        ],
+        [InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")],
+    ])
 
 
 def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
@@ -179,31 +259,180 @@ async def _dashboard_text(telegram_id: int) -> str:
     svc = _svc()
     await svc.db.ensure_user(telegram_id)
     user = await svc.db.get_user(telegram_id)
-    config = await svc.db.get_settings(telegram_id)
+    live_config = await svc.db.get_settings(telegram_id)
     address = (user or {}).get("solana_address")
-    balance_text = "Wallet not created"
+    live_balance = "Wallet not created"
     if address:
         try:
-            balance_text = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
+            live_balance = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
         except Exception:
-            balance_text = "Balance temporarily unavailable"
-    mode = svc.settings.trading_mode.upper()
-    status = "RUNNING" if config.get("enabled") else "PAUSED"
+            live_balance = "Balance temporarily unavailable"
+    paper_engine = svc.engine.paper_engine
+    paper_account = await paper_engine.store.account(telegram_id) if paper_engine else None
+    paper_on = await paper_engine.store.mode_enabled(telegram_id, "paper") if paper_engine else False
+    live_on = await paper_engine.store.mode_enabled(telegram_id, "live") if paper_engine else bool(live_config.get("live_enabled",False))
+    paper_days = await paper_engine.store.active_days(telegram_id) if paper_engine else 0
+    paper_balance = (
+        f"{format_sol(int(paper_account['cash_balance_lamports']))} virtual SOL"
+        if paper_account else "Not started · $1,000 virtual value"
+    )
     activation = "PAID" if (user or {}).get("activation_paid") else "NOT PAID"
     return (
-        "⚡ 9N8 · SOLANA AUTONOMOUS TERMINAL\n\n"
-        "Launch radar: Pump.fun + Raydium\n"
-        "Execution: Jupiter Swap API v2\n"
-        "MEV routing: Jito private bundles\n"
-        "Risk engine: mint authority · holders · liquidity · LP checks\n\n"
-        f"Mode: {mode}\n"
-        f"Bot state: {status}\n"
-        f"Activation: {activation}\n"
-        f"Wallet: {balance_text}\n"
-        f"Deposit address: {address or 'Create a wallet to receive SOL'}\n\n"
-        "Paper mode reports real launch events but does not fake fills. Live mode is "
-        "separately locked by the server environment and requires a paid activation."
+        "⚡ 9N8 · SOLANA TRADING CONTROL\n\n"
+        "TWO SEPARATE MODES\n"
+        f"🧪 Paper Trading: {'RUNNING' if paper_on else 'PAUSED'}\n"
+        f"Virtual cash: {paper_balance}\n"
+        f"Practice days: {paper_days}/7\n"
+        f"🔴 Live Solana Sniper: {'ARMED' if live_on else 'LOCKED / OFF'}\n\n"
+        f"Live wallet: {live_balance}\n"
+        f"Deposit address: {address or 'Create a wallet to receive SOL'}\n"
+        f"Live activation: {activation}\n"
+        f"Operator live switch: {'ON' if svc.settings.live_trading_enabled else 'OFF'}\n\n"
+        "Paper trades use real market quotes but virtual funds only. Live mode uses your wallet "
+        "and needs a separate readiness check and your confirmation."
     )
+
+def _paper_menu_keyboard(enabled: bool) -> InlineKeyboardMarkup:
+    action = "paper:stop" if enabled else "paper:start"
+    label = "⏸ Stop Paper Entries" if enabled else "▶ Start Paper Trading"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=action)],
+        [InlineKeyboardButton(text="Paper Positions", callback_data="positions:paper"),
+         InlineKeyboardButton(text="Paper Settings", callback_data="paper:settings")],
+        [InlineKeyboardButton(text="Manual Paper Snipe", callback_data="paper:snipe"),
+         InlineKeyboardButton(text="Paper History", callback_data="history:paper")],
+        [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
+    ])
+
+
+def _live_menu_keyboard(enabled: bool, ready: bool) -> InlineKeyboardMarkup:
+    rows = []
+    if enabled:
+        rows.append([InlineKeyboardButton(text="⏸ Stop Live Entries", callback_data="live:stop")])
+    elif ready:
+        rows.append([InlineKeyboardButton(text="Confirm Start Live Sniper", callback_data="live:confirm")])
+    rows.extend([
+        [InlineKeyboardButton(text="Refresh Readiness", callback_data="live:check")],
+        [InlineKeyboardButton(text="Live Positions", callback_data="positions:live"),
+         InlineKeyboardButton(text="Live Settings", callback_data="settings:show")],
+        [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _paper_settings_keyboard(config: dict) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=f"Buy {config.get('buy_amount_sol','0.05')} SOL", callback_data="paper:field:buy_amount_sol"),
+         InlineKeyboardButton(text=f"Slippage {config.get('slippage_pct','15')}%", callback_data="paper:field:slippage_pct")],
+        [InlineKeyboardButton(text=f"TP1 +{config.get('take_profit_pct','100')}%", callback_data="paper:field:take_profit_pct"),
+         InlineKeyboardButton(text=f"TP2 +{config.get('take_profit_2_pct','300')}%", callback_data="paper:field:take_profit_2_pct")],
+        [InlineKeyboardButton(text=f"TP2 sells {config.get('take_profit_2_sell_pct','25')}%", callback_data="paper:field:take_profit_2_sell_pct"),
+         InlineKeyboardButton(text=f"Trail {config.get('trailing_stop_pct','20')}%", callback_data="paper:field:trailing_stop_pct")],
+        [InlineKeyboardButton(text=f"Hard stop {config.get('stop_loss_pct','30')}%", callback_data="paper:field:stop_loss_pct"),
+         InlineKeyboardButton(text=f"Hold {int(config.get('max_hold_seconds',14400))//3600}h", callback_data="paper:field:max_hold_seconds")],
+        [InlineKeyboardButton(text=f"Min liquidity {config.get('min_liquidity_sol','5')} SOL", callback_data="paper:field:min_liquidity_sol"),
+         InlineKeyboardButton(text=f"LP locked {config.get('min_lp_locked_pct','80')}%", callback_data="paper:field:min_lp_locked_pct")],
+        [InlineKeyboardButton(text=f"Top 10 ≤ {config.get('max_top10_concentration_pct','25')}%", callback_data="paper:field:max_top10_concentration_pct"),
+         InlineKeyboardButton(text=f"Dev ≤ {config.get('max_dev_wallet_pct','5')}%", callback_data="paper:field:max_dev_wallet_pct")],
+        [InlineKeyboardButton(text="Toggle virtual MEV cost", callback_data="paper:mev")],
+        [InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _paper_menu_text(telegram_id: int) -> str:
+    svc = _svc()
+    paper = svc.engine.paper_engine
+    if paper is None:
+        return "PAPER TRADING IS NOT CONFIGURED."
+    account = await paper.store.account(telegram_id)
+    enabled = await paper.store.mode_enabled(telegram_id, "paper")
+    days = await paper.store.active_days(telegram_id)
+    positions = await paper.store.positions(telegram_id)
+    config = await paper.store.settings(telegram_id, "paper")
+    cash = int(account["cash_balance_lamports"]) if account else 0
+    realized = int(account["realized_pnl_lamports"]) if account else 0
+    unrealized = sum(int(p.get("last_value_lamports") or 0) - int(p.get("initial_cost_lamports") or 0) for p in positions)
+    return (
+        "🧪 9N8 PAPER TRADING\n\n"
+        f"Status: {'RUNNING · VIRTUAL FUNDS ONLY' if enabled else 'PAUSED'}\n"
+        f"Virtual cash: {format_sol(cash)} SOL\n"
+        f"Open practice positions: {len(positions)}\n"
+        f"Realized practice PnL: {format_sol(realized)} SOL\n"
+        f"Marked unrealized PnL: {format_sol(unrealized)} SOL\n"
+        f"Practice days recorded: {days}/7\n\n"
+        f"Buy amount: {config.get('buy_amount_sol','0.05')} SOL\n"
+        f"Liquidity minimum: {config.get('min_liquidity_sol','5')} SOL\n"
+        f"TP1 +{config.get('take_profit_pct','100')}% · TP2 +{config.get('take_profit_2_pct','300')}%\n"
+        f"Trail {config.get('trailing_stop_pct','20')}% · Hard stop -{config.get('stop_loss_pct','30')}%\n\n"
+        "Paper trades use real market quotes and virtual balances. No wallet signing, real Jito tip or on-chain transaction is sent."
+    )
+
+
+async def _live_menu_text(telegram_id: int) -> str:
+    svc = _svc()
+    readiness = await svc.engine.live_readiness(telegram_id)
+    active = await svc.engine.paper_engine.store.mode_enabled(telegram_id, "live") if svc.engine.paper_engine else False
+    lines = [
+        "🔴 9N8 LIVE SOLANA SNIPER", "",
+        "Status: " + ("LIVE ENTRIES ARMED" if active else "OFF"),
+        "Operator live switch: " + ("ON" if readiness["operator_live_switch"] else "OFF"),
+        "Wallet: " + ("connected" if readiness["wallet_connected"] else "not connected"),
+        "Activation: " + ("confirmed" if readiness["activation_confirmed"] else "not confirmed"),
+        f"Paper days: {readiness['paper_days']}/7",
+        f"Wallet balance: {readiness['wallet_balance_sol']} SOL (approximately {readiness['wallet_balance_usd']} USD)",
+        "Minimum wallet value: $10", "",
+        "READINESS: " + ("PASSED" if readiness["ready"] else "BLOCKED"),
+    ]
+    lines.extend(["• " + str(item) for item in readiness["blockers"]])
+    lines.extend(["", "Live mode uses real wallet funds. A token can lose its full value. Starting Live requires a separate confirmation."])
+    return "\n".join(lines)
+
+
+async def _positions_text(telegram_id: int) -> str:
+    svc = _svc()
+    paper_positions = await svc.engine.paper_engine.store.positions(telegram_id) if svc.engine.paper_engine else []
+    live_positions = await svc.db.active_positions(telegram_id)
+    lines = ["📊 POSITIONS · TWO SEPARATE BOOKS", "", "PAPER (VIRTUAL)"]
+    if not paper_positions:
+        lines.append("No open paper positions.")
+    for p in paper_positions[:10]:
+        lines.append(f"• {str(p['mint'])[:8]}… · {p.get('last_pnl_pct','0')}% · {p['token_amount_raw']} raw")
+    lines.extend(["", "LIVE (REAL WALLET)"])
+    if not live_positions:
+        lines.append("No open live positions.")
+    for p in live_positions[:10]:
+        lines.append(f"• {str(p['mint'])[:8]}… · {p['token_amount_raw']} raw · {p.get('exit_reason') or 'monitoring'}")
+    return "\n".join(lines)
+
+
+async def _history_text(telegram_id: int, mode: str = "both") -> str:
+    svc = _svc()
+    lines = ["📜 9N8 TRADE HISTORY", ""]
+    if mode in {"both","paper"}:
+        paper_rows = await svc.engine.paper_engine.store.history(telegram_id,20) if svc.engine.paper_engine else []
+        lines.append("PAPER TRADES · SIMULATED")
+        if not paper_rows:
+            lines.append("No paper trades recorded.")
+        for row in paper_rows[:20]:
+            amount = int(row.get("sol_amount_lamports") or 0)
+            lines.append(
+                f"• {str(row.get('side','')).upper()} {str(row.get('mint',''))[:8]}… · "
+                f"{format_sol(amount)} SOL · {row.get('reason') or 'simulated'}"
+            )
+    if mode in {"both","live"}:
+        live_rows = await svc.db.list_trade_receipts(telegram_id,20)
+        lines.extend(["", "LIVE TRANSACTIONS · BLOCKCHAIN RECEIPTS"])
+        if not live_rows:
+            lines.append("No live blockchain receipts recorded.")
+        for row in live_rows[:20]:
+            signature = str(row.get("signature") or "")
+            lines.append(
+                f"• {str(row.get('event_type','trade')).upper()} · {str(row.get('status','unknown')).upper()} "
+                f"· {str(row.get('mint') or 'SOL')[:8]}…"
+            )
+            lines.append(f"  https://solscan.io/tx/{signature}")
+    return "\n".join(lines)
 
 
 @router.message(Command("start"))
@@ -223,20 +452,476 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     )
 
 
+
+
+async def _show_paper_snipe_preview(message: Message, telegram_id: int, mint_text: str, amount_sol: str = "0.05") -> None:
+    svc = _svc()
+    paper = svc.engine.paper_engine
+    if paper is None:
+        await message.answer("The paper practice engine is not configured.")
+        return
+    if not await paper.store.mode_enabled(telegram_id, "paper"):
+        await message.answer("Start virtual Paper Trading first with /paper_on. No real SOL will be spent.")
+        return
+    try:
+        mint = str(Pubkey.from_string(mint_text.strip()))
+        preview = await paper.preview_mint(telegram_id, mint, amount_sol)
+    except Exception as exc:
+        await message.answer(f"Could not scan this mint: {type(exc).__name__}: {str(exc)[:180]}")
+        return
+    if not preview.get("passed"):
+        reasons = "\n".join("• " + str(item) for item in preview.get("reasons", [])[:6])
+        await message.answer(
+            "🛡️ PAPER SNIPE REJECTED\n"
+            f"Mint: {mint}\n{reasons}\n\n"
+            "No practice buy was recorded."
+        )
+        return
+    _pending_paper_snipes[telegram_id] = {"mint": mint, "preview": preview}
+    risk = preview.get("risk", {})
+    await message.answer(
+        "🎯 MANUAL PAPER SNIPE PREVIEW\n\n"
+        f"Mint: {mint}\n"
+        f"Virtual buy: {preview['buy_amount_sol']} SOL\n"
+        f"Minimum quoted output: {preview['minimum_output_raw']} raw units\n"
+        f"Price impact: {preview.get('price_impact_pct','unknown')}\n"
+        f"Mint authority revoked: {'YES' if risk.get('mint_authority_disabled') else 'NO'}\n"
+        f"Freeze authority revoked: {'YES' if risk.get('freeze_authority_disabled') else 'NO'}\n"
+        f"Top-10 wallet share: {risk.get('top10_concentration_pct','unknown')}%\n"
+        f"Liquidity: {risk.get('liquidity_usd','unknown')} USD\n"
+        f"LP locked/burned: {risk.get('lp_locked_pct','unknown')}%\n\n"
+        "The safety check and price quote are repeated when you confirm. This is virtual money only.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="0.05 SOL",callback_data="paper:snipe:amount:0.05"),
+             InlineKeyboardButton(text="0.10 SOL",callback_data="paper:snipe:amount:0.10")],
+            [InlineKeyboardButton(text="0.25 SOL",callback_data="paper:snipe:amount:0.25"),
+             InlineKeyboardButton(text="0.50 SOL",callback_data="paper:snipe:amount:0.50")],
+            [InlineKeyboardButton(text="Confirm Paper Buy",callback_data="paper:snipe:confirm"),
+             InlineKeyboardButton(text="Cancel",callback_data="paper:snipe:cancel")],
+        ]),
+    )
+
+
+@router.message(Command("paper"))
+async def cmd_paper(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "paper")
+    await message.answer(await _paper_menu_text(message.from_user.id),reply_markup=_paper_menu_keyboard(enabled))
+
+
+@router.message(Command("paper_on"))
+async def cmd_paper_on(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    try:
+        account = await svc.engine.start_paper_user(message.from_user.id)
+        await message.answer(
+            "🧪 PAPER TRADING STARTED\n"
+            "Your practice account has a $1,000 virtual starting value.\n"
+            f"Virtual SOL cash: {format_sol(account['cash_balance_lamports'])} SOL\n"
+            "Your real wallet is not used for paper buys or sells."
+        )
+        await message.answer(await _paper_menu_text(message.from_user.id),reply_markup=_paper_menu_keyboard(True))
+    except Exception as exc:
+        await message.answer(f"Paper mode could not start: {type(exc).__name__}: {str(exc)[:240]}")
+
+
+@router.message(Command("paper_off"))
+async def cmd_paper_off(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    await svc.engine.stop_paper_user(message.from_user.id)
+    await message.answer("Paper entries paused. Existing virtual positions remain monitored.")
+
+
+@router.callback_query(F.data == "paper:menu")
+async def cb_paper_menu(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "paper")
+    await callback.message.edit_text(await _paper_menu_text(callback.from_user.id),reply_markup=_paper_menu_keyboard(enabled))
+
+
+@router.callback_query(F.data == "paper:start")
+async def cb_paper_start(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    try:
+        await svc.engine.start_paper_user(callback.from_user.id)
+        await callback.message.edit_text(await _paper_menu_text(callback.from_user.id),reply_markup=_paper_menu_keyboard(True))
+    except Exception as exc:
+        await callback.message.answer(f"Paper mode could not start: {type(exc).__name__}: {str(exc)[:200]}")
+
+
+@router.callback_query(F.data == "paper:stop")
+async def cb_paper_stop(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    await svc.engine.stop_paper_user(callback.from_user.id)
+    await callback.message.edit_text(await _paper_menu_text(callback.from_user.id),reply_markup=_paper_menu_keyboard(False))
+
+
+@router.message(Command("live"))
+async def cmd_live(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    readiness = await svc.engine.live_readiness(message.from_user.id)
+    enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "live")
+    await message.answer(_live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+
+
+@router.message(Command("live_on"))
+async def cmd_live_on(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    user = await svc.db.get_user(message.from_user.id)
+    if not user or not user.get("activation_paid"):
+        try:
+            price = await svc.oracle.sol_usd()
+            lamports = usd_to_lamports("1.00",price)
+            await message.answer(
+                "LIVE ACTIVATION REQUIRED\n"
+                f"One-time payment: $1.00 ≈ {format_sol(lamports)} SOL.\n"
+                "Nothing is transferred until you press Confirm.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="Confirm $1 Activation",callback_data="activation:confirm"),
+                    InlineKeyboardButton(text="Cancel",callback_data="home:show"),
+                ]]),
+            )
+        except Exception as exc:
+            await message.answer(f"Activation price unavailable: {exc}")
+        return
+    readiness = await svc.engine.live_readiness(message.from_user.id)
+    enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "live")
+    await message.answer(_live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+
+
+@router.message(Command("live_off"))
+async def cmd_live_off(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    await svc.engine.stop_live_user(message.from_user.id)
+    await message.answer("Live entries are OFF. Existing confirmed live positions remain under exit monitoring.")
+
+
+@router.callback_query(F.data == "live:menu")
+async def cb_live_menu(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    readiness = await svc.engine.live_readiness(callback.from_user.id)
+    enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "live")
+    await callback.message.edit_text(_live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+
+
+@router.callback_query(F.data == "live:check")
+async def cb_live_check(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    readiness = await svc.engine.live_readiness(callback.from_user.id)
+    enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "live")
+    await callback.message.edit_text(_live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+
+
+@router.callback_query(F.data == "live:confirm")
+async def cb_live_confirm(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Rechecking all live safety requirements…")
+    try:
+        await svc.engine.start_live_user(callback.from_user.id)
+        await callback.message.edit_text(
+            "🔴 LIVE SNIPER ARMED\n\n"
+            "The live entry engine is enabled for this Telegram account. Paper remains separate.\n\n"
+            + await _live_menu_text(callback.from_user.id),
+            reply_markup=_live_menu_keyboard(True,True),
+        )
+    except Exception as exc:
+        await callback.message.edit_text(
+            "LIVE MODE WAS NOT STARTED\n" + str(exc)[:800] + "\n\n" + await _live_menu_text(callback.from_user.id),
+            reply_markup=_live_menu_keyboard(False,False),
+        )
+
+
+@router.callback_query(F.data == "live:stop")
+async def cb_live_stop(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    await svc.engine.stop_live_user(callback.from_user.id)
+    await callback.message.edit_text(await _live_menu_text(callback.from_user.id),reply_markup=_live_menu_keyboard(False,False))
+
+
+@router.message(Command("positions"))
+async def cmd_positions(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await message.answer(await _positions_text(message.from_user.id))
+
+
+@router.callback_query(F.data == "positions:show")
+async def cb_positions(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(await _positions_text(callback.from_user.id),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Paper Positions",callback_data="positions:paper"),
+         InlineKeyboardButton(text="Live Positions",callback_data="positions:live")],
+        [InlineKeyboardButton(text="Back",callback_data="home:show")],
+    ]))
+
+
+@router.callback_query(F.data == "positions:paper")
+async def cb_paper_positions(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    rows = await svc.engine.paper_engine.store.positions(callback.from_user.id)
+    if not rows:
+        await callback.message.edit_text("No open virtual positions.",reply_markup=_paper_menu_keyboard(False))
+        return
+    lines = ["PAPER POSITIONS · VIRTUAL ONLY",""]
+    for row in rows[:10]:
+        lines.append(
+            f"Mint: {row['mint']}\n"
+            f"PnL: {row.get('last_pnl_pct','0')}%\n"
+            f"Tokens: {row['token_amount_raw']} raw units"
+        )
+    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")]
+    ]))
+
+
+@router.callback_query(F.data == "positions:live")
+async def cb_live_positions(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    rows = await svc.db.active_positions(callback.from_user.id)
+    if not rows:
+        await callback.message.edit_text("No open live positions.",reply_markup=_live_menu_keyboard(False,False))
+        return
+    lines = ["LIVE POSITIONS · REAL WALLET",""]
+    buttons = []
+    for row in rows[:8]:
+        lines.append(f"Mint: {row['mint']}\nTokens: {row['token_amount_raw']} raw\nTarget state: {row.get('exit_reason') or 'monitoring'}")
+        buttons.append([InlineKeyboardButton(text=f"Panic Sell {str(row['mint'])[:7]}…",callback_data=f"position:panic:{row['id']}")])
+    buttons.append([InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")])
+    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.message(Command("settings"))
+async def cmd_settings(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await message.answer("Choose the settings area you want to change.",reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Paper Settings",callback_data="paper:settings")],
+        [InlineKeyboardButton(text="Live Settings",callback_data="settings:show")],
+        [InlineKeyboardButton(text="Back",callback_data="home:show")],
+    ]))
+
+
+@router.message(Command("paper_settings"))
+async def cmd_paper_settings(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    config = await svc.engine.paper_engine.store.settings(message.from_user.id,"paper")
+    await message.answer("PAPER SETTINGS · VIRTUAL ACCOUNT",reply_markup=_paper_settings_keyboard(config))
+
+
+@router.callback_query(F.data == "paper:settings")
+async def cb_paper_settings(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    config = await svc.engine.paper_engine.store.settings(callback.from_user.id,"paper")
+    await callback.message.edit_text("PAPER SETTINGS · VIRTUAL ACCOUNT",reply_markup=_paper_settings_keyboard(config))
+
+
+@router.callback_query(F.data.startswith("paper:field:"))
+async def cb_paper_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    field = callback.data.rsplit(":",1)[-1]
+    await state.set_state(ParameterFlow.value)
+    await state.set_data({"field":field,"mode":"paper"})
+    await callback.message.answer(f"Enter the new paper value for {field}.")
+
+
+@router.callback_query(F.data == "paper:mev")
+async def cb_paper_mev(callback: CallbackQuery) -> None:
+    svc = _svc()
+    config = await svc.engine.paper_engine.store.settings(callback.from_user.id,"paper")
+    await svc.engine.paper_engine.store.update_settings(
+        callback.from_user.id,{"mev_shield":not bool(config.get("mev_shield",True))},"paper"
+    )
+    await callback.answer("Paper fee model updated.")
+    config = await svc.engine.paper_engine.store.settings(callback.from_user.id,"paper")
+    await callback.message.edit_text("PAPER SETTINGS",reply_markup=_paper_settings_keyboard(config))
+
+
+@router.callback_query(F.data.startswith("paper:snipe:amount:"))
+async def cb_paper_snipe_amount(callback: CallbackQuery) -> None:
+    await callback.answer()
+    pending = _pending_paper_snipes.get(callback.from_user.id)
+    if not pending:
+        await callback.message.answer("This preview expired. Run /snipe again.")
+        return
+    amount = callback.data.rsplit(":",1)[-1]
+    await _show_paper_snipe_preview(callback.message,callback.from_user.id,pending["mint"],amount)
+
+
+@router.callback_query(F.data == "paper:snipe:confirm")
+async def cb_paper_snipe_confirm(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Refreshing token safety and market quote…")
+    pending = _pending_paper_snipes.get(callback.from_user.id)
+    if not pending:
+        await callback.message.answer("This preview expired. Run /snipe again.")
+        return
+    try:
+        position_id = await svc.engine.paper_engine.manual_buy(
+            callback.from_user.id,pending["mint"],pending["preview"]
+        )
+        _pending_paper_snipes.pop(callback.from_user.id,None)
+        await callback.message.answer(
+            f"🧪 PAPER BUY RECORDED · Position #{position_id}\n"
+            "Virtual cash only. No wallet signature or blockchain transaction was created."
+        )
+    except Exception as exc:
+        await callback.message.answer(f"Manual paper buy was not recorded: {type(exc).__name__}: {str(exc)[:220]}")
+
+
+@router.callback_query(F.data == "paper:snipe:cancel")
+async def cb_paper_snipe_cancel(callback: CallbackQuery) -> None:
+    _pending_paper_snipes.pop(callback.from_user.id,None)
+    await callback.answer("Cancelled.")
+    await callback.message.edit_text("Manual paper snipe cancelled.",reply_markup=_paper_menu_keyboard(False))
+
+
+@router.message(Command("snipe"))
+async def cmd_snipe(message: Message, state: FSMContext) -> None:
+    if not _is_private(message):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts)>1:
+        await _show_paper_snipe_preview(message,message.from_user.id,parts[1].strip())
+    else:
+        await state.set_state(SnipeFlow.mint)
+        await message.answer("Paste the Solana mint address for a MANUAL PAPER SNIPE preview. No real SOL order will be sent.")
+
+
+@router.callback_query(F.data == "paper:snipe")
+async def cb_paper_snipe(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(SnipeFlow.mint)
+    await callback.message.answer("Paste the Solana token mint address for a virtual paper buy preview.")
+
+
+@router.message(SnipeFlow.mint)
+async def handle_snipe_mint(message: Message, state: FSMContext) -> None:
+    try:
+        await _show_paper_snipe_preview(message,message.from_user.id,(message.text or "").strip())
+    finally:
+        await state.clear()
+
+
+@router.message(Command("safety"))
+async def cmd_safety(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    config = await svc.engine.paper_engine.store.settings(message.from_user.id,"paper")
+    await message.answer(
+        "🛡️ ANTI-RUG GATEKEEPER\n\n"
+        "Always-required checks (cannot be switched off):\n"
+        "✅ Mint authority revoked · ✅ Freeze authority revoked\n"
+        "✅ Creator wallet concentration verified · ✅ Token-2022 extension gate\n"
+        "✅ Top-10 wallet concentration · ✅ Pool liquidity · ✅ LP lock/burn\n\n"
+        f"Minimum liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
+        f"Minimum LP locked/burned: {config.get('min_lp_locked_pct','80')}%\n"
+        f"Maximum top-10 wallet share: {config.get('max_top10_concentration_pct','25')}%\n"
+        f"Maximum developer wallet share: {config.get('max_dev_wallet_pct','5')}%\n\n"
+        "A token is rejected when any required security result cannot be verified.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Edit Safety Thresholds",callback_data="paper:settings")],
+            [InlineKeyboardButton(text="Back",callback_data="home:show")],
+        ]),
+    )
+
+
+@router.message(Command("history"))
+async def cmd_history(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await message.answer(await _history_text(message.from_user.id,"both"))
+
+
+@router.callback_query(F.data == "history:show")
+async def cb_history_show(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(await _history_text(callback.from_user.id,"both"),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Paper History",callback_data="history:paper"),
+         InlineKeyboardButton(text="Live Receipts",callback_data="history:live")],
+        [InlineKeyboardButton(text="Back",callback_data="home:show")],
+    ]))
+
+
+@router.callback_query(F.data == "history:paper")
+async def cb_history_paper(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(await _history_text(callback.from_user.id,"paper"),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")],
+        [InlineKeyboardButton(text="All History",callback_data="history:show")],
+    ]))
+
+
+@router.callback_query(F.data == "history:live")
+async def cb_history_live(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(await _history_text(callback.from_user.id,"live"),reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")],
+        [InlineKeyboardButton(text="All History",callback_data="history:show")],
+    ]))
+
+
+@router.message(Command("withdraw"))
+async def cmd_withdraw(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await message.answer(
+        "Wallet withdrawals move real SOL only. Virtual Paper funds cannot be withdrawn. "
+        "Close all open real-wallet positions before withdrawing.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Open Wallet Withdrawal",callback_data="wallet:exit")],
+            [InlineKeyboardButton(text="Back",callback_data="home:show")],
+        ]),
+    )
+
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     if not _is_private(message):
         return
     await message.answer(
-        "9N8 COMMANDS\n"
-        "/start — dashboard\n"
-        "/status — wallet and engine status\n"
-        "/help — this help\n\n"
-        "Use the dashboard buttons to create/import a wallet, deposit SOL, set sniper "
-        "parameters, execute or pause the bot, withdraw, or rotate the wallet.\n\n"
-        "The live Solana executor is disabled unless N9N8_TRADING_MODE=live and "
-        "LIVE_TRADING_ENABLED=true are set by the operator. Keep paper mode enabled "
-        "until you have tested the complete flow."
+        "9N8 COMMANDS · PAPER AND LIVE ARE SEPARATE\n\n"
+        "/start — main dashboard\n"
+        "/paper — virtual practice account\n"
+        "/paper_on — start paper entries\n"
+        "/paper_off — pause paper entries\n"
+        "/paper_settings — edit paper rules\n"
+        "/live — show live readiness and safety locks\n"
+        "/live_on — request live activation after all checks pass\n"
+        "/live_off — stop new live entries\n"
+        "/snipe MINT — scan a token for a manual paper buy\n"
+        "/positions — show paper and live positions separately\n"
+        "/settings — choose paper or live settings\n"
+        "/safety — show anti-rug requirements\n"
+        "/history — show paper trade history\n"
+        "/withdraw — start a real-wallet withdrawal\n"
+        "/status — dashboard and mode status\n"
+        "/help — this guide\n\n"
+        "Paper mode uses virtual SOL only. Live mode can use real SOL and remains locked "
+        "unless the operator enables LIVE_TRADING_ENABLED and the wallet, activation, "
+        "seven paper days and $10 balance requirements pass."
     )
 
 
@@ -445,8 +1130,14 @@ def _validated_setting(field: str, raw: str):
         "jito_tip_lamports": (Decimal("0"), Decimal("100000000")),
         "take_profit_pct": (Decimal("0.5"), Decimal("500")),
         "stop_loss_pct": (Decimal("0.5"), Decimal("95")),
-        "max_hold_seconds": (Decimal("5"), Decimal("3600")),
+        "max_hold_seconds": (Decimal("5"), Decimal("86400")),
         "moon_bag_pct": (Decimal("0"), Decimal("90")),
+        "take_profit_2_pct": (Decimal("1"), Decimal("1000")),
+        "take_profit_2_sell_pct": (Decimal("1"), Decimal("90")),
+        "trailing_stop_pct": (Decimal("1"), Decimal("80")),
+        "min_liquidity_sol": (Decimal("0.1"), Decimal("100000")),
+        "min_lp_locked_pct": (Decimal("50"), Decimal("100")),
+        "max_dev_wallet_pct": (Decimal("0.1"), Decimal("100")),
         "daily_position_limit": (Decimal("1"), Decimal("100")),
         "max_daily_drawdown_pct": (Decimal("1"), Decimal("50")),
         "max_top10_concentration_pct": (Decimal("1"), Decimal("100")),
@@ -468,16 +1159,26 @@ async def handle_parameter_value(message: Message, state: FSMContext) -> None:
     svc = _svc()
     data = await state.get_data()
     field = data.get("field")
+    mode = str(data.get("mode", "live"))
     try:
         value = _validated_setting(field, message.text or "")
-        await svc.db.update_settings(message.from_user.id, {field: value})
-        await message.answer("Setting saved.")
+        if mode == "paper":
+            if not svc.engine.paper_engine:
+                raise ValueError("Paper engine is not available.")
+            await svc.engine.paper_engine.store.update_settings(message.from_user.id, {field: value}, "paper")
+        else:
+            await svc.db.update_settings(message.from_user.id, {field: value})
+        await message.answer(f"{mode.title()} setting saved.")
     except (ValueError, TypeError) as exc:
         await message.answer(f"Setting was not changed: {exc}")
     finally:
         await state.clear()
-    config = await svc.db.get_settings(message.from_user.id)
-    await message.answer("CURRENT 9N8 SETTINGS", reply_markup=_settings_keyboard(config))
+    if mode == "paper" and svc.engine.paper_engine:
+        config = await svc.engine.paper_engine.store.settings(message.from_user.id, "paper")
+        await message.answer("PAPER SETTINGS", reply_markup=_paper_settings_keyboard(config))
+    else:
+        config = await svc.db.get_settings(message.from_user.id)
+        await message.answer("LIVE SETTINGS", reply_markup=_settings_keyboard(config))
 
 
 @router.callback_query(F.data == "fees:show")
@@ -505,40 +1206,24 @@ async def cb_fees(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "engine:execute")
 async def cb_execute(callback: CallbackQuery) -> None:
-    svc = _svc()
     await callback.answer()
-    user = await svc.db.get_user(callback.from_user.id)
-    if not user or not user.get("solana_address"):
-        await callback.message.answer("Create or import your Solana wallet first.")
-        return
-    if svc.settings.trading_mode == "live" and not user.get("activation_paid"):
-        try:
-            price = await svc.oracle.sol_usd(force=True)
-            lamports = usd_to_lamports("1.00", price)
-            await callback.message.answer(
-                "LIVE ACTIVATION FEE\n\n"
-                f"One-time fee: 1.00 USD ≈ {format_sol(lamports)} SOL\n"
-                f"Price source: {svc.oracle.source}\n"
-                "Press Confirm only if you authorize the transfer to the configured Master Treasury.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="Confirm $1 Activation", callback_data="activation:confirm"),
-                    InlineKeyboardButton(text="Cancel", callback_data="home:show"),
-                ]]),
-            )
-        except Exception as exc:
-            await callback.message.answer(f"Activation is locked: {exc}")
-        return
-    try:
-        mode = await svc.engine.start_user(callback.from_user.id)
-        await callback.message.answer(f"9N8 started.\nMode: {mode}")
-    except Exception as exc:
-        await callback.message.answer(f"Could not start 9N8: {exc}")
+    svc = _svc()
+    readiness = await svc.engine.live_readiness(callback.from_user.id)
+    enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "live")
+    await callback.message.answer(
+        await _live_menu_text(callback.from_user.id),
+        reply_markup=_live_menu_keyboard(enabled, readiness["ready"]),
+    )
 
 
 @router.callback_query(F.data == "activation:confirm")
 async def cb_activation_confirm(callback: CallbackQuery) -> None:
     svc = _svc()
-    await callback.answer()
+    await callback.answer("Confirming the activation payment…")
+    user = await svc.db.get_user(callback.from_user.id)
+    if user and user.get("activation_paid"):
+        await callback.message.answer("Activation is already paid. Check /live for readiness.")
+        return
     try:
         amount, signature = await svc.wallet.transfer_usd_fee(
             callback.from_user.id,
@@ -547,21 +1232,24 @@ async def cb_activation_confirm(callback: CallbackQuery) -> None:
             f"activation:{callback.from_user.id}",
         )
         await svc.db.set_activation_paid(callback.from_user.id, True)
-        mode = await svc.engine.start_user(callback.from_user.id)
+        readiness = await svc.engine.live_readiness(callback.from_user.id)
         await callback.message.answer(
             f"Activation paid: {format_sol(amount)} SOL\n"
-            f"Receipt: https://solscan.io/tx/{signature}\n"
-            f"Engine: {mode}"
+            f"Receipt: https://solscan.io/tx/{signature}\n\n"
+            "This payment does not start live trading. Review your remaining requirements with /live.\n"
+            + "\n".join("• " + str(item) for item in readiness["blockers"]),
+            reply_markup=_live_menu_keyboard(False, readiness["ready"]),
         )
     except Exception as exc:
-        await callback.message.answer(f"Activation was not completed: {exc}")
+        await callback.message.answer(f"Activation was not completed: {type(exc).__name__}: {str(exc)[:220]}")
 
 
 @router.callback_query(F.data == "engine:stop")
 async def cb_stop(callback: CallbackQuery) -> None:
     svc = _svc()
     await callback.answer()
-    await svc.engine.stop_user(callback.from_user.id)
+    await svc.engine.stop_live_user(callback.from_user.id)
+    await callback.message.answer("Live entries paused. Paper mode has not been changed.")
 
 
 @router.callback_query(F.data == "wallet:exit")

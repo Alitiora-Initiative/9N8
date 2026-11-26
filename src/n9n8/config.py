@@ -113,7 +113,7 @@ class Settings:
             webapp_port=int(os.getenv("WEBAPP_PORT", os.getenv("PORT", "8080"))),
             pyth_api_key=os.getenv("PYTH_API_KEY", "").strip(),
             max_users=int(os.getenv("N9N8_MAX_USERS", "100")),
-            max_position_sol=os.getenv("N9N8_MAX_POSITION_SOL", "0.25").strip(),
+            max_position_sol=os.getenv("N9N8_MAX_POSITION_SOL", "0.50").strip(),
             default_buy_sol=os.getenv("N9N8_DEFAULT_BUY_SOL", "0.05").strip(),
             default_daily_trades=int(os.getenv("N9N8_DEFAULT_DAILY_TRADES", "5")),
         )
