@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
@@ -24,6 +25,7 @@ from .math_engine import format_sol, from_lamports
 from .oracle import PriceOracle
 from .telemetry import TelemetryHub
 from .wallet import WalletManager
+from .vercel_queue import VercelQueueClient, VercelQueueError
 
 logger = logging.getLogger(__name__)
 WEBAPP_DIR = Path(__file__).resolve().parents[2] / "webapp"
@@ -103,6 +105,7 @@ def create_webapp(
     oracle: PriceOracle,
     bot: Bot,
     telemetry: TelemetryHub | None,
+    worker_queue: VercelQueueClient | None = None,
 ) -> FastAPI:
     app = FastAPI(title="9N8 Telegram Mini App", docs_url=None, redoc_url=None)
     app.state.db = db
@@ -111,6 +114,7 @@ def create_webapp(
     app.state.oracle = oracle
     app.state.bot = bot
     app.state.telemetry = telemetry
+    app.state.worker_queue = worker_queue
     if WEBAPP_DIR.exists():
         app.mount("/assets", StaticFiles(directory=str(WEBAPP_DIR)), name="assets")
 
@@ -125,6 +129,27 @@ def create_webapp(
             return telegram_id
         except ValueError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    async def wake_worker(request: Request, payload: dict[str, Any], idempotency_key: str) -> None:
+        if worker_queue is None:
+            raise HTTPException(status_code=503, detail="Persistent worker queue is not configured.")
+        token = (
+            request.headers.get("x-vercel-oidc-token")
+            or os.getenv("VERCEL_QUEUE_API_TOKEN", "")
+        )
+        try:
+            await worker_queue.send(
+                settings.vercel_queue_topic,
+                payload,
+                token,
+                idempotency_key,
+            )
+        except VercelQueueError as exc:
+            logger.warning("Worker wake-up failed after Neon state was saved (%s)", type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="Your request was saved, but the worker could not be notified. Check its status before repeating any funds movement.",
+            ) from exc
 
     @app.get("/")
     async def index():
@@ -173,17 +198,28 @@ def create_webapp(
     @app.post("/api/settings")
     async def post_settings(
         patch: SettingsUpdate,
+        request: Request,
         x_telegram_init_data: str | None = Header(default=None),
     ):
         telegram_id = await authorize_header(x_telegram_init_data)
         try:
             values = _validate_settings(patch.values)
-            return await db.update_settings(telegram_id, values)
+            updated = await db.update_settings(telegram_id, values)
+            if engine is None:
+                await wake_worker(
+                    request,
+                    {"kind": "sync_user", "telegram_id": telegram_id},
+                    f"settings:{telegram_id}:{uuid.uuid4().hex}",
+                )
+            return updated
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/engine/start")
-    async def start_engine(x_telegram_init_data: str | None = Header(default=None)):
+    async def start_engine(
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
         telegram_id = await authorize_header(x_telegram_init_data)
         try:
             user = await db.get_user(telegram_id)
@@ -199,6 +235,11 @@ def create_webapp(
                 return {"ok": True, "mode": mode, "enabled": True}
             config = await db.update_settings(telegram_id, {"enabled": True})
             await db.security_event(telegram_id, "engine_start_requested", "Start requested through the Vercel Mini App.")
+            await wake_worker(
+                request,
+                {"kind": "sync_user", "telegram_id": telegram_id},
+                f"start:{telegram_id}:{uuid.uuid4().hex}",
+            )
             return {
                 "ok": True,
                 "mode": settings.trading_mode,
@@ -211,18 +252,27 @@ def create_webapp(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/engine/stop")
-    async def stop_engine(x_telegram_init_data: str | None = Header(default=None)):
+    async def stop_engine(
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
         telegram_id = await authorize_header(x_telegram_init_data)
         if engine is not None:
             await engine.stop_user(telegram_id)
         else:
             await db.update_settings(telegram_id, {"enabled": False})
             await db.security_event(telegram_id, "engine_stop_requested", "Stop requested through the Vercel Mini App.")
+            await wake_worker(
+                request,
+                {"kind": "sync_user", "telegram_id": telegram_id},
+                f"stop:{telegram_id}:{uuid.uuid4().hex}",
+            )
         return {"ok": True, "enabled": False}
 
     @app.post("/api/positions/{position_id}/panic")
     async def panic_sell(
         position_id: int,
+        request: Request,
         x_telegram_init_data: str | None = Header(default=None),
     ):
         telegram_id = await authorize_header(x_telegram_init_data)
@@ -237,6 +287,11 @@ def create_webapp(
                 telegram_id, "panic_sell", {"position_id": position_id},
                 f"webapp:panic:{telegram_id}:{position_id}",
             )
+            await wake_worker(
+                request,
+                {"kind": "job", "job_id": int(job["id"]), "telegram_id": telegram_id},
+                f"job:{job['id']}",
+            )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Panic sell queued for the persistent worker."}
         except HTTPException:
             raise
@@ -246,6 +301,7 @@ def create_webapp(
     @app.post("/api/wallet/withdraw")
     async def withdraw(
         action: ActionRequest,
+        request: Request,
         x_telegram_init_data: str | None = Header(default=None),
     ):
         telegram_id = await authorize_header(x_telegram_init_data)
@@ -265,6 +321,11 @@ def create_webapp(
                 telegram_id, "withdraw_all", {"destination": destination},
                 f"webapp:withdraw:{telegram_id}:{await db.get_wallet_address(telegram_id)}:{await wallet.balance(telegram_id)}:{destination}",
             )
+            await wake_worker(
+                request,
+                {"kind": "job", "job_id": int(job["id"]), "telegram_id": telegram_id},
+                f"job:{job['id']}",
+            )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Withdrawal queued. The bot will send its result in Telegram."}
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -272,6 +333,7 @@ def create_webapp(
     @app.post("/api/wallet/wipe")
     async def wipe(
         action: ActionRequest,
+        request: Request,
         x_telegram_init_data: str | None = Header(default=None),
     ):
         telegram_id = await authorize_header(x_telegram_init_data)
@@ -304,6 +366,11 @@ def create_webapp(
             job = await db.enqueue_job(
                 telegram_id, "rotate_wallet", {"destination": destination},
                 f"webapp:rotate:{telegram_id}:{await db.get_wallet_address(telegram_id)}",
+            )
+            await wake_worker(
+                request,
+                {"kind": "job", "job_id": int(job["id"]), "telegram_id": telegram_id},
+                f"job:{job['id']}",
             )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Wallet rotation queued for the persistent worker."}
         except Exception as exc:
