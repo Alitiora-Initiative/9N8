@@ -291,7 +291,7 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show"),
         ],
         [
-            InlineKeyboardButton(text="Create Wallet", callback_data="wallet:create"),
+            InlineKeyboardButton(text="💼 Manage Wallet", callback_data="network:wallets"),
             InlineKeyboardButton(text="Import Wallet", callback_data="wallet:import"),
         ],
         [
@@ -1201,14 +1201,14 @@ async def _live_positions_view(rows: list[dict]) -> tuple[str, InlineKeyboardMar
         entry = int(row.get("initial_cost_lamports") or 0)
         current = int(row.get("last_value_lamports") or 0)
         realized = int(row.get("realized_lamports") or 0)
-        pnl = realized + current - entry
+        pnl = realized + current - entry if current > 0 else None
         phase = "MOONBAG · TRAILING ACTIVE" if bool(row.get("tp1_done")) else "INITIAL · WAITING FOR TP1"
         lines.append(
             f"{mint}\n"
             f"• Invested: {format_sol(entry)} SOL\n"
-            f"• Current marked value: {format_sol(current)} SOL\n"
+            f"• Current marked value: {format_sol(current) + ' SOL' if current > 0 else 'Not available'}\n"
             f"• Realized PnL: {format_sol(realized)} SOL\n"
-            f"• Estimated total PnL: {format_sol(pnl)} SOL ({row.get('last_pnl_pct','0')}% last mark)\n"
+            f"• Estimated total PnL: {format_sol(pnl) + ' SOL' if pnl is not None else 'Not available'} ({row.get('last_pnl_pct','0')}% last mark)\n"
             f"• Tokens: {row['token_amount_raw']} raw units\n"
             f"• Phase: {phase}"
         )
@@ -1320,9 +1320,21 @@ async def cb_live_sell50(callback: CallbackQuery) -> None:
     try:
         position_id = int(callback.data.rsplit(":", 1)[-1])
         await svc.engine.sell_position_percent(callback.from_user.id, position_id, 50)
-        await callback.message.answer("50% sell was processed by the live engine. Check the on-chain receipt before another trade.")
+        rows = await svc.db.active_positions(callback.from_user.id)
+        text, keyboard = await _live_positions_view(rows)
+        await callback.message.edit_text(
+            "✅ 50% sell submitted. Verify the on-chain receipt in Live History.\n\n" + text,
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
+        )
     except Exception as exc:
-        await callback.message.answer(f"50% sell was not completed: {type(exc).__name__}: {str(exc)[:200]}")
+        await callback.message.edit_text(
+            f"50% sell was not completed: {type(exc).__name__}: {str(exc)[:220]}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Refresh Live Positions", callback_data="positions:live")],
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
+        )
 
 
 @router.message(Command("settings"))
@@ -2538,10 +2550,22 @@ async def cb_evm_chain_select(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("position:panic:"))
 async def cb_panic_sell(callback: CallbackQuery) -> None:
     svc = _svc()
-    await callback.answer()
+    await callback.answer("Submitting 100% position exit…")
     try:
         position_id = int(callback.data.rsplit(":", 1)[-1])
         await svc.engine.panic_sell(callback.from_user.id, position_id)
-        await callback.message.answer("Panic sell submitted. Check the trade alert for confirmation.")
+        rows = await svc.db.active_positions(callback.from_user.id)
+        text, keyboard = await _live_positions_view(rows)
+        await callback.message.edit_text(
+            "✅ Full-position exit submitted. Verify its Solscan receipt.\n\n" + text,
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
+        )
     except Exception as exc:
-        await callback.message.answer(f"Panic sell failed: {exc}")
+        await callback.message.edit_text(
+            f"100% position exit failed: {type(exc).__name__}: {str(exc)[:220]}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Refresh Live Positions", callback_data="positions:live")],
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
+        )
