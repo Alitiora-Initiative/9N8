@@ -10,6 +10,7 @@ from .helius import HeliusClient
 from .oracle import PriceOracle
 from .postgres_database import PostgresDatabase
 from .wallet import WalletManager
+from .vercel_queue import VercelQueueClient
 from .webapp_server import create_webapp
 
 logger = logging.getLogger("9n8.vercel")
@@ -28,9 +29,10 @@ def create_serverless_app():
     oracle = PriceOracle(api_key=settings.pyth_api_key)
     wallet = WalletManager(helius, db, oracle, settings.treasury)
     bot = Bot(settings.telegram_bot_token)
+    worker_queue = VercelQueueClient(settings.vercel_queue_region)
 
-    # Vercel handles only request/response work. The Render worker owns
-    # Telegram polling, Helius subscriptions, launch detection and execution.
+    # Vercel handles only request/response work. The Daemon owns Telegram
+    # polling, Helius subscriptions, launch detection and transaction execution.
     app = create_webapp(
         settings=settings,
         db=db,
@@ -39,17 +41,20 @@ def create_serverless_app():
         oracle=oracle,
         bot=bot,
         telemetry=None,
+        worker_queue=worker_queue,
     )
 
     @app.on_event("startup")
     async def initialize_services() -> None:
         await db.initialize()
+        await worker_queue.start()
 
     @app.on_event("shutdown")
     async def close_services() -> None:
         await oracle.close()
         await helius.close()
         await bot.session.close()
+        await worker_queue.close()
         await db.close()
 
     @app.get("/api/worker/status")
