@@ -6,6 +6,44 @@ export const MAX_OPEN_SWAP_REQUESTS = 1;
 export const MAX_PRICE_IMPACT_FRACTION = 0.02; // reject >2%
 export const SWAP_QUOTE_TTL_SECONDS = 55;
 
+export const JUPITER_EXPIRY_SAFETY_MARGIN_MS = 1_500;
+const AGGREGATOR_ROUTERS = new Set(["metis", "dflow", "okx"]);
+
+export function assertJupiterOrderExpiry(order: any, nowMs = Date.now()): string {
+  const router = String(order?.router ?? "").trim().toLowerCase();
+  if (router === "jupiterz") {
+    const expiry = typeof order?.expireAt === "string" ? Date.parse(order.expireAt) : NaN;
+    if (!Number.isFinite(expiry) || expiry <= nowMs + JUPITER_EXPIRY_SAFETY_MARGIN_MS) {
+      throw new Error("jupiter_rfq_quote_expired_or_expiry_missing");
+    }
+    return new Date(Math.min(nowMs + SWAP_QUOTE_TTL_SECONDS * 1_000,
+      expiry - JUPITER_EXPIRY_SAFETY_MARGIN_MS)).toISOString();
+  }
+  if (AGGREGATOR_ROUTERS.has(router)) {
+    const height = Number(order?.lastValidBlockHeight);
+    if (!Number.isSafeInteger(height) || height <= 0) {
+      throw new Error("jupiter_last_valid_block_height_missing");
+    }
+    return new Date(nowMs + SWAP_QUOTE_TTL_SECONDS * 1_000).toISOString();
+  }
+  throw new Error("jupiter_router_unsupported_for_expiry_validation");
+}
+
+export function assertJupiterBlockHeightValid(lastValidBlockHeight: unknown, currentBlockHeight: unknown): void {
+  const lastValid = Number(lastValidBlockHeight);
+  const current = Number(currentBlockHeight);
+  if (!Number.isSafeInteger(lastValid) || lastValid <= 0 ||
+      !Number.isSafeInteger(current) || current <= 0) throw new Error("jupiter_block_height_invalid");
+  if (current > lastValid) throw new Error("jupiter_transaction_blockhash_expired");
+}
+
+export function assertJupiterRfqQuoteValid(expireAt: unknown, nowMs = Date.now()): void {
+  const expiry = typeof expireAt === "string" ? Date.parse(expireAt) : NaN;
+  if (!Number.isFinite(expiry) || expiry <= nowMs + JUPITER_EXPIRY_SAFETY_MARGIN_MS) {
+    throw new Error("jupiter_rfq_quote_expired_or_expiry_missing");
+  }
+}
+
 export function decimalToRaw(value: string, decimals: number): bigint {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) {
     throw new Error("token_decimals_invalid");

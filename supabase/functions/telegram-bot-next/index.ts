@@ -1,7 +1,8 @@
 import { isAddress as isEvmAddress, verifyMessage as verifyEvmMessage } from "npm:viem@2.58.4";
 import { PublicKey, VersionedTransaction } from "npm:@solana/web3.js@1.98.4";
 import {
-  assertSolanaOrder, base58Encode, base64ToBytes, decimalToRaw,
+  assertSolanaOrder, assertJupiterBlockHeightValid, assertJupiterOrderExpiry,
+  assertJupiterRfqQuoteValid, base58Encode, base64ToBytes, decimalToRaw,
   jupiterApi, MAX_SWAP_SOL_LAMPORTS, DAILY_SWAP_SOL_LAMPORTS,
   priceImpactFraction, rawToDecimal, sha256HexBytes, SOL_MINT, SWAP_QUOTE_TTL_SECONDS,
 } from "./jupiter-live.ts";
@@ -1125,7 +1126,7 @@ async function createJupiterSwapOrder(user: any, row: any, body: any): Promise<R
   if (dailyTotal + solEquivalent > DAILY_SWAP_SOL_LAMPORTS) throw new Error("swap_daily_cap_exceeded");
 
   const messageHash = await sha256HexBytes(tx.message.serialize());
-  const expiresAt = new Date(Date.now() + SWAP_QUOTE_TTL_SECONDS * 1000).toISOString();
+  const expiresAt = assertJupiterOrderExpiry(order);
   const stored = await db("n8_jupiter_swaps", "POST", {
     user_id: row.id,
     wallet_connection_id: wallet.id,
@@ -1147,8 +1148,9 @@ async function createJupiterSwapOrder(user: any, row: any, body: any): Promise<R
       mode: order.mode ?? "ultra",
       feeBps: order.feeBps ?? null,
       feeMint: order.feeMint ?? null,
-      lastValidBlockHeight: order.lastValidBlockHeight ?? null,
-      expireAt: order.expireAt ?? null,
+      router: String(order.router ?? ""),
+      lastValidBlockHeight: order.lastValidBlockHeight == null ? null : String(order.lastValidBlockHeight),
+      expireAt: order.expireAt == null ? null : String(order.expireAt),
     },
   }, "return=representation");
   const saved = Array.isArray(stored) ? stored[0] : null;
@@ -1202,6 +1204,45 @@ async function executeJupiterSwap(user: any, row: any, body: any): Promise<Respo
       "PATCH", { status: "expired", updated_at: new Date().toISOString() }, "return=minimal"
     );
     throw new Error("swap_quote_expired");
+  }
+
+  // Verify Jupiter's provider expiry immediately before execution. This is
+  // independent of the local quote TTL and fails closed on RPC uncertainty.
+  const savedRouter = String(saved.router ?? saved.quote_metadata?.router ?? "").toLowerCase();
+  if (savedRouter === "jupiterz") {
+    try {
+      assertJupiterRfqQuoteValid(saved.quote_metadata?.expireAt);
+    } catch {
+      await db(
+        "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) +
+          "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.quote_ready",
+        "PATCH", { status: "expired", updated_at: new Date().toISOString() }, "return=minimal"
+      );
+      throw new Error("swap_rfq_quote_expired");
+    }
+  } else {
+    try {
+      const rpc = await fetch(SOLANA_RPC_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getBlockHeight", params: [{ commitment: "confirmed" }] }),
+        cache: "no-store",
+        credentials: "omit",
+      });
+      const payload = await rpc.json().catch(() => ({}));
+      if (!rpc.ok || payload?.error || !Number.isSafeInteger(Number(payload?.result))) {
+        throw new Error("solana_block_height_unavailable");
+      }
+      assertJupiterBlockHeightValid(saved.quote_metadata?.lastValidBlockHeight, payload.result);
+    } catch {
+      await db(
+        "n8_jupiter_swaps?id=eq." + encodeURIComponent(orderId) +
+          "&user_id=eq." + encodeURIComponent(row.id) + "&status=eq.quote_ready",
+        "PATCH", { status: "expired", result_payload: { error: "expiry_validation_failed" }, updated_at: new Date().toISOString() },
+        "return=minimal"
+      );
+      throw new Error("swap_expiry_validation_failed");
+    }
   }
 
   const certificationRows = await db(
