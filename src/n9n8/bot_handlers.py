@@ -37,6 +37,10 @@ class WithdrawFlow(StatesGroup):
     destination = State()
 
 
+class SnipeFlow(StatesGroup):
+    mint = State()
+
+
 class WipeFlow(StatesGroup):
     destination = State()
 
@@ -51,6 +55,7 @@ class AppServices:
 
 
 services: AppServices | None = None
+_pending_paper_snipes: dict[int, dict] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
@@ -72,30 +77,104 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if webapp_url.startswith("https://"):
         rows.append([InlineKeyboardButton(
-            text="Open 9N8 Live Terminal",
+            text="Open 9N8 Control Panel",
             web_app=WebAppInfo(url=webapp_url),
         )])
     rows.extend([
+        [
+            InlineKeyboardButton(text="🧪 Paper Trading", callback_data="paper:menu"),
+            InlineKeyboardButton(text="🔴 Live Solana Sniper", callback_data="live:menu"),
+        ],
+        [
+            InlineKeyboardButton(text="📊 Positions", callback_data="positions:show"),
+            InlineKeyboardButton(text="📜 Trade History", callback_data="history:show"),
+        ],
+        [
+            InlineKeyboardButton(text="⚙️ Paper Settings", callback_data="paper:settings"),
+            InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show"),
+        ],
         [
             InlineKeyboardButton(text="Create Wallet", callback_data="wallet:create"),
             InlineKeyboardButton(text="Import Wallet", callback_data="wallet:import"),
         ],
         [
-            InlineKeyboardButton(text="Deposit Funds", callback_data="deposit:show"),
-            InlineKeyboardButton(text="Sniper Setup", callback_data="settings:show"),
+            InlineKeyboardButton(text="Deposit SOL", callback_data="deposit:show"),
+            InlineKeyboardButton(text="Withdraw SOL", callback_data="wallet:exit"),
         ],
-        [
-            InlineKeyboardButton(text="MEV & Fees", callback_data="fees:show"),
-            InlineKeyboardButton(text="Risk Limits", callback_data="settings:risk"),
-        ],
-        [
-            InlineKeyboardButton(text="Execute Bot", callback_data="engine:execute"),
-            InlineKeyboardButton(text="Stop Bot", callback_data="engine:stop"),
-        ],
-        [InlineKeyboardButton(text="Withdraw & Reset", callback_data="wallet:exit")],
-        [InlineKeyboardButton(text="Refresh Status", callback_data="status:show")],
+        [InlineKeyboardButton(text="Refresh Dashboard", callback_data="status:show")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _mode_keyboard(mode: str, enabled: bool) -> InlineKeyboardMarkup:
+    if mode == "paper":
+        rows = [
+            [InlineKeyboardButton(
+                text="⏸ Stop Paper Entries" if enabled else "▶ Start Paper Trading",
+                callback_data="paper:stop" if enabled else "paper:start",
+            )],
+            [
+                InlineKeyboardButton(text="Open Paper Positions", callback_data="positions:paper"),
+                InlineKeyboardButton(text="Paper Settings", callback_data="paper:settings"),
+            ],
+            [
+                InlineKeyboardButton(text="Manual Paper Snipe", callback_data="paper:snipe"),
+                InlineKeyboardButton(text="Paper History", callback_data="history:paper"),
+            ],
+            [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
+        ]
+    else:
+        rows = [
+            [InlineKeyboardButton(
+                text="🔴 Stop Live Entries" if enabled else "Check Live Readiness",
+                callback_data="live:stop" if enabled else "live:check",
+            )],
+            [
+                InlineKeyboardButton(text="Live Positions", callback_data="positions:live"),
+                InlineKeyboardButton(text="Live Settings", callback_data="settings:show"),
+            ],
+            [
+                InlineKeyboardButton(text="Wallet Balance", callback_data="deposit:show"),
+                InlineKeyboardButton(text="Live History", callback_data="history:live"),
+            ],
+            [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
+        ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _paper_settings_keyboard(config: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"Buy {config.get('buy_amount_sol','0.05')} SOL", callback_data="paper:field:buy_amount_sol"),
+            InlineKeyboardButton(text=f"Slippage {config.get('slippage_pct','15')}%", callback_data="paper:field:slippage_pct"),
+        ],
+        [
+            InlineKeyboardButton(text=f"TP1 +{config.get('take_profit_pct','100')}%", callback_data="paper:field:take_profit_pct"),
+            InlineKeyboardButton(text=f"TP2 +{config.get('take_profit_2_pct','300')}%", callback_data="paper:field:take_profit_2_pct"),
+        ],
+        [
+            InlineKeyboardButton(text=f"TP2 Sell {config.get('take_profit_2_sell_pct','25')}%", callback_data="paper:field:take_profit_2_sell_pct"),
+            InlineKeyboardButton(text=f"Trail {config.get('trailing_stop_pct','20')}%", callback_data="paper:field:trailing_stop_pct"),
+        ],
+        [
+            InlineKeyboardButton(text=f"Hard Stop {config.get('stop_loss_pct','30')}%", callback_data="paper:field:stop_loss_pct"),
+            InlineKeyboardButton(text=f"Hold {int(config.get('max_hold_seconds',14400))//3600}h", callback_data="paper:field:max_hold_seconds"),
+        ],
+        [
+            InlineKeyboardButton(text=f"Jito Estimate {format_sol(int(config.get('jito_tip_lamports',2000000)))} SOL", callback_data="paper:field:jito_tip_lamports"),
+            InlineKeyboardButton(text=f"Min Liquidity {config.get('min_liquidity_sol','5')} SOL", callback_data="paper:field:min_liquidity_sol"),
+        ],
+        [
+            InlineKeyboardButton(text=f"LP Locked {config.get('min_lp_locked_pct','80')}%", callback_data="paper:field:min_lp_locked_pct"),
+            InlineKeyboardButton(text=f"Top 10 ≤ {config.get('max_top10_concentration_pct','25')}%", callback_data="paper:field:max_top10_concentration_pct"),
+        ],
+        [InlineKeyboardButton(text=f"Max Developer {config.get('max_dev_wallet_pct','5')}%", callback_data="paper:field:max_dev_wallet_pct")],
+        [
+            InlineKeyboardButton(text="Launchpad: Both" if config.get("launchpad","both")=="both" else f"Launchpad: {config.get('launchpad')}", callback_data="paper:launchpad"),
+            InlineKeyboardButton(text="MEV Shield: " + ("ON" if config.get("mev_shield",True) else "OFF"), callback_data="paper:mev"),
+        ],
+        [InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")],
+    ])
 
 
 def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
@@ -179,30 +258,37 @@ async def _dashboard_text(telegram_id: int) -> str:
     svc = _svc()
     await svc.db.ensure_user(telegram_id)
     user = await svc.db.get_user(telegram_id)
-    config = await svc.db.get_settings(telegram_id)
+    live_config = await svc.db.get_settings(telegram_id)
     address = (user or {}).get("solana_address")
-    balance_text = "Wallet not created"
+    live_balance = "Wallet not created"
     if address:
         try:
-            balance_text = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
+            live_balance = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
         except Exception:
-            balance_text = "Balance temporarily unavailable"
-    mode = svc.settings.trading_mode.upper()
-    status = "RUNNING" if config.get("enabled") else "PAUSED"
+            live_balance = "Balance temporarily unavailable"
+    paper_engine = svc.engine.paper_engine
+    paper_account = await paper_engine.store.account(telegram_id) if paper_engine else None
+    paper_on = await paper_engine.store.mode_enabled(telegram_id, "paper") if paper_engine else False
+    live_on = await paper_engine.store.mode_enabled(telegram_id, "live") if paper_engine else bool(live_config.get("live_enabled",False))
+    paper_days = await paper_engine.store.active_days(telegram_id) if paper_engine else 0
+    paper_balance = (
+        f"{format_sol(int(paper_account['cash_balance_lamports']))} virtual SOL"
+        if paper_account else "Not started · $1,000 virtual value"
+    )
     activation = "PAID" if (user or {}).get("activation_paid") else "NOT PAID"
     return (
-        "⚡ 9N8 · SOLANA AUTONOMOUS TERMINAL\n\n"
-        "Launch radar: Pump.fun + Raydium\n"
-        "Execution: Jupiter Swap API v2\n"
-        "MEV routing: Jito private bundles\n"
-        "Risk engine: mint authority · holders · liquidity · LP checks\n\n"
-        f"Mode: {mode}\n"
-        f"Bot state: {status}\n"
-        f"Activation: {activation}\n"
-        f"Wallet: {balance_text}\n"
-        f"Deposit address: {address or 'Create a wallet to receive SOL'}\n\n"
-        "Paper mode reports real launch events but does not fake fills. Live mode is "
-        "separately locked by the server environment and requires a paid activation."
+        "⚡ 9N8 · SOLANA TRADING CONTROL\n\n"
+        "TWO SEPARATE MODES\n"
+        f"🧪 Paper Trading: {'RUNNING' if paper_on else 'PAUSED'}\n"
+        f"Virtual cash: {paper_balance}\n"
+        f"Practice days: {paper_days}/7\n"
+        f"🔴 Live Solana Sniper: {'ARMED' if live_on else 'LOCKED / OFF'}\n\n"
+        f"Live wallet: {live_balance}\n"
+        f"Deposit address: {address or 'Create a wallet to receive SOL'}\n"
+        f"Live activation: {activation}\n"
+        f"Operator live switch: {'ON' if svc.settings.live_trading_enabled else 'OFF'}\n\n"
+        "Paper trades use real market quotes but virtual funds only. Live mode uses your wallet "
+        "and needs a separate readiness check and your confirmation."
     )
 
 
