@@ -2220,12 +2220,15 @@ async def cb_wipe_confirm(callback: CallbackQuery, state: FSMContext) -> None:
             callback.from_user.id, destination
         )
         await svc.engine.reset_wallet_watcher(callback.from_user.id)
-        await callback.message.answer(
+        await svc.db.security_event(callback.from_user.id, "wallet_created_onboarding", address)
+        await callback.message.edit_text(
+            "✅ WALLET ROTATED — NEW SOLANA WALLET PAUSED\n\n"
             f"Old wallet payout: {format_sol(payout)} SOL\n"
             f"Receipt: https://solscan.io/tx/{signature}\n"
-            f"New paused wallet address:\n{address}"
+            f"New wallet address:\n{address}\n\n"
+            "Reveal the new recovery key once below and store it offline before depositing.",
+            reply_markup=_onboarding_keyboard(),
         )
-        await _send_sensitive_key(callback.message, address, secret)
     except Exception as exc:
         await callback.message.answer(f"Wallet rotation was not completed: {exc}")
     finally:
@@ -2278,8 +2281,13 @@ async def auto_detect_pasted_address(message: Message, state: FSMContext) -> Non
             "🔷 EVM CONTRACT ADDRESS DETECTED\n\n"
             "This address format belongs to an EVM network, but Base, Ethereum and BNB Chain are not connected to 9N8's execution runtime yet. "
             "No token scan, wallet lookup, quote or transaction was attempted.\n\n"
-            "Open the network selector to review the current connection status.",
+            "Which EVM network was this address created on? Choose Base, Ethereum or BNB Chain below. These choices currently show their connection status only; no token scan or transaction will run.",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🔵 Base", callback_data="network:select:base"),
+                    InlineKeyboardButton(text="🔷 Ethereum", callback_data="network:select:ethereum"),
+                ],
+                [InlineKeyboardButton(text="🟡 BNB Chain", callback_data="network:select:bnb")],
                 [InlineKeyboardButton(text="🌐 Network Selector", callback_data="network:show")],
                 [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
             ]),
