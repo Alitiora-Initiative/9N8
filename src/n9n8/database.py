@@ -59,7 +59,7 @@ PAPER_DEFAULT_SETTINGS: dict[str, Any] = {
     "mev_shield": True,
     "min_liquidity_sol": "5",
     "min_lp_locked_pct": "80",
-    "min_liquidity_usd": "5000",
+    "min_liquidity_usd": "0",
     "pump_mode": "migration",
     "pump_migration_progress_pct": "80",
     "max_top10_concentration_pct": "25",
