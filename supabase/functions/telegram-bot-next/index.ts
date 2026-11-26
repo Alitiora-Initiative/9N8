@@ -5,7 +5,14 @@ import {
   jupiterApi, MAX_SWAP_SOL_LAMPORTS, DAILY_SWAP_SOL_LAMPORTS,
   priceImpactFraction, rawToDecimal, sha256HexBytes, SOL_MINT, SWAP_QUOTE_TTL_SECONDS,
 } from "./jupiter-live.ts";
-import { validateOkxSpotRead, type OkxRegion } from "./okx-live.ts";
+import type { OkxRegion } from "./okx-live.ts";
+import {
+  assessBinancePermissions,
+  assessBybitPermissions,
+  assessOkxPermissions,
+  normalizeRequestedMarkets,
+  type ExchangeMarket,
+} from "./exchange-permissions.ts";
 import {
   binanceSignedRequest,
   buildSpotMarketOrder,
@@ -45,7 +52,7 @@ const CORS_HEADERS = {
 };
 const enc = new TextEncoder();
 
-type Provider = "okx" | "binance";
+type Provider = "okx" | "binance" | "bybit";
 type Credentials = { apiKey: string; apiSecret: string; passphrase?: string; region?: OkxRegion };
 type Obj = Record<string, unknown>;
 
@@ -221,84 +228,109 @@ async function jsonGet(url: string, headers: Record<string, string>): Promise<an
   if (!r.ok) throw new Error("exchange_credentials_rejected");
   return data;
 }
-async function validateOKX(c: Credentials) {
+const OKX_API_ORIGINS: Record<OkxRegion, string> = {
+  global: "https://openapi.okx.com",
+  us: "https://us.okx.com",
+  eea: "https://eea.okx.com",
+};
+
+async function validateOKX(c: Credentials, markets: ExchangeMarket[]) {
   if (!c.passphrase) throw new Error("okx_passphrase_required");
-  const path = "/api/v5/account/config";
-  const timeResponse = await fetch("https://www.okx.com/api/v5/public/time");
+  const region = c.region ?? "global";
+  const origin = OKX_API_ORIGINS[region];
+  if (!origin) throw new Error("okx_region_unsupported");
+  const timeResponse = await fetch(origin + "/api/v5/public/time", { cache: "no-store" });
   const timeJson = await timeResponse.json().catch(() => ({}));
-  const ms = Number(timeJson?.data?.[0]?.ts);
-  if (!timeResponse.ok || !Number.isFinite(ms)) throw new Error("exchange_temporarily_unavailable");
-  const timestamp = new Date(ms).toISOString();
+  const milliseconds = Number(timeJson?.data?.[0]?.ts);
+  if (!timeResponse.ok || String(timeJson?.code ?? "") !== "0" || !Number.isFinite(milliseconds)) {
+    throw new Error("exchange_temporarily_unavailable");
+  }
+  const timestamp = new Date(milliseconds).toISOString();
+  const path = "/api/v5/account/config";
   const signature = b64(await mac(enc.encode(c.apiSecret), timestamp + "GET" + path));
-  const data = await jsonGet("https://www.okx.com" + path, {
+  const data = await jsonGet(origin + path, {
     "OK-ACCESS-KEY": c.apiKey,
     "OK-ACCESS-SIGN": signature,
     "OK-ACCESS-TIMESTAMP": timestamp,
     "OK-ACCESS-PASSPHRASE": c.passphrase,
-    "x-simulated-trading": "1",
     accept: "application/json",
   });
-  if (String(data?.code ?? "") !== "0" || !data?.data?.[0]) throw new Error("exchange_credentials_rejected");
-  const permissions = String(data.data[0].perm ?? "").toLowerCase().split(",").map((v: string) => v.trim());
-  if (permissions.includes("withdraw")) throw new Error("withdraw_permission_detected");
+  if (String(data?.code ?? "") !== "0" || !data?.data?.[0]) {
+    throw new Error("exchange_credentials_rejected");
+  }
+  const account = data.data[0];
+  const assessment = assessOkxPermissions(account, markets);
+  const permissions = String(account.perm ?? "").toLowerCase().split(",").map((value: string) => value.trim());
   return {
-    label: "OKX Demo",
+    label: "OKX LIVE · " + region.toUpperCase(),
     permissions: {
-      read: permissions.includes("read"),
-      spotTrade: permissions.includes("trade"),
+      read: permissions.includes("read_only") || permissions.includes("trade"),
+      trade: permissions.includes("trade"),
       withdraw: false,
-      okxTradeScopeMayAlsoAllowFundingTransfers: permissions.includes("trade"),
+      ...assessment,
+      accountLevel: String(account.acctLv ?? "unknown"),
+      spotBorrowEnabled: account.enableSpotBorrow === true,
+      tradeScopeWarning: "OKX has one account-wide Trade permission. It is not split into Spot/Futures permissions and may also allow internal funding transfers. 9N8 does not call transfer or withdrawal endpoints.",
     },
+    accountHint: "OKX " + region.toUpperCase() + " account · authenticated",
   };
 }
+
 async function binanceSignedGet(c: Credentials, path: string): Promise<any> {
   const query = "recvWindow=5000&timestamp=" + Date.now();
   const signature = hex(await mac(enc.encode(c.apiSecret), query));
   return await jsonGet("https://api.binance.com" + path + "?" + query + "&signature=" + signature, {
-    "X-MBX-APIKEY": c.apiKey, accept: "application/json",
+    "X-MBX-APIKEY": c.apiKey,
+    accept: "application/json",
   });
 }
-async function validateBinanceLive(c: Credentials) {
-  // Binance exposes the API key's own scope through this signed SAPI endpoint.
-  // Fail closed unless read + Spot are enabled and withdrawal/transfer scopes are off.
+
+async function validateBinanceLive(c: Credentials, markets: ExchangeMarket[]) {
   const restrictions = await binanceSignedGet(c, "/sapi/v1/account/apiRestrictions");
-  if (restrictions?.enableReading !== true) throw new Error("binance_read_permission_required");
-  if (restrictions?.enableSpotAndMarginTrading !== true) throw new Error("binance_spot_permission_required");
-  if (restrictions?.enableWithdrawals !== false) throw new Error("withdraw_permission_detected");
-  if (restrictions?.enableInternalTransfer !== false || restrictions?.permitsUniversalTransfer !== false) {
-    throw new Error("binance_transfer_permission_detected");
+  const assessment = assessBinancePermissions(restrictions, markets);
+
+  // Read the Spot account only when the user requested a Spot-family product.
+  // Futures-only API keys are not forced to carry Spot permissions.
+  let account: any = null;
+  if (markets.some((market) => ["spot", "margin", "stocks"].includes(market))) {
+    account = await binanceSignedGet(c, "/api/v3/account");
+    if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
+      throw new Error("exchange_credentials_rejected");
+    }
+    if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
   }
-  if (restrictions?.enableFutures !== false || restrictions?.enableMargin !== false ||
-      restrictions?.enableVanillaOptions !== false || restrictions?.enablePortfolioMarginTrading === true) {
-    throw new Error("binance_non_spot_permission_detected");
-  }
-  const account = await binanceSignedGet(c, "/api/v3/account");
-  if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
-    throw new Error("exchange_credentials_rejected");
-  }
-  if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
+
   return {
-    label: "Binance Spot LIVE",
+    label: "Binance LIVE · " + markets.map((market) => market.toUpperCase()).join(" + "),
     permissions: {
       read: true,
-      spotTrade: true,
       withdraw: false,
       internalTransfer: false,
-      universalTransfer: restrictions.permitsUniversalTransfer === true,
-      margin: restrictions.enableMargin === true,
-      futures: restrictions.enableFutures === true,
-      options: restrictions.enableVanillaOptions === true,
+      universalTransfer: false,
+      ...assessment,
+      spotAndMarginTrading: restrictions.enableSpotAndMarginTrading === true,
+      marginApiPermission: restrictions.enableMargin === true,
+      futuresApiPermission: restrictions.enableFutures === true,
+      optionsApiPermission: restrictions.enableVanillaOptions === true,
+      portfolioMarginTrading: restrictions.enablePortfolioMarginTrading === true,
       ipRestricted: restrictions.ipRestrict === true,
-      accountCanTrade: true,
+      stockProductsNote: markets.includes("stocks")
+        ? "Uses the same Spot & Margin & Stock Trading API-key permission. Product availability depends on your Binance region and eligible instruments."
+        : undefined,
     },
-    accountHint: account.uid == null ? null : "Binance UID · " + mask(String(account.uid)),
+    accountHint: account?.uid == null ? null : "Binance UID · " + mask(String(account.uid)),
   };
 }
-async function validateBybit(c: Credentials) {
+
+async function bybitSignedGet(c: Credentials, path: string): Promise<any> {
   const timestamp = String(Date.now());
   const recvWindow = "5000";
-  const signature = hex(await mac(enc.encode(c.apiSecret), timestamp + c.apiKey + recvWindow));
-  const data = await jsonGet("https://api-demo.bybit.com/v5/user/query-api", {
+  const queryString = "";
+  const signature = hex(await mac(
+    enc.encode(c.apiSecret),
+    timestamp + c.apiKey + recvWindow + queryString,
+  ));
+  return await jsonGet("https://api.bybit.com" + path, {
     "X-BAPI-API-KEY": c.apiKey,
     "X-BAPI-SIGN": signature,
     "X-BAPI-SIGN-TYPE": "2",
@@ -306,26 +338,45 @@ async function validateBybit(c: Credentials) {
     "X-BAPI-RECV-WINDOW": recvWindow,
     accept: "application/json",
   });
-  if (Number(data?.retCode) !== 0 || !data?.result) throw new Error("exchange_credentials_rejected");
-  const permissions = data.result.permissions ?? {};
-  const walletScopes = Array.isArray(permissions.Wallet) ? permissions.Wallet : [];
-  if (walletScopes.length) throw new Error("wallet_transfer_or_withdraw_scope_detected");
-  const spot = Array.isArray(permissions.Spot) ? permissions.Spot : [];
+}
+
+async function validateBybit(c: Credentials, markets: ExchangeMarket[]) {
+  const data = await bybitSignedGet(c, "/v5/user/query-api");
+  if (Number(data?.retCode) !== 0 || !data?.result) {
+    throw new Error("exchange_credentials_rejected");
+  }
+  const assessment = assessBybitPermissions(data.result, markets);
   return {
-    label: "Bybit Demo",
+    label: "Bybit LIVE · " + markets.map((market) => market.toUpperCase()).join(" + "),
     permissions: {
-      read: true, spotTrade: spot.includes("SpotTrade"), withdraw: false,
-      walletScopes: [], readOnly: Number(data.result.readOnly) === 1,
-      derivativesScopes: (permissions.Derivatives?.length ?? 0) + (permissions.ContractTrade?.length ?? 0) > 0,
+      read: true,
+      withdraw: false,
+      walletTransfers: false,
+      ...assessment,
+      readOnly: Number(data.result.readOnly) === 1,
+      marginNote: markets.includes("margin")
+        ? "Bybit does not show a separate Margin API-key scope. SpotTrade is checked; your Unified Account must also have margin enabled."
+        : undefined,
     },
+    accountHint: data.result.note ? "Bybit API key · " + clean(data.result.note, 40) : "Bybit account · authenticated",
   };
 }
-async function validateExchange(provider: Provider, environment: string, c: Credentials) {
-  if (!c.apiKey || !c.apiSecret) throw new Error("api_key_and_secret_required");
-  if (c.apiKey.length > 512 || c.apiSecret.length > 1024) throw new Error("credential_field_too_long");
-  if (provider === "binance" && environment === "live") return await validateBinanceLive(c);
-  if (provider === "okx" && environment === "live") return await validateOkxSpotRead({ apiKey: c.apiKey, apiSecret: c.apiSecret, passphrase: c.passphrase ?? "", region: c.region ?? "global" });
-  throw new Error("unsupported_provider_environment");
+
+async function validateExchange(
+  provider: Provider,
+  environment: string,
+  credentials: Credentials,
+  markets: ExchangeMarket[],
+) {
+  if (!credentials.apiKey || !credentials.apiSecret) throw new Error("api_key_and_secret_required");
+  if (credentials.apiKey.length > 512 || credentials.apiSecret.length > 1024) {
+    throw new Error("credential_field_too_long");
+  }
+  if (environment !== "live") throw new Error("unsupported_provider_environment");
+  if (provider === "binance") return await validateBinanceLive(credentials, markets);
+  if (provider === "bybit") return await validateBybit(credentials, markets);
+  if (provider === "okx") return await validateOKX(credentials, markets);
+  throw new Error("unsupported_provider");
 }
 async function saveExchange(telegramId: number, provider: Provider, environment: string,
   label: string, credentials: Credentials, permissions: Obj, accountHint: string | null = null): Promise<string> {
@@ -1581,7 +1632,8 @@ async function handleMiniApp(body: any): Promise<Response> {
     if (body.action === "connect_exchange") {
       const provider = String(body.provider) as Provider;
       const environment = String(body.environment);
-      if (!["okx", "binance"].includes(provider)) throw new Error("unsupported_provider");
+      if (!["binance", "bybit", "okx"].includes(provider)) throw new Error("unsupported_provider");
+      const requestedMarkets = normalizeRequestedMarkets(body?.requestedMarkets);
       const regionValue = clean(body?.credentials?.region, 16);
       const credentials: Credentials = {
         apiKey: clean(body?.credentials?.apiKey, 512),
@@ -1589,16 +1641,21 @@ async function handleMiniApp(body: any): Promise<Response> {
         passphrase: clean(body?.credentials?.passphrase, 256),
         region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
       };
-      if (!["binance", "okx"].includes(provider) || environment !== "live") throw new Error("unsupported_provider_environment");
-      const validation = await validateExchange(provider, environment, credentials);
+      const validation = await validateExchange(provider, environment, credentials, requestedMarkets);
       const id = await saveExchange(Number(user.id), provider, environment, validation.label, credentials,
         validation.permissions, validation.accountHint ?? null);
-      await audit(row.id, null, "exchange_connected", "ok", { provider, environment, connection_id: id, permissions: validation.permissions });
+      await audit(row.id, null, "exchange_connected", "ok", {
+        provider, environment, connection_id: id, permissions: validation.permissions,
+      });
       return response({
-        ok: true, label: validation.label, connectionId: id,
+        ok: true,
+        label: validation.label,
+        connectionId: id,
+        selectedMarkets: requestedMarkets,
         permissions: validation.permissions,
         accountHint: validation.accountHint ?? null,
         liveOrdersEnabled: false,
+        message: "Account access checked and saved. 9N8 does not place an exchange order from this connection step.",
       });
     }
     if (body.action === "watch_wallet") {
