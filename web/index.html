@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220">
+<title>9N8 · Secure Connections</title>
+<script src="https://telegram.org/js/telegram-web-app.js?67"></script>
+<style>
+:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif;background:#0b1220;color:#edf2f7;font-synthesis:none}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at top,#172b3e 0,#0b0e14 58%);min-height:100vh;padding:24px 16px 48px}
+main{max-width:1180px;margin:0 auto}
+.top{display:flex;align-items:center;gap:10px;margin:8px 0 20px}
+.logo{width:42px;height:42px;border-radius:13px;background:#183c35;color:#8cf0bf;display:grid;place-items:center;font-weight:900;font-size:19px}
+.brand{font-weight:800;letter-spacing:.04em}.tag{margin-left:auto;border:1px solid #325446;color:#9ae6c1;border-radius:999px;padding:6px 10px;font-size:12px}
+h1{font-size:clamp(26px,6vw,38px);line-height:1.1;margin:12px 0}
+h2{font-size:19px;margin:0 0 8px}
+p{line-height:1.55;color:#acbbce;margin:8px 0}
+.card{background:rgba(19,30,48,.94);border:1px solid #283950;border-radius:18px;padding:20px;margin:16px 0;box-shadow:0 16px 50px rgba(0,0,0,.16)}
+.notice{border-left:3px solid #d7a955;padding:10px 13px;background:#2b2419;border-radius:7px;color:#f5d99b;font-size:13px;margin:14px 0}
+.secondary{background:#1b2b40;color:#d8e5f4;border:1px solid #3a506b}
+.scanner-panel{margin:14px 0;padding:12px;border:1px solid #344b63;border-radius:14px;background:#0b1524}
+#qrReader{width:100%;max-width:440px;margin:0 auto;overflow:hidden;border-radius:10px}
+#qrReader video{border-radius:10px;object-fit:cover}
+.scan-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.scan-actions button{margin-top:12px}
+@media(max-width:420px){.scan-actions{grid-template-columns:1fr}}
+label{display:block;font-size:13px;color:#b5c4d7;margin:15px 0 7px}
+input,select{font:inherit;width:100%;border:1px solid #3a4e68;border-radius:11px;padding:13px 14px;background:#0b1524;color:#f5f7fa;outline:none}
+input:focus,select:focus{border-color:#58c89b;box-shadow:0 0 0 3px rgba(88,200,155,.12)}
+button{font:inherit;width:100%;border:0;border-radius:11px;padding:14px 16px;margin-top:16px;background:#38c58b;color:#062116;font-weight:800;cursor:pointer}
+button:disabled{opacity:.55;cursor:wait}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:22px 0 14px}
+.tab{width:auto;margin:0;padding:10px 14px;background:#1b2b40;color:#c6d3e3;border:1px solid #35475f}
+.tab[aria-selected=true]{background:#214a3e;border-color:#36795e;color:#a6f0ce}
+.status{min-height:24px;margin-top:12px;white-space:pre-wrap;font-size:14px;color:#a5edc8}
+.muted{font-size:13px;color:#879bb5}
+.hidden{display:none!important}
+.footer{font-size:12px;color:#7f93ab;text-align:center;margin:28px 0}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #315344;border-radius:999px;padding:5px 9px;color:#9de6c1;font-size:11px;font-weight:700}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:520px){body{padding:16px 12px 36px}.card{padding:16px}.grid{grid-template-columns:1fr}.tag{font-size:10px}}
+/* Live-market simulator */
+.sim-hero{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}
+.sim-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0}
+.sim-stat{padding:14px;border:1px solid #283950;border-radius:14px;background:rgba(8,14,23,.72);min-width:0}
+.sim-stat span{display:block;color:#91a4b9;font-size:12px}
+.sim-stat b{display:block;margin-top:7px;font-size:20px;overflow-wrap:anywhere}
+.sim-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(260px,.8fr);gap:14px}
+.sim-panel{background:rgba(8,14,23,.72);border:1px solid #283950;border-radius:16px;padding:16px;min-width:0}
+.sim-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.sim-toolbar select{width:auto;min-width:100px;padding:10px}
+.sim-price{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0;color:#aab9ca;font-size:13px}
+.sim-price b{font-size:18px;color:#f1f5f9}
+.sim-chart{height:390px;min-height:300px;width:100%;position:relative}
+.sim-table{width:100%;border-collapse:collapse;font-size:12px}
+.sim-table th,.sim-table td{padding:9px 7px;border-bottom:1px solid #243247;text-align:left;white-space:nowrap}
+.sim-table th{color:#90a3b8;font-weight:600}
+.sim-table td{color:#d9e2ee}
+.sim-table-wrap{overflow:auto}
+.book-list{font-variant-numeric:tabular-nums;font-size:12px}
+.book-row{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid rgba(48,65,86,.55)}
+.book-row.ask{color:#ff8b9c}.book-row.bid{color:#6fe4a9}
+.sim-muted{color:#7f93ab;font-size:12px}
+.sim-actions{display:flex;gap:8px;flex-wrap:wrap}
+.sim-actions button{width:auto;flex:1}
+.sim-primary{background:linear-gradient(120deg,#00e676,#00bd81);color:#04190f}
+.sim-danger{background:#ff1744;color:#fff}
+.sim-flag{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:800;border-radius:999px;padding:6px 10px;background:#123b2a;color:#69f0ae;border:1px solid #1f6948}
+.sim-flag.offline{background:#3b2028;border-color:#723343;color:#ff9cab}
+.indicator-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.indicator{padding:10px;background:#0b1524;border:1px solid #24364c;border-radius:10px}
+.indicator span{display:block;color:#879bb5;font-size:11px}
+.indicator b{display:block;margin-top:5px;font-size:14px}
+@media(max-width:820px){.sim-grid{grid-template-columns:1fr}.sim-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.sim-chart{height:330px}}
+@media(max-width:420px){.sim-chart{height:280px}.sim-stat b{font-size:17px}.sim-toolbar select{min-width:85px}}
+
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">LIVE DATA · VIRTUAL PAPER</div></div>
+  <section id="connectPage">
+    <span class="pill">PRIVATE ACCOUNT & MARKET CONTROL</span>
+    <h1>Trade with live market context.</h1>
+    <p>Connect your Binance, Bybit or OKX account and choose the markets your API key is allowed to use. You can also link Trust Wallet, Phantom or MetaMask. The practice simulator uses real prices and virtual money.</p>
+    <div class="tabs" role="tablist">
+      <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Exchange accounts</button>
+      <button class="tab" id="walletTab" role="tab" aria-selected="false" type="button">Wallet watch</button>
+      <button class="tab" id="simulatorTab" role="tab" aria-selected="false" type="button">Live-market simulator</button>
+    </div>
+    <section class="card" id="exchangePanel">
+      <h2>Exchange account connections</h2>
+      <p class="muted">Use the API key and secret from your exchange. OKX also needs the passphrase you created with the key. 9N8 checks the permissions, then saves the connection encrypted.</p>
+      <div class="notice">Choose the markets you need below. On Binance, “Spot &amp; Margin &amp; Stock Trading” covers Spot and eligible related products; Futures and Options have their own switches. Bybit uses one key across Spot and derivatives: choose a system-generated key that gives you an API key and secret (not a self-generated RSA key). Some regional Bybit accounts have extra third-party connection rules. OKX uses one broad Trade permission, and your account mode determines which products are available. Keep Withdraw and account transfers turned OFF. Never paste a seed phrase or wallet private key.</div>
+      <form id="exchangeForm" autocomplete="off">
+        <label for="provider">Exchange</label>
+        <select id="provider" required>
+          <option value="binance">Binance</option>
+          <option value="bybit">Bybit</option>
+          <option value="okx">OKX</option>
+        </select>
+        <label for="environment">Account</label>
+        <select id="environment" required><option value="live">My real exchange account</option></select>
+        <fieldset class="scanner-panel" id="marketPermissions" style="border:1px solid #344b63;border-radius:14px;padding:14px;margin:16px 0">
+          <legend style="padding:0 6px;font-weight:700">Which markets should this key cover?</legend>
+          <div class="grid">
+            <label><input type="checkbox" name="exchangeMarket" value="spot" checked style="width:auto;margin-right:8px">Spot</label>
+            <label><input type="checkbox" name="exchangeMarket" value="margin" style="width:auto;margin-right:8px">Margin</label>
+            <label id="stocksMarketOption"><input type="checkbox" name="exchangeMarket" value="stocks" style="width:auto;margin-right:8px">Eligible stock-linked products</label>
+            <label><input type="checkbox" name="exchangeMarket" value="futures_usdm" style="width:auto;margin-right:8px">USDT / USDC Futures</label>
+            <label><input type="checkbox" name="exchangeMarket" value="futures_coinm" style="width:auto;margin-right:8px">Coin-M Futures</label>
+            <label><input type="checkbox" name="exchangeMarket" value="options" style="width:auto;margin-right:8px">Options</label>
+          </div>
+          <p class="muted" id="marketPermissionHint">9N8 will check each selection against the permissions returned by Binance.</p>
+        </fieldset>
+        <div class="grid">
+          <div><label for="apiKey">API key</label><input id="apiKey" type="password" maxlength="512" autocomplete="off" required></div>
+          <div><label for="apiSecret">API secret</label><input id="apiSecret" type="password" maxlength="1024" autocomplete="off" required></div>
+        </div>
+        <div class="grid hidden" id="okxPassphraseFields">
+          <div><label for="okxPassphrase">OKX API passphrase</label><input id="okxPassphrase" type="password" maxlength="256" autocomplete="off"></div>
+          <div><label for="okxRegion">OKX account region</label><select id="okxRegion"><option value="global">Global · openapi.okx.com</option><option value="us">US / Australia · us.okx.com</option><option value="eea">European Economic Area · eea.okx.com</option></select></div>
+        </div>
+        <div class="grid hidden" id="bybitRegionFields">
+          <div>
+            <label for="bybitRegion">Bybit account region</label>
+            <select id="bybitRegion">
+              <option value="global">Global · api.bybit.com</option>
+              <option value="eea">European Economic Area · api.bybit.eu</option>
+              <option value="uae">United Arab Emirates · api.bybit.ae</option>
+              <option value="turkey">Turkey · api.bybit.tr</option>
+              <option value="kazakhstan">Kazakhstan · api.bybit.kz</option>
+              <option value="georgia">Georgia · api.bybitgeorgia.ge</option>
+              <option value="indonesia">Indonesia · api.bybit.id</option>
+              <option value="japan">Japan · api.manepa.jp</option>
+            </select>
+          </div>
+        </div>
+        <p class="muted hidden" id="bybitRegionNote">Bybit EEA API keys only support third-party app connections for API broker users. Your account or key type must meet Bybit’s EEA requirements.</p>
+        <button id="saveExchange" type="submit">🔐 Verify exchange LIVE key & save securely</button>
+        <div class="status" id="exchangeStatus" role="status"></div>
+        <div class="divider"></div>
+        <h3>Connected account balances</h3>
+        <p class="muted">Reads the available balances from the connected exchange. This does not place an order. API secrets are never returned to the Web App.</p>
+        <button class="secondary" id="loadBinanceBalance" type="button">↻ Refresh connected exchange balances</button>
+        <div class="status" id="binanceBalance" role="status">Connect Binance or OKX to view balances.</div>
+        <div class="divider"></div>
+        <h3>Live readiness assessment</h3>
+        <p class="muted">Refreshes the selected exchange balance, then checks the 30-day paper and connector gates. This is an assessment only; it does not enable live trading or submit an order.</p>
+        <div class="grid">
+          <button id="assessLiveReadiness" type="button">🔎 Run 30-day readiness check</button>
+          <button id="refreshLiveStatus" class="secondary" type="button">↻ Refresh live status</button>
+        </div>
+        <div class="status" id="liveReadinessStatus" role="status" style="white-space:pre-wrap">Connect an exchange and run the assessment to see the current requirements.</div>
+      </form>
+    </section>
+    <section class="card hidden" id="walletPanel">
+      <h2>Wallet sessions and address watch</h2>
+      <p class="muted">Connect Phantom, Trust Wallet, MetaMask or another supported wallet through WalletConnect. 9N8 uses this connection to verify wallet ownership with a message signature only. This build does not request swap transactions, token approvals or background trade-signing permission.</p>
+      <div class="notice">Never enter a seed phrase, recovery phrase, private key, or wallet password. Only paste a public receiving address.</div>
+      <div class="scanner-panel" id="walletSessionPanel">
+        <span class="pill">WALLET SESSION</span>
+        <p class="muted">Connect MetaMask, Trust Wallet, Phantom or another WalletConnect-compatible wallet. 9N8 requests only a harmless ownership message before saving the wallet address; no transaction is requested.</p>
+        <button id="connectWalletSession" type="button">Connect wallet session</button>
+        <button class="secondary" id="verifyWalletSession" type="button" disabled>Verify wallet ownership</button>
+        <button class="secondary" id="disconnectWalletSession" type="button" disabled>Disconnect and revoke link</button>
+        <div class="status" id="walletSessionStatus" role="status">Checking wallet connection settings…</div>
+        <p class="muted">The verification signature does not authorize a swap, transfer, token approval or trade. Wallet transaction approvals remain separate.</p>
+      <div class="divider"></div>
+      <section class="scanner-panel" id="jupiterSwapTerminal">
+        <span class="pill">JUPITER · SOLANA MAINNET</span>
+        <h3>Live BUY / SELL terminal</h3>
+        <p class="muted">Real Jupiter Swap V2 routes across liquidity sources. You review the quote and sign each exact transaction in your connected Solana wallet. No background wallet signing.</p>
+        <div class="grid">
+          <div><label for="jupiterSide">Trade direction</label><select id="jupiterSide"><option value="buy">BUY · SOL to token</option><option value="sell">SELL · token to SOL</option></select></div>
+          <div><label for="jupiterAmount">Amount <span id="jupiterAmountUnit">SOL</span></label><input id="jupiterAmount" type="number" min="0" step="any" placeholder="0.01" autocomplete="off"></div>
+        </div>
+        <label for="jupiterTokenMint">Solana token mint address</label>
+        <input id="jupiterTokenMint" type="text" maxlength="64" spellcheck="false" autocomplete="off" placeholder="Paste a verified SPL token mint">
+        <button id="jupiterGetQuote" type="button">Get live Jupiter quote</button>
+        <div id="jupiterQuoteCard" class="card hidden">
+          <div class="sim-stats">
+            <div class="sim-stat"><span>You pay</span><b id="jupiterQuoteInput">—</b></div>
+            <div class="sim-stat"><span>Estimated receive</span><b id="jupiterQuoteOutput">—</b></div>
+            <div class="sim-stat"><span>Minimum receive</span><b id="jupiterQuoteMinimum">—</b></div>
+            <div class="sim-stat"><span>Price impact</span><b id="jupiterQuoteImpact">—</b></div>
+          </div>
+          <p class="muted" id="jupiterQuoteRoute">Route and fee details will appear here.</p>
+          <p class="muted" id="jupiterQuoteExpiry">Quote expiry: —</p>
+          <p class="muted">The wallet will show the transaction details before signing. Review the input, output, fees and token mint carefully.</p>
+        </div>
+        <button class="secondary" id="jupiterSignSwap" type="button" disabled>Sign & execute swap in wallet</button>
+        <button class="secondary" id="jupiterRefreshSwap" type="button" disabled>Refresh transaction status</button>
+        <div class="status" id="jupiterSwapStatus" role="status">Connect and verify Phantom or another Solana wallet on Solana mainnet to begin.</div>
+        <div class="notice" id="jupiterCertNotice">Checking live execution certification…</div>
+      </section>
+      <div class="divider"></div>
+      <section class="scanner-panel" id="jupiterAutomationPanel">
+        <span class="pill">JUPITER TRIGGER V2</span>
+        <h3>Scheduled DCA automation</h3>
+        <p class="muted">Jupiter’s keeper can execute scheduled swaps after you sign and fund its managed vault. This is a separate custody arrangement: funds deposited for automation move from your wallet into a Jupiter/Privy-managed vault and are no longer sitting in your original wallet. Review the vault receiver, token, amount and cancellation/withdrawal path before signing a deposit.</p>
+        <div class="grid">
+          <button id="jupiterTriggerLogin" type="button">Connect Jupiter automation</button>
+          <button class="secondary" id="jupiterTriggerHistory" type="button" disabled>Refresh active DCA orders</button>
+        </div>
+        <div class="status" id="jupiterTriggerStatus" role="status">Jupiter Trigger configuration is being checked…</div>
+        <div id="jupiterDcaControls" class="hidden">
+          <label for="jupiterDcaMint">Token mint</label>
+          <input id="jupiterDcaMint" type="text" maxlength="64" spellcheck="false" placeholder="Solana token mint address">
+          <div class="grid">
+            <div><label for="jupiterDcaTotal">Total SOL to schedule</label><input id="jupiterDcaTotal" type="number" min="0" step="any" placeholder="0.20"></div>
+            <div><label for="jupiterDcaCount">Number of rounds</label><input id="jupiterDcaCount" type="number" min="2" max="1000" step="1" value="2"></div>
+          </div>
+          <label for="jupiterDcaInterval">Interval</label>
+          <select id="jupiterDcaInterval"><option value="3600">Every hour</option><option value="86400">Every day</option><option value="604800">Every week</option></select>
+          <button id="jupiterCreateDca" type="button" disabled>Create & deposit DCA</button>
+          <p class="muted">Each scheduled round must meet Jupiter’s $10 minimum. Creation is locked until 9N8 certifies vault deposit integrity, delegated order controls and cancel/withdrawal recovery.</p>
+        </div>
+        <div class="grid">
+          <div><label for="jupiterCancelOrderId">Active DCA order ID</label><input id="jupiterCancelOrderId" type="text" maxlength="128" placeholder="Paste order ID from history"></div>
+          <div><label>&nbsp;</label><button class="secondary" id="jupiterCancelDca" type="button" disabled>Cancel & withdraw remainder</button></div>
+        </div>
+        <div class="status" id="jupiterDcaHistory" role="status"></div>
+      </section>
+      <div class="divider"></div>
+      <h3>Optional watch-only address</h3>
+      <p class="muted">You can still add a public receive address by scanning its QR code. That creates a watch-only link, not a wallet session.</p>
+      <form id="walletForm" autocomplete="off">
+        <label for="walletProvider">Wallet</label>
+        <select id="walletProvider">
+          <option value="trust_wallet">Trust Wallet</option>
+          <option value="phantom">Phantom</option>
+          <option value="metamask">MetaMask</option>
+          <option value="walletconnect">WalletConnect address (watch-only)</option>
+          <option value="manual">Other public address</option>
+        </select>
+        <label for="network">Network</label>
+        <select id="network">
+          <option value="eip155:1">Ethereum mainnet</option>
+          <option value="eip155:8453">Base mainnet</option>
+          <option value="eip155:56">BNB Smart Chain</option>
+          <option value="solana:mainnet-beta">Solana mainnet</option>
+        </select>
+        <label for="address">Public wallet address</label>
+        <input id="address" type="text" maxlength="128" spellcheck="false" autocomplete="off" required>
+        <div class="scan-actions">
+          <button class="secondary" id="startWalletScanner" type="button">Scan QR with camera</button>
+          <button class="secondary" id="chooseQrImage" type="button">Scan QR from photo</button>
+        </div>
+        <input id="qrImageInput" class="hidden" type="file" accept="image/*" capture="environment">
+        <section id="qrScannerPanel" class="scanner-panel hidden" aria-label="Wallet address QR scanner">
+          <p class="muted">Point your camera at your wallet's public receive-address QR code. The QR is decoded on this device.</p>
+          <div id="qrReader"></div>
+          <button class="secondary" id="stopWalletScanner" type="button">Stop camera</button>
+        </section>
+        <p class="muted">Scan a public receive address, review the address and network, then save it. WalletConnect pairing QR codes are not supported by this watch-only scanner.</p>
+        <button id="saveWallet" type="submit">Save watch-only address</button>
+        <div class="status" id="walletStatus" role="status"></div>
+      </form>
+    </section>
+    <section class="card hidden" id="simulatorPanel">
+      <div class="sim-hero">
+        <div>
+          <span class="pill">REAL BINANCE DATA · VIRTUAL EXECUTION</span>
+          <h2 style="margin-top:10px">Live-market paper simulator</h2>
+          <p class="muted">Real public candles, ticker and order book. Virtual cash, virtual positions and simulated fills. No real exchange order is sent from this simulator.</p>
+        </div>
+        <span id="marketFeedStatus" class="sim-flag offline">● Connecting to Binance…</span>
+      </div>
+      <div class="sim-stats">
+        <div class="sim-stat"><span>Virtual equity</span><b id="paperEquity">—</b><small class="sim-muted" id="paperSessionMeta">Session not loaded</small></div>
+        <div class="sim-stat"><span>Virtual cash</span><b id="paperCash">—</b><small class="sim-muted">Paper account only</small></div>
+        <div class="sim-stat"><span>Realized + unrealized P&amp;L</span><b id="paperPnl">—</b><small class="sim-muted" id="paperPnlSplit">No paper results yet</small></div>
+        <div class="sim-stat"><span>Open paper positions</span><b id="paperOpenCount">—</b><small class="sim-muted">Virtual positions only</small></div>
+      </div>
+      <div class="sim-actions">
+        <button id="startPaperButton" class="sim-primary" type="button">▶ Start / resume paper run</button>
+        <button id="refreshPaperButton" class="secondary" type="button">↻ Refresh account &amp; market</button>
+      </div>
+      <div id="paperEngineStatus" class="status" role="status">Open this Web App from your 9N8 Telegram private chat to load your paper account.</div>
+      <div class="sim-grid">
+        <div class="sim-panel">
+          <div class="sim-toolbar">
+            <label style="margin:0">Market
+              <select id="marketSymbol" class="field">
+                <option value="BTCUSDT">BTC/USDT</option><option value="ETHUSDT">ETH/USDT</option>
+                <option value="SOLUSDT">SOL/USDT</option><option value="BNBUSDT">BNB/USDT</option>
+                <option value="XRPUSDT">XRP/USDT</option><option value="DOGEUSDT">DOGE/USDT</option>
+                <option value="SHIBUSDT">SHIB/USDT</option><option value="PEPEUSDT">PEPE/USDT</option>
+                <option value="BONKUSDT">BONK/USDT</option><option value="WIFUSDT">WIF/USDT</option>
+              </select>
+            </label>
+            <label style="margin:0">Interval
+              <select id="marketTimeframe" class="field">
+                <option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option>
+                <option value="1h">1H</option><option value="4h">4H</option><option value="1d">1D</option>
+              </select>
+            </label>
+          </div>
+          <div class="sim-price">
+            <b id="marketPrice">Last @ —</b>
+            <span id="marketBid">Bid @ —</span>
+            <span id="marketAsk">Ask @ —</span>
+            <span id="marketSpread">Spread —</span>
+            <span id="marketChange">24h —</span>
+          </div>
+          <div id="marketChart" class="sim-chart"></div>
+          <div class="indicator-row">
+            <div class="indicator"><span>EMA 9</span><b id="ema9Value">—</b></div>
+            <div class="indicator"><span>EMA 21</span><b id="ema21Value">—</b></div>
+            <div class="indicator"><span>RSI 14</span><b id="rsi14Value">—</b></div>
+          </div>
+          <p class="sim-muted">Chart data: Binance Spot OHLCV. Entry and exit markers are virtual paper fills recorded by 9N8, not real orders.</p>
+        </div>
+        <div class="sim-panel">
+          <div class="panel-head"><b>🟢 Live order book</b><span class="sim-muted" id="bookUpdated">Waiting for depth…</span></div>
+          <div class="grid">
+            <div><div class="sim-muted">ASKS · SELLERS</div><div id="bookAsks" class="book-list">Waiting for real depth…</div></div>
+            <div><div class="sim-muted">BIDS · BUYERS</div><div id="bookBids" class="book-list">Waiting for real depth…</div></div>
+          </div>
+          <div class="notice">Paper fill estimate consumes visible ask depth for BUYs and bid depth for SELLs. Stale or insufficient book depth is rejected rather than fabricated.</div>
+          <div class="panel-head"><b>Paper engine</b><span class="sim-flag">VIRTUAL ONLY</span></div>
+          <p class="muted">Strategy: EMA 9 / EMA 21 crossover with RSI 14 confirmation on closed 1-minute candles.</p>
+          <p class="muted">Paper account starts at $1,000 virtual equity. Fees and slippage are modeled; live Binance balances are never used by this simulator.</p>
+        </div>
+      </div>
+      <div class="sim-panel" style="margin-top:14px">
+        <div class="panel-head"><b>Open paper positions</b><span class="sim-muted">Marked against current Binance bid</span></div>
+        <div class="sim-table-wrap"><table class="sim-table"><thead><tr><th>Market</th><th>Quantity</th><th>Entry @</th><th>Bid mark @</th><th>TP / SL @</th><th>Unrealized P&amp;L</th></tr></thead><tbody id="paperPositionsBody"><tr><td colspan="6">No open virtual positions.</td></tr></tbody></table></div>
+      </div>
+      <div class="sim-panel" style="margin-top:14px">
+        <div class="panel-head"><b>Recent simulated fills</b><span class="sim-muted">Virtual ledger · fees recorded</span></div>
+        <div class="sim-table-wrap"><table class="sim-table"><thead><tr><th>Side</th><th>Market</th><th>Quantity</th><th>Fill @</th><th>Reference @</th><th>Fee</th><th>Net P&amp;L</th><th>Time</th></tr></thead><tbody id="paperTradesBody"><tr><td colspan="8">No simulated fills yet.</td></tr></tbody></table></div>
+      </div>
+    </section>
+  </section>
+  <section id="setupPage" class="hidden">
+    <span class="pill">OWNER SETUP</span>
+    <h1>Activate the Telegram webhook.</h1>
+    <p>This connects your Telegram bot to the new 9N8 backend. First save the bot token and matching webhook secret in your Supabase Edge Function Secrets.</p>
+    <div class="card">
+      <div class="notice">Enter only your webhook secret. Never enter your BotFather token here, and never share either value in chat.</div>
+      <form id="setupForm" autocomplete="off">
+        <label for="setupSecret">TELEGRAM_WEBHOOK_SECRET</label>
+        <input id="setupSecret" type="password" minlength="32" maxlength="256" autocomplete="off" required>
+        <button id="activateWebhook" type="submit">Register 9N8 webhook</button>
+        <div class="status" id="setupStatus" role="status"></div>
+      </form>
+    </div>
+    <p class="muted">The page sends the secret over HTTPS to 9N8 for the Telegram setWebhook call. It does not save it in browser storage.</p>
+  </section>
+  <div class="footer">9N8 · Binance public market data · Virtual paper simulator · No withdrawals · Never share seed phrases</div>
+</main>
+<script>
+(function(){
+  "use strict";
+  const API = "https://qlfcazdfxexcnzdgpqqm.supabase.co/functions/v1/telegram-bot-next";
+  const path = location.pathname.replace(/\/+$/,"") || "/";
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const connectPage = document.getElementById("connectPage");
+  const setupPage = document.getElementById("setupPage");
+  const isSetup = path === "/setup" || new URLSearchParams(location.search).get("view") === "setup";
+  if(isSetup){connectPage.classList.add("hidden");setupPage.classList.remove("hidden");}
+  if(tg){tg.ready();tg.expand();}
+  const exchangeTab=document.getElementById("exchangeTab");
+  const walletTab=document.getElementById("walletTab");
+  const simulatorTab=document.getElementById("simulatorTab");
+  const exchangePanel=document.getElementById("exchangePanel");
+  const walletPanel=document.getElementById("walletPanel");
+  const simulatorPanel=document.getElementById("simulatorPanel");
+  function selectTab(view){
+    const simulator=view==="simulator", wallet=view==="wallet";
+    exchangePanel.classList.toggle("hidden",simulator||wallet);
+    walletPanel.classList.toggle("hidden",simulator||!wallet);
+    simulatorPanel.classList.toggle("hidden",!simulator);
+    exchangeTab.setAttribute("aria-selected",String(!simulator&&!wallet));
+    walletTab.setAttribute("aria-selected",String(wallet));
+    simulatorTab.setAttribute("aria-selected",String(simulator));
+    if(simulator) window.dispatchEvent(new CustomEvent("n8:simulator-visible"));
+  }
+  exchangeTab.addEventListener("click",()=>selectTab("exchange"));
+  walletTab.addEventListener("click",()=>selectTab("wallet"));
+  simulatorTab.addEventListener("click",()=>selectTab("simulator"));
+  const requestedView=new URLSearchParams(location.search).get("view");
+  if(requestedView==="simulator")selectTab("simulator");
+  else if(requestedView==="wallet")selectTab("wallet");
+  else selectTab("exchange");
+  const provider=document.getElementById("provider");
+  const env=document.getElementById("environment");
+  async function apiPost(body){
+    const response=await fetch(API,{
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify(body),
+      cache:"no-store",
+      credentials:"omit"
+    });
+    const payload=await response.json().catch(()=>({}));
+    if(!response.ok || payload.ok!==true) throw new Error(payload.message || payload.error || "Request rejected.");
+    return payload;
+  }
+  const readinessButton=document.getElementById("assessLiveReadiness");
+  const statusButton=document.getElementById("refreshLiveStatus");
+  const readinessTarget=document.getElementById("liveReadinessStatus");
+  function showReadinessAssessment(assessment,nextStep){
+    const reasons=Array.isArray(assessment?.reasons)?assessment.reasons:[];
+    const paper=assessment?.paper||{};
+    const account=assessment?.account||{};
+    const lines=[
+      "Eligibility: "+String(assessment?.status||"unknown").replaceAll("_"," ").toUpperCase(),
+      "Paper window: "+String(paper.elapsedDays??"—")+" / "+String(paper.requiredDays??30)+" days",
+      "Closed paper exits: "+String(paper.completedTrades??0),
+      "Enabled strategies: "+String(paper.enabledStrategies??0)+" · Passing: "+String(paper.strategiesPassing??0),
+      "Open virtual positions: "+String(paper.openPositions??"—"),
+      "Available exchange USDT: "+(account.availableQuoteUsd==null?"not checked":"$"+Number(account.availableQuoteUsd).toFixed(2)),
+      "Minimum required: $"+Number(account.minimumBalanceUsd??10).toFixed(2),
+      "",
+      reasons.length?"Blocking requirements:":"No eligibility blockers were returned."
+    ];
+    if(reasons.length) reasons.forEach((reason,index)=>lines.push((index+1)+". "+String(reason)));
+    if(nextStep)lines.push("",String(nextStep));
+    lines.push("Live order execution: LOCKED · This screen does not place orders.");
+    readinessTarget.textContent=lines.join("\n");
+  }
+  readinessButton.addEventListener("click",async()=>{
+    if(!tg||!tg.initData){readinessTarget.textContent="Open this screen from your 9N8 Telegram private chat.";return;}
+    readinessButton.disabled=true;statusButton.disabled=true;
+    const provider=document.getElementById("provider").value;
+    readinessTarget.textContent="Refreshing "+provider.toUpperCase()+" Spot account balance…";
+    try{
+      const account=await apiPost({action:provider==="okx"?"okx_account":"binance_account",initData:tg.initData});
+      window.n8ActiveExchangeConnectionId=account.connection?.id||"";
+      if(!window.n8ActiveExchangeConnectionId)throw new Error("Connect your selected exchange account first.");
+      readinessTarget.textContent=provider.toUpperCase()+" balance refreshed. Running the 30-day live-eligibility assessment…";
+      const result=await apiPost({
+        action:"live_assess",
+        initData:tg.initData,
+        accountType:"exchange",
+        marketType:"crypto",
+        connectionId:window.n8ActiveExchangeConnectionId,
+        windowDays:30
+      });
+      showReadinessAssessment(result.assessment||{},result.nextStep||"");
+    }catch(error){readinessTarget.textContent=error.message||"The readiness assessment failed.";}
+    finally{readinessButton.disabled=false;statusButton.disabled=false;}
+  });
+  statusButton.addEventListener("click",async()=>{
+    if(!tg||!tg.initData){readinessTarget.textContent="Open this screen from your 9N8 Telegram private chat.";return;}
+    readinessButton.disabled=true;statusButton.disabled=true;
+    readinessTarget.textContent="Refreshing current live status…";
+    try{
+      const result=await apiPost({action:"live_status",initData:tg.initData});
+      const live=result.status||{};
+      const latest=Array.isArray(live.migrations)?live.migrations[0]:null;
+      readinessTarget.textContent=[
+        "Live trading: "+(live.liveTradingEnabled?"ENABLED":"LOCKED"),
+        "Owner approval: "+(live.ownerApprovalRequired?"REQUIRED":"NOT REQUIRED"),
+        "Emergency kill switch: "+(live.killSwitch?"ACTIVE":"OFF"),
+        "Minimum live balance: $"+Number(live.minimumLiveBalanceUsd??10).toFixed(2),
+        "Maximum order: $"+Number(live.maxOrderUsd??10).toFixed(2),
+        "Daily notional cap: $"+Number(live.maxDailyNotionalUsd??25).toFixed(2),
+        "Connector release: "+String(live.releaseState||"not activated"),
+        latest?"Latest assessment: "+String(latest.status)+" · "+String(latest.market_type):"No assessment recorded yet.",
+        "Real order submission: NOT AVAILABLE IN THIS RELEASE."
+      ].join("\n");
+    }catch(error){readinessTarget.textContent=error.message||"Live status could not be refreshed.";}
+    finally{readinessButton.disabled=false;statusButton.disabled=false;}
+  });
+
+  // Wallet QR scanning: scan locally, extract only a public address, and require
+  // the user to review and submit it. No QR contents are uploaded or logged.
+  const qrPanel=document.getElementById("qrScannerPanel");
+  const qrReader=document.getElementById("qrReader");
+  const qrImageInput=document.getElementById("qrImageInput");
+  const walletStatus=document.getElementById("walletStatus");
+  let qrScanner=null;
+  let qrRunning=false;
+  let qrHandled=false;
+  let qrLibraryPromise=null;
+
+  function loadQrLibrary(){
+    if(window.Html5Qrcode)return Promise.resolve();
+    if(qrLibraryPromise)return qrLibraryPromise;
+    qrLibraryPromise=new Promise((resolve,reject)=>{
+      const script=document.createElement("script");
+      script.src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js";
+      script.async=true;
+      script.onload=()=>window.Html5Qrcode?resolve():reject(new Error("QR scanner library did not initialize."));
+      script.onerror=()=>reject(new Error("Could not load the QR scanner. Check your internet connection or enter the public address manually."));
+      document.head.appendChild(script);
+    });
+    return qrLibraryPromise;
+  }
+
+  function parseWalletQr(decoded){
+    const value=String(decoded||"").trim();
+    if(/^wc:/i.test(value)){
+      throw new Error("That is a WalletConnect pairing QR. This version scans public wallet-address QR codes only.");
+    }
+    let address="";
+    let chainId="";
+    let namespace="";
+    let solanaUri=false;
+    let match=value.match(/^ethereum:(0x[a-f0-9]{40})(?:@(\d+))?(?:\/[^?]*)?(?:\?.*)?$/i);
+    if(match){
+      address=match[1];
+      chainId=match[2]||"";
+      namespace="eip155";
+    }else{
+      match=value.match(/^solana:([1-9A-HJ-NP-Za-km-z]{32,44})(?:\?(.*))?$/i);
+      if(match){
+        address=match[1];
+        namespace="solana";
+        solanaUri=true;
+        const params=new URLSearchParams(match[2]||"");
+        const cluster=params.get("cluster");
+        if(cluster && cluster!=="mainnet-beta"){
+          throw new Error("That Solana QR is not for mainnet. Select a supported mainnet receive address instead.");
+        }
+      }else if(/^0x[a-f0-9]{40}$/i.test(value)){
+        address=value;
+        namespace="eip155";
+      }else if(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value)){
+        address=value;
+        namespace="solana";
+      }else{
+        throw new Error("QR not recognized. Scan a plain public wallet address or a simple Ethereum/Solana receive QR.");
+      }
+    }
+
+    const network=document.getElementById("network");
+    if(namespace==="solana"){
+      network.value="solana:mainnet-beta";
+    }else if(chainId){
+      const networks={"1":"eip155:1","8453":"eip155:8453","56":"eip155:56"};
+      if(!networks[chainId])throw new Error("This QR uses an unsupported EVM chain. Choose Ethereum, Base or BNB Chain.");
+      network.value=networks[chainId];
+    }else if(network.value.startsWith("solana:")){
+      network.value="eip155:1";
+    }
+    document.getElementById("address").value=address;
+    walletStatus.textContent="QR scanned. Check the address and selected network, then tap Save watch-only address.";
+    return {address,namespace,solanaUri};
+  }
+
+  async function stopWalletQrScanner(){
+    if(qrScanner && qrRunning){
+      try{await qrScanner.stop();}catch(_error){}
+    }
+    qrRunning=false;
+    if(qrScanner){
+      try{qrScanner.clear();}catch(_error){}
+      qrScanner=null;
+    }
+    qrHandled=false;
+    qrPanel.classList.add("hidden");
+    qrReader.innerHTML="";
+  }
+
+  async function handleWalletQr(decoded){
+    if(qrHandled)return;
+    qrHandled=true;
+    try{
+      parseWalletQr(decoded);
+      await stopWalletQrScanner();
+    }catch(error){
+      qrHandled=false;
+      walletStatus.textContent=error.message||"This QR code is not a supported public wallet address.";
+    }
+  }
+
+  document.getElementById("startWalletScanner").addEventListener("click",async()=>{
+    const button=document.getElementById("startWalletScanner");
+    button.disabled=true;
+    walletStatus.textContent="Requesting camera access…";
+    try{
+      await loadQrLibrary();
+      qrPanel.classList.remove("hidden");
+      qrScanner=new Html5Qrcode("qrReader",{
+        formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],
+        verbose:false
+      });
+      await qrScanner.start(
+        {facingMode:"environment"},
+        {fps:8,qrbox:(width,height)=>{
+          const size=Math.floor(Math.min(width,height)*0.72);
+          return {width:size,height:size};
+        },aspectRatio:1},
+        handleWalletQr,
+        ()=>{}
+      );
+      qrRunning=true;
+      walletStatus.textContent="Camera ready. Hold the wallet address QR inside the frame.";
+    }catch(error){
+      await stopWalletQrScanner();
+      walletStatus.textContent="Camera unavailable: "+(error.message||"Allow camera access, use Scan QR from photo, or enter the address manually.");
+    }finally{
+      button.disabled=false;
+    }
+  });
+
+  document.getElementById("stopWalletScanner").addEventListener("click",stopWalletQrScanner);
+  document.getElementById("chooseQrImage").addEventListener("click",()=>qrImageInput.click());
+  qrImageInput.addEventListener("change",async()=>{
+    const file=qrImageInput.files&&qrImageInput.files[0];
+    if(!file)return;
+    await stopWalletQrScanner();
+    qrPanel.classList.remove("hidden");
+    walletStatus.textContent="Reading the selected QR image on this device…";
+    let imageScanner=null;
+    try{
+      await loadQrLibrary();
+      imageScanner=new Html5Qrcode("qrReader",{
+        formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],
+        verbose:false
+      });
+      const decoded=await imageScanner.scanFile(file,true);
+      parseWalletQr(decoded);
+    }catch(error){
+      walletStatus.textContent=error.message||"No supported QR code was found in that image.";
+    }finally{
+      if(imageScanner){try{imageScanner.clear();}catch(_error){}}
+      qrImageInput.value="";
+      qrPanel.classList.add("hidden");
+      qrReader.innerHTML="";
+    }
+  });
+
+  document.addEventListener("visibilitychange",()=>{
+    if(document.hidden && qrRunning)stopWalletQrScanner();
+  });
+
+  document.getElementById("walletForm").addEventListener("submit",async function(event){
+    event.preventDefault();
+    if(!tg || !tg.initData){document.getElementById("walletStatus").textContent="Open this page from your 9N8 Telegram private chat.";return;}
+    const button=document.getElementById("saveWallet");
+    const status=document.getElementById("walletStatus");
+    const parts=document.getElementById("network").value.split(":");
+    button.disabled=true;status.textContent="Saving the public address…";
+    try{
+      const result=await apiPost({
+        action:"watch_wallet",initData:tg.initData,
+        provider:document.getElementById("walletProvider").value,
+        namespace:parts[0],chainId:parts.slice(1).join(":"),
+        network:document.getElementById("network").selectedOptions[0].textContent,
+        address:document.getElementById("address").value.trim()
+      });
+      status.textContent="Saved "+result.address+" as watch-only. No signing permissions were granted.";
+      document.getElementById("address").value="";
+    }catch(error){status.textContent=error.message||"Could not save address.";}
+    finally{button.disabled=false;}
+  });
+  document.getElementById("setupForm").addEventListener("submit",async function(event){
+    event.preventDefault();
+    const button=document.getElementById("activateWebhook");
+    const status=document.getElementById("setupStatus");
+    const setupSecret=document.getElementById("setupSecret").value;
+    button.disabled=true;status.textContent="Registering the new endpoint with Telegram…";
+    try{
+      await apiPost({action:"register_webhook",setupSecret});
+      status.textContent="Webhook registered. Open your Telegram bot and send /start.";
+      document.getElementById("setupSecret").value="";
+    }catch(error){status.textContent=error.message||"Registration failed. Check Supabase Edge Function Secrets.";}
+    finally{button.disabled=false;}
+  });
+})();
+</script>
+<script type="module" src="/connections.js"></script>
+<script type="module" src="/wallet-connect.js"></script>
+<script type="module" src="/jupiter-terminal.js"></script>
+<script type="module" src="/market-simulator.js"></script>
+</body>
+</html>

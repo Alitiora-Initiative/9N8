@@ -1,0 +1,262 @@
+# 9N8 Universal Multi-User Architecture
+
+## Status and implementation boundary
+
+This document defines the next 9N8 release. It does not claim that these features are already implemented.
+
+Verified starting point on 2026-11-25:
+
+- The GitHub default branch main contains the original single-owner Python Telegram bot and direct OKX Spot adapter.
+- The connected Supabase project named 9N8 is active. Its deployed telegram-bot Edge Function is currently a single-owner, read-only OKX demo bot.
+- The Supabase database currently has no 9N8 application tables or migrations.
+- Supabase Vault, pg_cron, and pg_net are installed.
+- This branch is a separate foundation track. It must not replace the stable personal bot until the new flow is tested.
+
+## Product goal
+
+One Telegram bot serves multiple independent users. Every user owns their own exchange connections, wallet links, risk limits, strategies, and approvals. Group features are a separate permission domain.
+
+A user must never be able to read another user's balances, API-key metadata, wallet links, strategy runs, trade proposals, or audit history.
+
+### Private-chat features
+
+- Register a user by validated Telegram identity.
+- Show a personal control panel.
+- Connect and disconnect supported exchange accounts.
+- Link public wallet addresses through a wallet connection flow.
+- Inspect market data, account status, balances, open orders, and personal activity.
+- Start, pause, and stop a personal paper/demo strategy.
+- Review a proposed order and approve or reject it.
+- Configure per-user symbol allowlists, order limits, loss limits, and kill switch.
+
+Account connection, balance details, trade approvals, API credential setup, and personal risk settings are private-chat or secure Mini App actions only. They never run in a group.
+
+### Group features
+
+- Public market commands and opt-in market summaries.
+- Welcome/rules messages and group configuration.
+- Optional anti-spam, link filtering, message deletion, and member restrictions.
+- Group settings are controlled only by the group owner or an administrator whose current Telegram permissions are verified by the bot.
+
+A group cannot see or use personal exchange connections. A group command must never submit a personal trade. A trade request originating in a group should direct the individual to a private chat for review and approval.
+
+## Secure account onboarding
+
+### Exchange credentials
+
+The bot must not ask a user to paste an API key, secret, passphrase, or password into ordinary Telegram messages.
+
+1. The user chooses Connect exchange in a private chat.
+2. The bot opens a Telegram Mini App on an HTTPS origin.
+3. The server validates Telegram Mini App initData using the bot token. Never trust initDataUnsafe or a user ID supplied by browser JavaScript.
+4. The user creates their own API key in the exchange's official account interface and enters it into the secure form.
+5. The backend validates the credentials with a read-only private endpoint before saving.
+6. The backend stores the credential payload in Supabase Vault and stores only the Vault secret ID, provider, environment, permission metadata, and status in the application table.
+7. The UI clears the secret fields and shows only a masked connection label and validation status.
+8. A user can revoke or replace a connection at any time. Disconnecting deletes the Vault secret and disables related runs.
+
+Credentials are user-specific data, not deployment environment variables and not GitHub Actions secrets. GitHub secrets are reserved for CI/CD and deployment credentials. Supabase project secrets are reserved for shared application secrets such as the Telegram bot token and webhook secret.
+
+### Required data separation
+
+- Shared application secrets: Telegram bot token and webhook secret in Supabase Edge Function Secrets.
+- Per-user exchange credentials: Supabase Vault secret records, one credential record per connection.
+- Public wallet information: provider, chain namespace, chain ID, public address, verification status.
+- Never store: seed phrases, wallet private keys, exchange passwords, withdrawal codes, or raw wallet signing keys.
+
+Supabase Vault encrypts secret records at rest and keeps the encryption key separate from the database. Access to the decrypted Vault view must remain limited to trusted backend code.
+
+## Exchange connector model
+
+Implement a provider adapter interface. Do not make the Telegram command handlers call exchange APIs directly.
+
+Initial exchange scope:
+
+| Provider | Initial markets | Safe test environment |
+| --- | --- | --- |
+| OKX | Spot cash only | OKX Demo Trading; send x-simulated-trading: 1 |
+| Binance | Spot only | Spot Testnet |
+| Bybit | Spot only | Bybit Testnet |
+
+Provider adapters normalize:
+
+- credential validation and account identity;
+- account permissions and environment checks;
+- market metadata, symbol format, tick size, lot size, minimum order;
+- public ticker/candle data;
+- balances and open orders;
+- order preview, submit, status lookup, and cancellation;
+- provider-specific rate limits, errors, regional API domains, and sandbox behavior.
+
+Start with read-only account validation and market/balance reads. Add demo/testnet order submission only after the adapter is tested. Keep futures, perpetuals, margin, borrowing, internal transfers, Earn, and withdrawals outside the first release.
+
+### Permission requirements
+
+- Never request or accept withdrawal permission.
+- Do not request wallet, transfer, funding-transfer, sub-account transfer, margin, or derivatives permission.
+- Prefer separate read and trade keys where a venue supports them.
+- OKX documents that its Trade permission can include funding transfers. The application must never implement transfer endpoints; users should use a dedicated, IP-restricted key and understand the permission's wider scope.
+- Binance permissions distinguish account-data access from trading; use only the required user-data and Spot trade scopes.
+- Bybit's permission information exposes Spot trade separately from Wallet permissions; do not enable Wallet transfer or withdrawal scopes.
+- API keys must be created by the account owner. The app validates and stores them; it cannot bypass exchange login, MFA, regional eligibility, or API-key creation controls.
+
+A connector is not considered production-ready merely because a balance endpoint works. It must pass provider contract tests for authentication, symbol metadata, demo/testnet routing, order precision, duplicate prevention, order state reconciliation, cancellations, throttling, and failure handling.
+
+## Wallet model
+
+Use a browser-based wallet connection flow, not wallet secrets in Telegram.
+
+- Reown AppKit / WalletConnect is the cross-wallet connection layer for supported EVM and Solana wallets.
+- Trust Wallet supports WalletConnect v2 for EVM chains and Solana.
+- Phantom can connect to web applications using its supported provider/adapter flow.
+- The first wallet release is address linking and read-only portfolio/transaction monitoring.
+- Verify address ownership with a one-time challenge signature when appropriate.
+- Store only the public address, chain namespace, chain ID, provider, and verification status.
+- Never collect a seed phrase or private key.
+- Do not sign, send, swap, or bridge automatically. Any later transaction must be shown to the wallet and approved by the user there.
+
+WalletConnect/Phantom session credentials must not be treated as exchange API credentials or stored in the group configuration.
+
+## Telegram identity and group authorization
+
+### Identity
+
+- Validate every webhook using Telegram's X-Telegram-Bot-Api-Secret-Token header.
+- Deduplicate updates by Telegram update_id.
+- Derive the actor ID from the verified Telegram update or verified Mini App init data; never trust an ID in command text.
+- Enforce rate limits and replay/idempotency checks.
+- Keep Telegram bot token and webhook secret in Supabase Edge Function Secrets.
+
+### Groups
+
+- The bot may send messages without being an administrator.
+- A group owner must explicitly add/promote the bot to grant moderation rights.
+- Request only the rights required for enabled features. Do not request can_promote_members, change-info, invite, or other broad rights unless a feature genuinely requires them.
+- Verify a human actor's current group-admin status and the bot's own rights before applying moderation changes.
+- Telegram documents that bots added as group administrators receive all group messages even when privacy mode is enabled. Explain this clearly before asking a group to promote the bot.
+- Group admin actions are scoped to that chat. They do not create access to members' private exchange or wallet accounts.
+
+Suggested group modes:
+1. Market only — no bot admin rights required.
+2. Community helper — welcome, rules, commands, and opt-in summaries.
+3. Moderator — only the minimum delete/restrict rights needed for the selected moderation features.
+
+## Trading execution and risk policy
+
+Default execution state is paper/demo/testnet. Live trading is locked.
+
+The AI may summarize research, compare signals, or draft a proposed order. It must not bypass the deterministic risk engine.
+
+Every order proposal must pass all checks before a confirmation is shown:
+
+- user is authenticated and owns the exchange connection;
+- connection is active and environment is explicit;
+- symbol is allowlisted and market is open;
+- size, precision, minimum notional, and available balance are valid;
+- per-order notional, daily loss, exposure, and trade-count limits pass;
+- slippage/spread guard and cooldown pass;
+- duplicate/idempotency checks pass;
+- kill switch is off;
+- approval is bound to the exact user, connection, order payload, and expiry.
+
+Live trading must remain off until a user deliberately enables it through a secure settings page and confirms each live order. No automatic withdrawals or transfers, ever. No group trade execution.
+
+## Runtime and scheduling
+
+Supabase Edge Functions are appropriate for Telegram webhooks, secure form submissions, short API calls, and scheduled worker invocations. They are not a permanent always-on process.
+
+Use the already-installed pg_cron and pg_net for bounded periodic jobs (initially a conservative one-minute cadence for paper/demo scans). Persist run state and use idempotent claims so two invocations cannot execute the same run twice. Keep jobs short and make them safe to retry.
+
+This is not high-frequency trading. Sub-second execution, long-lived WebSocket sessions, or sustained heavy concurrency would require a separate always-on worker with a known egress IP. Do not add paid hosting until the scheduled Supabase path has been tested and its resource limits are understood.
+
+## Initial database model
+
+All application tables must have RLS enabled. No anonymous or browser role receives access to credential records or Vault data. The first implementation should use backend-only access and explicit ownership checks.
+
+Expected tables:
+
+- app_users: Telegram identity, status, platform role.
+- exchange_connections: owner, provider, environment, Vault secret ID, safe permission metadata, validation state.
+- wallet_connections: owner, provider, chain namespace/ID, public address, verification state.
+- group_settings: chat-scoped options and creator.
+- risk_policies: user-specific guardrails and live lock.
+- strategy_runs: user-owned run/stop/pause state.
+- trade_intents: expiring user-bound proposals and approval results.
+- telegram_updates: webhook idempotency.
+- audit_events: redacted security and user-action events; never log raw credentials or webhook bodies.
+
+Use server-side Telegram identity validation and explicit owner predicates for every credential read/write. A service_role key must remain in Edge Function runtime only and never reach the Mini App.
+
+## Delivery phases
+
+### Phase 0 — Preserve and document
+- Keep the stable personal bot on main.
+- Version the deployed Edge Function source in GitHub.
+- Establish security, privacy, and connector contract tests.
+
+### Phase 1 — Multi-user foundation
+- Add user registration and Telegram identity verification.
+- Add database tables, RLS, Vault-backed exchange connection records, audit trail, and idempotent webhook handling.
+- Add a secure Telegram Mini App connection form.
+- No trade execution in this phase.
+
+### Phase 2 — Read-only connections
+- Connect and validate OKX Demo, Binance Spot Testnet, and Bybit Testnet.
+- Add balances, account permissions, tickers, candles, and open-order reads.
+- Add read-only Trust Wallet and Phantom wallet linking.
+
+### Phase 3 — Paper/demo execution
+- Add normalized spot order previews and testnet/demo execution.
+- Add confirmation buttons, idempotency, risk limits, and order reconciliation.
+- No live trading.
+
+### Phase 4 — Group tools
+- Market-only group mode first.
+- Add opt-in moderation features with permission checks and per-chat configuration.
+- No private account data or trades in groups.
+
+### Phase 5 — Live trading review
+- Independent security review and full venue contract tests.
+- Explicit user opt-in, small caps, strong IP restrictions where available, and live confirmation for every trade.
+- Keep live automation disabled until a separate review and user activation.
+
+## Release acceptance criteria
+
+Do not mark a feature complete until:
+
+- automated tests verify cross-user isolation and denied access;
+- no API key, secret, passphrase, seed phrase, or raw webhook payload appears in logs;
+- credentials are never sent as a Telegram message;
+- the provider test environment is verified before any order request;
+- no withdrawal/transfer endpoints exist in the first release;
+- duplicate Telegram updates and duplicate trade intents are safely rejected;
+- a kill switch stops all user runs;
+- the bot cannot act on group trade instructions or another user's connection;
+- Supabase security and performance advisors have been reviewed;
+- the active Edge Function and GitHub source are in sync.
+
+
+## Implementation status — 2026-11-25
+
+The database foundation is deployed to Supabase and the candidate Edge Function is deployed separately from the legacy function.
+
+Implemented in the candidate:
+- multi-user Telegram identity registration and user-specific data model;
+- backend-only RLS tables and Vault credential-storage/retrieval/revocation procedures;
+- atomic Telegram update claims with short retryable leases;
+- exchange-key validation for OKX Demo, Binance Spot Testnet and Bybit Demo;
+- Vercel-hosted Telegram Mini App pages for exchange setup, watch-only address entry, webhook setup, and browser-side QR scanning of public wallet receive addresses (camera or image-file input);
+- watch-only EVM and Solana public-address records;
+- group-setup and manual moderator commands with administrator checks.
+
+Not yet implemented:
+- exchange balances, market information and open-order reads for each attached connection;
+- actual WalletConnect/Phantom wallet sessions, wallet balances or transactions. The QR scanner only extracts public receive addresses for watch-only linking; WalletConnect pairing QR codes are deliberately rejected;
+- paper/demo trade execution, order reconciliation, strategies and scheduler jobs;
+- live trading (remains disabled);
+- full connection revoke/dashboard UI and comprehensive end-to-end test suite.
+
+Deployment state:
+- Supabase function `telegram-bot-next` is ACTIVE. The shared Telegram bot token and webhook secret are now detected by the live function; Telegram webhook registration still needs a successful confirmation from the `/setup` page.
+- The stable legacy function and `main` branch have not been replaced or merged.
+- The universal code is isolated in branch `universal-multi-user`.
