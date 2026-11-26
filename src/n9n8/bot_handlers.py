@@ -793,7 +793,11 @@ async def cmd_paper(message: Message) -> None:
         return
     svc = _svc()
     enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "paper")
-    await message.answer(await _paper_menu_text(message.from_user.id),reply_markup=_paper_menu_keyboard(enabled))
+    await _show_command_panel(
+        message,
+        await _paper_menu_text(message.from_user.id),
+        _paper_menu_keyboard(enabled),
+    )
 
 
 @router.message(Command("paper_on"))
@@ -802,14 +806,12 @@ async def cmd_paper_on(message: Message) -> None:
         return
     svc = _svc()
     try:
-        account = await svc.engine.start_paper_user(message.from_user.id)
-        await message.answer(
-            "🧪 PAPER TRADING STARTED\n"
-            "Your practice account has a $1,000 virtual starting value.\n"
-            f"Virtual SOL cash: {format_sol(account['cash_balance_lamports'])} SOL\n"
-            "Your real wallet is not used for paper buys or sells."
+        await svc.engine.start_paper_user(message.from_user.id)
+        await _show_command_panel(
+            message,
+            await _paper_menu_text(message.from_user.id),
+            _paper_menu_keyboard(True),
         )
-        await message.answer(await _paper_menu_text(message.from_user.id),reply_markup=_paper_menu_keyboard(True))
     except Exception as exc:
         await message.answer(f"Paper mode could not start: {type(exc).__name__}: {str(exc)[:240]}")
 
@@ -820,7 +822,11 @@ async def cmd_paper_off(message: Message) -> None:
         return
     svc = _svc()
     await svc.engine.stop_paper_user(message.from_user.id)
-    await message.answer("Paper entries paused. Existing virtual positions remain monitored.")
+    await _show_command_panel(
+        message,
+        await _paper_menu_text(message.from_user.id),
+        _paper_menu_keyboard(False),
+    )
 
 
 @router.callback_query(F.data == "paper:menu")
@@ -857,7 +863,11 @@ async def cmd_live(message: Message) -> None:
     svc = _svc()
     readiness = await svc.engine.live_readiness(message.from_user.id)
     enabled = await svc.engine.paper_engine.store.mode_enabled(message.from_user.id, "live")
-    await message.answer(await _live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
+    await _show_command_panel(
+        message,
+        await _live_menu_text(message.from_user.id),
+        _live_menu_keyboard(enabled, readiness["ready"]),
+    )
 
 
 @router.message(Command("live_on"))
@@ -938,7 +948,15 @@ async def cb_live_stop(callback: CallbackQuery) -> None:
 async def cmd_positions(message: Message) -> None:
     if not _is_private(message):
         return
-    await message.answer(await _positions_text(message.from_user.id))
+    await _show_command_panel(
+        message,
+        await _positions_text(message.from_user.id),
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧪 Paper Positions", callback_data="positions:paper"),
+             InlineKeyboardButton(text="🔴 Live Positions", callback_data="positions:live")],
+            [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+        ]),
+    )
 
 
 @router.callback_query(F.data == "positions:show")
@@ -958,7 +976,11 @@ async def cmd_paper_positions(message: Message) -> None:
     svc = _svc()
     rows = await svc.engine.paper_engine.store.positions(message.from_user.id) if svc.engine.paper_engine else []
     if not rows:
-        await message.answer("No open virtual positions. Use /paper to review your practice account.")
+        await _show_command_panel(
+            message,
+            "No open virtual positions. Use /paper to review your practice account.",
+            _paper_menu_keyboard(False),
+        )
         return
     await _send_paper_positions(message, rows)
 
@@ -976,7 +998,11 @@ async def _send_paper_positions(message: Message, rows: list[dict]) -> None:
         )
         buttons.append([InlineKeyboardButton(text=f"Virtual Sell 100% {mint[:7]}…", callback_data=f"paper:position:sell:{row['id']}")])
     buttons.append([InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")])
-    await message.answer("\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await _show_command_panel(
+        message,
+        "\n\n".join(lines),
+        InlineKeyboardMarkup(inline_keyboard=buttons),
+    )
 
 
 @router.callback_query(F.data == "positions:paper")
@@ -1020,7 +1046,8 @@ async def cmd_live_positions(message: Message) -> None:
         return
     svc = _svc()
     rows = await svc.db.active_positions(message.from_user.id)
-    await _send_live_positions(message, rows)
+    text, keyboard = await _live_positions_view(rows)
+    await _show_command_panel(message, text, keyboard)
 
 
 async def _live_positions_view(rows: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
@@ -1158,11 +1185,15 @@ async def cb_panic_sell_all_confirm(callback: CallbackQuery) -> None:
 async def cmd_settings(message: Message) -> None:
     if not _is_private(message):
         return
-    await message.answer("Choose the settings area you want to change.",reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Paper Settings",callback_data="paper:settings")],
-        [InlineKeyboardButton(text="Live Settings",callback_data="settings:show")],
-        [InlineKeyboardButton(text="Back",callback_data="home:show")],
-    ]))
+    await _show_command_panel(
+        message,
+        "⚙️ SETTINGS\n\nChoose which separate settings book you want to manage.",
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧪 Paper Settings",callback_data="paper:settings")],
+            [InlineKeyboardButton(text="🔴 Live Settings",callback_data="settings:show")],
+            [InlineKeyboardButton(text="🏠 Dashboard",callback_data="home:show")],
+        ]),
+    )
 
 
 @router.message(Command("paper_settings"))
@@ -1171,7 +1202,11 @@ async def cmd_paper_settings(message: Message) -> None:
         return
     svc = _svc()
     config = await svc.engine.paper_engine.store.settings(message.from_user.id,"paper")
-    await message.answer("PAPER SETTINGS · VIRTUAL ACCOUNT",reply_markup=_paper_settings_keyboard(config))
+    await _show_command_panel(
+        message,
+        "PAPER SETTINGS · VIRTUAL ACCOUNT",
+        _paper_settings_keyboard(config),
+    )
 
 
 @router.callback_query(F.data == "paper:settings")
@@ -1430,7 +1465,8 @@ async def cmd_safety(message: Message) -> None:
     if not _is_private(message):
         return
     config = await _svc().db.get_settings(message.from_user.id)
-    await message.answer(
+    await _show_command_panel(
+        message,
         "🛡️ ANTI-RUG SAFETY GATEKEEPER · SOLANA\n\n"
         "Every required check must pass. Missing or unverifiable evidence blocks the buy.\n\n"
         "✅ Mint authority disabled: REQUIRED · cannot be switched off\n"
@@ -1440,7 +1476,7 @@ async def cmd_safety(message: Message) -> None:
         f"✅ Maximum top-10 wallet share: {config.get('max_top10_concentration_pct','25')}%\n"
         f"✅ Maximum developer share: {config.get('max_dev_wallet_pct','5')}%\n\n"
         "The two authority rules are hard safety requirements and cannot be disabled from Telegram.",
-        reply_markup=_safety_keyboard(config),
+        _safety_keyboard(config),
     )
 
 
@@ -1482,21 +1518,43 @@ async def cb_safety_locked(callback: CallbackQuery) -> None:
 async def cmd_history(message: Message) -> None:
     if not _is_private(message):
         return
-    await message.answer(await _history_text(message.from_user.id,"both"))
+    await _show_command_panel(
+        message,
+        await _history_text(message.from_user.id, "both"),
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Paper History",callback_data="history:paper"),
+             InlineKeyboardButton(text="Live Receipts",callback_data="history:live")],
+            [InlineKeyboardButton(text="🏠 Dashboard",callback_data="home:show")],
+        ]),
+    )
 
 
 @router.message(Command("paper_history"))
 async def cmd_paper_history(message: Message) -> None:
     if not _is_private(message):
         return
-    await message.answer(await _history_text(message.from_user.id, "paper"))
+    await _show_command_panel(
+        message,
+        await _history_text(message.from_user.id, "paper"),
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Back to Paper Menu",callback_data="paper:menu")],
+            [InlineKeyboardButton(text="All History",callback_data="history:show")],
+        ]),
+    )
 
 
 @router.message(Command("live_history"))
 async def cmd_live_history(message: Message) -> None:
     if not _is_private(message):
         return
-    await message.answer(await _history_text(message.from_user.id, "live"))
+    await _show_command_panel(
+        message,
+        await _history_text(message.from_user.id, "live"),
+        InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")],
+            [InlineKeyboardButton(text="All History",callback_data="history:show")],
+        ]),
+    )
 
 
 @router.message(Command("live_settings"))
@@ -1505,9 +1563,10 @@ async def cmd_live_settings(message: Message) -> None:
         return
     svc = _svc()
     config = await svc.db.get_settings(message.from_user.id)
-    await message.answer(
-        "LIVE SETTINGS · REAL WALLET\nChanges apply only to future live entries.\n",
-        reply_markup=_settings_keyboard(config),
+    await _show_command_panel(
+        message,
+        "LIVE SETTINGS · REAL WALLET\nChanges apply only to future live entries.",
+        _settings_keyboard(config),
     )
 
 
@@ -1518,7 +1577,12 @@ async def cmd_live_off(message: Message) -> None:
         return
     svc = _svc()
     await svc.engine.stop_live_user(message.from_user.id)
-    await message.answer("Live entries are OFF. Paper mode is unchanged. Existing real positions remain monitored.")
+    await _show_command_panel(
+        message,
+        "LIVE ENTRIES ARE OFF. Paper mode is unchanged. Existing real positions remain monitored.\n\n"
+        + await _live_menu_text(message.from_user.id),
+        _live_menu_keyboard(False, False),
+    )
 
 
 @router.callback_query(F.data == "history:show")
@@ -1596,7 +1660,11 @@ async def cmd_help(message: Message) -> None:
 async def cmd_status(message: Message) -> None:
     if not _is_private(message):
         return
-    await message.answer(await _dashboard_text(message.from_user.id))
+    await _show_command_panel(
+        message,
+        await _dashboard_text(message.from_user.id),
+        _home_keyboard(_svc().settings.webapp_url),
+    )
 
 
 @router.callback_query(F.data == "home:show")
