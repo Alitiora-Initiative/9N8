@@ -294,6 +294,14 @@ class Database:
                    VALUES(?,?,?,0,0)""",
                 (telegram_id, day_utc, starting_equity_lamports),
             )
+            # If a user started the bot before their first deposit, initialize
+            # the day's baseline on the first positive funded balance.
+            await db.execute(
+                """UPDATE daily_risk SET starting_equity_lamports=?
+                   WHERE telegram_id=? AND day_utc=?
+                     AND starting_equity_lamports=0 AND ? > 0""",
+                (starting_equity_lamports, telegram_id, day_utc, starting_equity_lamports),
+            )
             await db.commit()
             cur = await db.execute(
                 "SELECT starting_equity_lamports,realized_pnl_lamports,trade_count FROM daily_risk WHERE telegram_id=? AND day_utc=?",
