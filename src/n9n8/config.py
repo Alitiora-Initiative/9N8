@@ -32,7 +32,7 @@ class Settings:
     vercel_queue_region: str
     vercel_queue_topic: str
     vercel_queue_consumer: str
-    jupiter_base_url
+    jupiter_base_url: str
     jupiter_api_key: str
     jito_base_url: str
     live_trading_enabled: bool
