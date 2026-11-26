@@ -94,7 +94,7 @@
           <span class="mode-pill">PAPER ≠ LIVE</span>
         </div>
         <div class="mode-grid">
-          <article class="mode-card paper">
+          <article class="mode-card paper" id="paperModeCard">
             <div class="mode-head">
               <div><span class="eyebrow">VIRTUAL ACCOUNT</span><div class="mode-title">🧪 Paper Trading</div></div>
               <span class="mode-status off" id="paperStatus">PAUSED</span>
@@ -110,11 +110,11 @@
               <button class="paper-action" id="paperToggle">START PAPER</button>
               <button id="paperRefresh">REFRESH</button>
             </div>
-            <div class="subsection">
+            <div class="subsection" id="paperPositionsSection">
               <h3>Paper positions</h3>
               <div class="mini-list" id="paperPositions"><div class="empty-state">No paper positions yet</div></div>
             </div>
-            <div class="subsection">
+            <div class="subsection" id="paperSettingsSection">
               <h3>Paper trading rules</h3>
               <form id="paperSettingsForm" class="settings-form">
                 <label class="field"><span>Buy size (SOL)</span><input name="buy_amount_sol" type="number" min="0.001" max="0.5" step="0.001"></label>
@@ -145,7 +145,7 @@
             </div>
           </article>
 
-          <article class="mode-card live">
+          <article class="mode-card live" id="liveModeCard">
             <div class="mode-head">
               <div><span class="eyebrow">REAL SOLANA WALLET</span><div class="mode-title">🔴 Live Sniper</div></div>
               <span class="mode-status off" id="liveStatus">OFF / LOCKED</span>
@@ -163,11 +163,11 @@
               <button class="live-action" id="liveToggle" disabled>LIVE LOCKED</button>
               <button id="liveRefresh">CHECK AGAIN</button>
             </div>
-            <div class="subsection">
+            <div class="subsection" id="livePositionsSection">
               <h3>Live positions · real wallet</h3>
               <div class="mini-list" id="livePositions"><div class="empty-state">No live positions</div></div>
             </div>
-            <div class="subsection">
+            <div class="subsection" id="liveHistorySection">
               <h3>Live history · on-chain receipts</h3>
               <div class="mini-list" id="liveReceipts"><div class="empty-state">No live receipts recorded</div></div>
             </div>
@@ -184,7 +184,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="safetyGatekeeperSection">
         <div class="section-heading">
           <div><span class="eyebrow">02 / SAFETY GATEKEEPER</span><h2>Required token checks</h2></div>
           <span class="mode-pill">FAIL CLOSED</span>
