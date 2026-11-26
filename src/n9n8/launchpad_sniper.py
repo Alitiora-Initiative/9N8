@@ -50,9 +50,15 @@ class LaunchpadSniper:
         self.helius = helius
         self._seen: set[str] = set()
         self._stop = asyncio.Event()
+        self._curve_tasks: dict[str, asyncio.Task] = {}
 
     async def stop(self) -> None:
         self._stop.set()
+        for task in self._curve_tasks.values():
+            task.cancel()
+        if self._curve_tasks:
+            await asyncio.gather(*self._curve_tasks.values(), return_exceptions=True)
+        self._curve_tasks.clear()
 
     async def run(self, callback: Callable[[LaunchCandidate], Awaitable[None]]) -> None:
         self._stop.clear()
@@ -82,6 +88,13 @@ class LaunchpadSniper:
                     )
                 if candidate:
                     await callback(candidate)
+                    if candidate.launchpad == "pump.fun" and candidate.bonding_curve and not candidate.bonding_curve.complete:
+                        old = self._curve_tasks.get(candidate.mint)
+                        if old is None or old.done():
+                            self._curve_tasks[candidate.mint] = asyncio.create_task(
+                                self._watch_curve(candidate, callback),
+                                name=f"9n8-curve-{candidate.mint[:8]}",
+                            )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -117,6 +130,59 @@ class LaunchpadSniper:
         return BondingCurveState(
             str(pda), virtual_tokens, virtual_sol, real_tokens, real_sol,
             total_supply, complete, progress,
+        )
+
+
+    async def _watch_curve(
+        self,
+        candidate: LaunchCandidate,
+        callback: Callable[[LaunchCandidate], Awaitable[None]],
+    ) -> None:
+        """Follow the bonding-curve account until migration or five-minute expiry."""
+        try:
+            if not candidate.bonding_curve:
+                return
+            async for account in self.helius.account_changes(candidate.bonding_curve.address):
+                if self._stop.is_set():
+                    return
+                data = account.get("data")
+                if not isinstance(data, list) or not data:
+                    continue
+                try:
+                    raw = base64.b64decode(data[0], validate=True)
+                    state = self._curve_from_raw(candidate.bonding_curve.address, raw)
+                except Exception:
+                    continue
+                updated = LaunchCandidate(
+                    candidate.mint, candidate.launchpad, candidate.signature,
+                    candidate.slot, candidate.created_at_slot,
+                    candidate.developer_buy_sol, candidate.source_logs, state,
+                )
+                await callback(updated)
+                if state.complete:
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Bonding curve watcher %s ended: %s", candidate.mint, type(exc).__name__)
+        finally:
+            self._curve_tasks.pop(candidate.mint, None)
+
+    @staticmethod
+    def _curve_from_raw(address: str, raw: bytes) -> BondingCurveState:
+        if len(raw) < 49:
+            raise ValueError("Bonding curve account is shorter than its base layout.")
+        virtual_tokens = int.from_bytes(raw[8:16], "little")
+        virtual_sol = int.from_bytes(raw[16:24], "little")
+        real_tokens = int.from_bytes(raw[24:32], "little")
+        real_sol = int.from_bytes(raw[32:40], "little")
+        total_supply = int.from_bytes(raw[40:48], "little")
+        complete = bool(raw[48])
+        progress = Decimal(PUMP_INITIAL_REAL_TOKEN_RESERVES - real_tokens) * Decimal(100) / Decimal(PUMP_INITIAL_REAL_TOKEN_RESERVES)
+        progress = max(Decimal(0), min(Decimal(100), progress))
+        return BondingCurveState(
+            address, virtual_tokens, virtual_sol, real_tokens,
+            real_sol, total_supply, complete, progress,
         )
 
     def _parse_transaction(
