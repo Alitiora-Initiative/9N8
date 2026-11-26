@@ -2524,20 +2524,18 @@ async function handleMessage(update: any) {
   if (command === "/start" || command === "/menu") {
     await setBotProfileAndCommands();
     await audit(row.id, chatId, "private_start");
-    const started = await startCryptoPaper(row.id, chatId);
-    const sessionLine = started.ok
-      ? "YOUR PRACTICE ACCOUNT IS READY\n$1,000 virtual money · real Binance market prices · no real orders."
-      : "YOUR PRACTICE ACCOUNT DID NOT START\n" + started.message;
     await send(chatId,
-      "👋 WELCOME TO 9N8\n" +
-      "Watch the market, practise with virtual money and connect your own exchange account.\n\n" +
-      serviceOverview() +
-      "\n\n" + sessionLine +
-      "\n\nUse the buttons below to get started. Send /services any time to see this guide again.",
+      "🚀 WELCOME TO 9N8 — SOLANA SNIPER\n\n" +
+      "Your Telegram control panel separates Solana Paper Trading from Live Sniper controls.\n\n" +
+      "🧪 PAPER MODE\n" +
+      "Uses live Solana market data with virtual SOL. Paper orders, balances, positions and PnL are separate and never sign or broadcast a blockchain transaction.\n\n" +
+      "🔴 LIVE MODE\n" +
+      "Uses a separate real-wallet control panel. Live trading stays locked until the server-side wallet, risk, operator and activation checks pass. Opening the panel does not place an order.\n\n" +
+      "Use the buttons below for the complete dashboard, positions, settings and anti-rug filters. The exchange simulator and account connections remain available under /simulator and /connect.",
       mainKeyboard());
     return;
   }
-  if (command === "/services") {
+    if (command === "/services") {
     await send(chatId, serviceOverview(), mainKeyboard());
     return;
   }
