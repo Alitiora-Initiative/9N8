@@ -179,3 +179,16 @@ The $1 equivalent is converted from a fresh SOL/USD oracle observation. If a tru
 - The Mini App validates Telegram `initData`; do not expose unauthenticated wallet endpoints behind a reverse proxy.
 - Use an HTTPS host, persistent disk, restricted access to environment variables, regular encrypted backups and key rotation procedures.
 - Do not treat a clean test run as an audit or guarantee of trading safety.
+
+## Telegram network selector update
+
+The `feature/telegram-network-switcher-and-dashboard` branch adds a Telegram network selector and address-aware quick-snipe entry point without claiming unsupported chain execution.
+
+- `/chains` and `/network` open the selector for Solana, Base, Ethereum and BNB Chain.
+- Solana Mainnet is the only execution-enabled network in this runtime. Its wallet, Helius/Pump.fun/Raydium listener, token-risk checks, Jupiter routing, Jito submission and position monitoring remain the integrated path.
+- Base, Ethereum and BNB Chain are displayed as **NOT CONNECTED**. Their selection is rejected until separate EVM wallet custody, RPC and pool listeners, GoPlus/Honeypot risk checks, router execution, transaction receipt reconciliation and position monitoring are implemented and tested.
+- The selector's wallet-management screen only describes the existing Solana wallet. It explicitly warns against sending EVM assets to the Solana address.
+- A valid pasted Solana mint opens a choice of Paper preview or Live safety preview. A pasted EVM address is recognized but no EVM RPC request, quote or transaction is attempted.
+- `/start` and `/chains` reuse the current control-panel message while the bot process remains alive. The message identifier is in process memory; after a worker restart, the next command creates a fresh panel.
+
+This update changes Telegram presentation and routing safeguards only. It does not deploy the worker, enable live trading, add EVM execution, or certify unattended trading. Paper and Live remain separate, and live trading stays subject to both operator and per-account controls.
