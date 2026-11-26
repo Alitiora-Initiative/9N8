@@ -93,7 +93,7 @@ button:disabled{opacity:.55;cursor:wait}
     <section class="card" id="exchangePanel">
       <h2>Exchange account connections</h2>
       <p class="muted">Use the API key and secret from your exchange. OKX also needs the passphrase you created with the key. 9N8 checks the permissions, then saves the connection encrypted.</p>
-      <div class="notice">Choose the markets you need below. On Binance, the “Spot &amp; Margin &amp; Stock Trading” permission covers Spot and related eligible products; Futures and Options have their own switches. Bybit uses one API key for Spot and derivatives. OKX uses one broad Trade permission and account modes determine which products are available. Keep Withdraw and account transfers turned OFF. Never paste a seed phrase or wallet private key.</div>
+      <div class="notice">Choose the markets you need below. On Binance, “Spot &amp; Margin &amp; Stock Trading” covers Spot and eligible related products; Futures and Options have their own switches. Bybit uses one key across Spot and derivatives: choose a system-generated key that gives you an API key and secret (not a self-generated RSA key). Some regional Bybit accounts have extra third-party connection rules. OKX uses one broad Trade permission, and your account mode determines which products are available. Keep Withdraw and account transfers turned OFF. Never paste a seed phrase or wallet private key.</div>
       <form id="exchangeForm" autocomplete="off">
         <label for="provider">Exchange</label>
         <select id="provider" required>
