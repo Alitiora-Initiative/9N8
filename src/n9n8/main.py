@@ -9,7 +9,10 @@ from contextlib import suppress
 
 import uvicorn
 from aiogram import Bot, Dispatcher
-from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    BotCommand, BotCommandScopeAllPrivateChats,
+    InlineKeyboardButton, InlineKeyboardMarkup,
+)
 from dotenv import load_dotenv
 
 from .autonomous_engine import AutonomousEngine
@@ -90,7 +93,7 @@ async def run(worker_only: bool = False) -> None:
         await bot.set_my_short_description(
             "Solana paper trading and a separately controlled live sniper."
         )
-        await bot.set_my_commands([
+        private_commands = [
             BotCommand(command="start", description="Open your 9N8 dashboard"),
             BotCommand(command="chains", description="Select Solana or view EVM network status"),
             BotCommand(command="network", description="Open the network selector"),
@@ -115,8 +118,17 @@ async def run(worker_only: bool = False) -> None:
             BotCommand(command="history", description="Choose paper or live history"),
             BotCommand(command="withdraw", description="Withdraw real SOL"),
             BotCommand(command="stop", description="Stop new live entries"),
+            BotCommand(command="status", description="Refresh dashboard and mode status"),
+            BotCommand(command="dashboard", description="Open the main trading dashboard"),
             BotCommand(command="help", description="Show all commands"),
-        ])
+        ]
+        # Telegram resolves the private-chat scope ahead of the default command list.
+        # Publish to both so the updated commands appear in the actual owner DM.
+        await bot.set_my_commands(private_commands)
+        await bot.set_my_commands(
+            private_commands,
+            scope=BotCommandScopeAllPrivateChats(),
+        )
     except Exception:
         logger.exception("Could not update Telegram bot description/command menu.")
 
