@@ -1,6 +1,13 @@
 -- 9N8 paper/live separation. Paper records never share the live positions or receipt ledger.
 BEGIN;
 
+ALTER TABLE public.n9n8_positions
+    ADD COLUMN IF NOT EXISTS peak_value_lamports NUMERIC(30,0) NOT NULL DEFAULT 0;
+ALTER TABLE public.n9n8_positions
+    ADD COLUMN IF NOT EXISTS tp1_done BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE public.n9n8_positions
+    ADD COLUMN IF NOT EXISTS tp2_done BOOLEAN NOT NULL DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS public.n9n8_paper_settings (
     telegram_id BIGINT PRIMARY KEY REFERENCES public.n9n8_users(telegram_id) ON DELETE CASCADE,
     config_json JSONB NOT NULL,
