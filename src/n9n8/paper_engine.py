@@ -185,7 +185,9 @@ class PaperTradingEngine:
                 "simulated_spend_lamports": spend, "simulated_fee_lamports": fee,
             })
 
-    async def preview_mint(self, telegram_id: int, mint: str) -> dict[str, Any]:
+    async def preview_mint(
+        self, telegram_id: int, mint: str, amount_override_sol: str | None = None,
+    ) -> dict[str, Any]:
         config = await self.store.settings(telegram_id, "paper")
         minimum_liquidity_usd = await self._minimum_liquidity_usd(config)
         risk = await self.security.inspect(
@@ -193,14 +195,21 @@ class PaperTradingEngine:
             max_top10_pct=str(config.get("max_top10_concentration_pct", "25")),
             min_liquidity_usd=minimum_liquidity_usd,
             min_lp_locked_pct=str(config.get("min_lp_locked_pct", "80")),
+            max_dev_pct=str(config.get("max_dev_wallet_pct", "5")),
+            require_mint_authority_revoked=bool(config.get("require_mint_authority_revoked", True)),
+            require_freeze_authority_revoked=bool(config.get("require_freeze_authority_revoked", True)),
         )
         if not risk.passed:
             return {"passed": False, "reasons": list(risk.reasons), "mint": mint}
-        amount = to_lamports(dec(config.get("buy_amount_sol", "0.05")))
+        amount_sol = dec(amount_override_sol if amount_override_sol is not None else config.get("buy_amount_sol", "0.05"))
+        if amount_sol <= 0 or amount_sol > self.max_position_sol:
+            return {"passed": False, "reasons": ["Buy amount exceeds the configured safety cap."], "mint": mint}
+        amount = to_lamports(amount_sol)
         quote = await self._quote(SOL_MINT, mint, amount)
         return {
             "passed": True, "mint": mint, "launchpad": "raydium",
             "buy_amount_sol": str(from_lamports(amount)),
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "expected_output_raw": str(quote.get("outAmount")),
             "minimum_output_raw": str(quote.get("otherAmountThreshold") or quote.get("outAmount")),
             "price_impact_pct": str(quote.get("priceImpactPct") or "unknown"),
@@ -219,17 +228,26 @@ class PaperTradingEngine:
             raise ValueError("A passing preview for this mint is required.")
         if not await self.store.mode_enabled(telegram_id, "paper"):
             raise ValueError("Start paper mode before confirming a paper buy.")
-        quote = dict(preview["quote"])
-        tokens = int(preview.get("minimum_output_raw") or 0)
+        created_at = _timestamp(preview.get("created_at", ""))
+        if (datetime.now(timezone.utc) - created_at).total_seconds() > 90:
+            raise ValueError("This preview expired. Run /snipe again for a fresh safety check and quote.")
+        amount_sol = str(preview["buy_amount_sol"])
+        # Re-run every security rule and fetch a fresh quote immediately before
+        # recording the virtual fill; do not trust stale Telegram callback state.
+        fresh = await self.preview_mint(telegram_id, mint, amount_sol)
+        if not fresh.get("passed"):
+            raise ValueError("The token no longer passes the safety checks: " + "; ".join(fresh.get("reasons", [])[:3]))
+        quote = dict(fresh["quote"])
+        tokens = int(fresh.get("minimum_output_raw") or 0)
         if tokens <= 0:
             raise ValueError("Jupiter quote has no minimum output.")
-        amount = to_lamports(dec(preview["buy_amount_sol"]))
+        amount = to_lamports(dec(amount_sol))
         config = await self.store.settings(telegram_id, "paper")
         sol_price = await self.oracle.sol_usd()
         supply = await self.helius.token_supply(mint)
         decimals = int(supply["value"]["decimals"])
         token_units = Decimal(tokens) / (Decimal(10) ** decimals)
-        entry_price = dec(preview["buy_amount_sol"]) * sol_price / token_units
+        entry_price = dec(amount_sol) * sol_price / token_units
         fee = max(5000, int(config.get("priority_fee_lamports", 10000))) + (
             int(config.get("jito_tip_lamports", 0)) if config.get("mev_shield", True) else 0
         ) + int(Decimal(amount) * Decimal("0.001"))
@@ -325,10 +343,11 @@ class PaperTradingEngine:
             if position:
                 await self.notify(
                     int(position["telegram_id"]),
-                    f"Paper monitor paused for {str(position['mint'])[:8]}…: {type(exc).__name__}. "
-                    "No simulated exit was invented; the virtual position remains open.",
+                    f"Paper monitor temporarily unavailable for {str(position['mint'])[:8]}…: {type(exc).__name__}. "
+                    "No simulated exit was invented; the virtual position remains open and the monitor will retry.",
                 )
-            await asyncio.sleep(5)
+            if not self._stopping:
+                asyncio.get_running_loop().call_later(5, self._ensure_monitor, position_id)
         finally:
             current = self._tasks.get(position_id)
             if current is asyncio.current_task():
