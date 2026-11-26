@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot, F, Router
@@ -424,17 +425,56 @@ async def _history_text(telegram_id: int, mode: str = "both") -> str:
                 f"{format_sol(amount)} SOL · {row.get('reason') or 'simulated'}"
             )
     if mode in {"both","live"}:
-        live_rows = await svc.db.list_trade_receipts(telegram_id,20)
+        live_rows = await svc.db.list_trade_receipts(telegram_id,50)
         lines.extend(["", "LIVE TRANSACTIONS · BLOCKCHAIN RECEIPTS"])
         if not live_rows:
             lines.append("No live blockchain receipts recorded.")
+
+        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        net_24h = 0
+        confirmed_exits_24h = 0
+        for row in live_rows:
+            created = row.get("created_at")
+            try:
+                created_at = created if isinstance(created, datetime) else datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if created_at >= since and row.get("event_type") == "sell" and row.get("status") in {"confirmed", "finalized"}:
+                pnl_value = metadata.get("net_realized_pnl_lamports")
+                if pnl_value is not None:
+                    net_24h += int(pnl_value)
+                    confirmed_exits_24h += 1
+        lines.append(
+            f"24h confirmed realized PnL: {format_sol(net_24h)} SOL "
+            f"({confirmed_exits_24h} confirmed exits)"
+        )
+
         for row in live_rows[:20]:
             signature = str(row.get("signature") or "")
             lines.append(
                 f"• {str(row.get('event_type','trade')).upper()} · {str(row.get('status','unknown')).upper()} "
                 f"· {str(row.get('mint') or 'SOL')[:8]}…"
             )
-            lines.append(f"  https://solscan.io/tx/{signature}")
+            if signature:
+                lines.append(f"  https://solscan.io/tx/{signature}")
+
+        security_rows = await svc.db.list_security_events(telegram_id, 30)
+        rejection_rows = [
+            item for item in security_rows
+            if "reject" in str(item.get("event_type", "")).lower()
+            or "skip" in str(item.get("event_type", "")).lower()
+        ]
+        lines.extend(["", "RECENT SAFETY REJECTIONS · NO BUY WAS SENT"])
+        if not rejection_rows:
+            lines.append("No recorded safety rejections.")
+        for item in rejection_rows[:12]:
+            lines.append(
+                f"• {str(item.get('event_type','rejected')).replace('_',' ')}: "
+                f"{str(item.get('detail',''))[:260]}"
+            )
     return "\n".join(lines)
 
 
