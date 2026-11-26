@@ -291,7 +291,23 @@ class AutonomousEngine:
             except ValueError:
                 continue
             if account_index < len(pre) and account_index < len(post):
-                rent_refunds += max(0, int(pre[account_index]) - int(post[account_index]))
+                account_rent = max(0, int(pre[account_index]) - int(post[account_index]))
+                token_row = next(
+                    (
+                        row for row in (meta.get("preTokenBalances") or [])
+                        if int(row.get("accountIndex", -1)) == account_index
+                    ),
+                    None,
+                )
+                token_info = (token_row or {}).get("uiTokenAmount") or {}
+                if (token_row or {}).get("mint") == SOL_MINT:
+                    # Closing a wrapped-SOL account returns both its rent and its
+                    # wrapped SOL. Exclude only the rent reserve from the trade delta.
+                    wrapped_lamports = int(token_info.get("amount") or 0)
+                    rent_refunds += max(0, account_rent - wrapped_lamports)
+                else:
+                    # A non-WSOL token account contains rent, not spendable SOL.
+                    rent_refunds += account_rent
         return delta - rent_refunds
 
     async def _record_trade_receipt(
@@ -447,7 +463,11 @@ class AutonomousEngine:
         tx_meta = (tx_data or {}).get("meta") or {}
         network_fee = int(tx_meta.get("fee") or 5000)
         tip_network_fee = int(((tip_tx_data or {}).get("meta") or {}).get("fee") or 0)
-        receipt_status = "confirmed" if tx_data and (not result.tip_signature or tip_tx_data) else "unknown"
+        receipt_status = (
+            "confirmed"
+            if tx_data and (not result.tip_signature or tip_tx_data) and not token_amount_provisional
+            else "unknown"
+        )
         wallet_address = str(wallet_key.pubkey())
         token_amount = 0
         token_decimals: int | None = None
@@ -474,10 +494,12 @@ class AutonomousEngine:
                     token_amount = 0
                 if token_amount > 0:
                     break
+        token_amount_provisional = False
         if token_amount <= 0:
-            # The confirmed route quote is retained as the provisional position
-            # size so this trade is not silently forgotten if RPC indexing lags.
+            # Keep a provisional record so the confirmed swap is not forgotten;
+            # mark the receipt unknown and pause further entries until reconciled.
             token_amount = int(result.output_amount)
+            token_amount_provisional = True
             await self.notify(
                 telegram_id,
                 f"WARNING: swap {result.signature} is confirmed, but Helius has not indexed the token account yet. "
@@ -520,7 +542,7 @@ class AutonomousEngine:
                 "launchpad": candidate.launchpad,
                 "expected_output_raw": str(result.output_amount),
                 "minimum_output_raw": str(result.minimum_output),
-                "token_amount_source": "helius_or_transaction" if token_amount != int(result.output_amount) else "helius_or_transaction_or_provisional_quote",
+                "token_amount_source": "provisional_jupiter_quote" if token_amount_provisional else "helius_or_transaction",
                 "network_fee_lamports": network_fee,
                 "jito_tip_lamports": jito_tip,
                 "tip_network_fee_lamports": tip_network_fee,
