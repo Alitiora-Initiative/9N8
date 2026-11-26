@@ -1,9 +1,9 @@
-name: 9N8 tests
+name: 9N8 Solana tests
 on:
   push:
-    branches: [main, exchange-api]
+    branches: [main, feature/solana-telegram-sniper]
   pull_request:
-    branches: [main, exchange-api]
+    branches: [main]
 permissions:
   contents: read
 jobs:
@@ -13,9 +13,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
+          cache: "pip"
       - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt pytest
+      - run: pip install -r requirements.txt pytest pytest-asyncio httpx
       - run: python -m compileall -q src tests
-      - run: python -c "import src.bot"
+      - run: python -c "import src.n9n8.main"
       - run: python -m pytest -q
