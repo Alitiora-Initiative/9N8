@@ -211,6 +211,7 @@ The $1 equivalent is converted from a fresh SOL/USD oracle observation. If a tru
 |---|---:|
 | Buy amount | 0.05 SOL |
 | Buy slippage | 15% |
+| Sell slippage | 20% |
 | Jito tip | 0.002 SOL |
 | Minimum pool liquidity | 5 SOL equivalent |
 | Minimum LP locked/burned | 80% |
@@ -222,7 +223,7 @@ The $1 equivalent is converted from a fresh SOL/USD oracle observation. If a tru
 | Hard stop | -30% |
 | Maximum hold | 4 hours |
 
-The settings screen allows the numeric limits to be changed within hard-coded caps. It does not allow mint/freeze authority revocation requirements to be switched off.
+The settings screen allows buy and sell slippage to be changed separately, and adjusts the corresponding Jupiter v2 `slippageBps` parameter. A fixed slippage override changes Jupiter from its default automatic slippage mode. All numeric limits are bounded by hard-coded caps. Mint/freeze authority revocation requirements cannot be switched off.
 
 ### Telegram command reference
 
