@@ -537,6 +537,16 @@ class Database:
             )
             return [dict(row) for row in await cur.fetchall()]
 
+    async def wallet_key_was_revealed(self, telegram_id: int, address: str) -> bool:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute(
+                """SELECT 1 FROM security_events
+                   WHERE telegram_id=? AND event_type='wallet_key_revealed' AND detail=?
+                   LIMIT 1""",
+                (int(telegram_id), str(address)),
+            )
+            return await cur.fetchone() is not None
+
     async def set_payout_address(self, telegram_id: int, address: str) -> None:
         async with self._lock, aiosqlite.connect(self.path) as db:
             await db.execute(
