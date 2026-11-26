@@ -231,9 +231,16 @@ class Database:
         async with self._lock, aiosqlite.connect(self.path) as db:
             await db.execute(
                 """UPDATE positions SET token_amount_raw=?, moon_bag_raw=?, status=?,
-                   exit_reason=?, realized_lamports=realized_lamports+?, sell_signature=?
+                   exit_reason=?, realized_lamports=realized_lamports+?, sell_signature=?,
+                   initial_cost_lamports=CASE
+                       WHEN ?=1 THEN 0
+                       WHEN token_amount_raw>0 THEN CAST(initial_cost_lamports * ? / token_amount_raw AS INTEGER)
+                       ELSE initial_cost_lamports END
                    WHERE id=?""",
-                (remaining_raw, remaining_raw, status, reason, realized_lamports, sell_signature, position_id),
+                (
+                    remaining_raw, remaining_raw, status, reason, realized_lamports,
+                    sell_signature, 1 if fully_closed else 0, remaining_raw, position_id,
+                ),
             )
             await db.commit()
 
