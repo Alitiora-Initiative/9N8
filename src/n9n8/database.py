@@ -182,6 +182,17 @@ class Database:
             )
             await db.commit()
 
+
+    async def fee_receipt(self, idempotency_key: str) -> dict[str, Any] | None:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT fee_type,amount_lamports,tx_signature,idempotency_key,created_at FROM fee_ledger WHERE idempotency_key=?",
+                (idempotency_key,),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
     async def record_fee(
         self, telegram_id: int, fee_type: str, lamports: int, signature: str, idempotency_key: str
     ) -> None:
