@@ -391,6 +391,19 @@ def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+def _safety_keyboard(config: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Mint authority revoked: REQUIRED", callback_data="safety:locked:mint")],
+        [InlineKeyboardButton(text="✅ Freeze authority revoked: REQUIRED", callback_data="safety:locked:freeze")],
+        [InlineKeyboardButton(text=f"LP burned/locked minimum: {config.get('min_lp_locked_pct','80')}%", callback_data="settings:field:min_lp_locked_pct")],
+        [InlineKeyboardButton(text=f"Minimum liquidity: {config.get('min_liquidity_sol','5')} SOL", callback_data="settings:field:min_liquidity_sol")],
+        [InlineKeyboardButton(text=f"Max top-10 holders: {config.get('max_top10_concentration_pct','25')}%", callback_data="settings:field:max_top10_concentration_pct")],
+        [InlineKeyboardButton(text=f"Max single developer: {config.get('max_dev_wallet_pct','5')}%", callback_data="settings:field:max_dev_wallet_pct")],
+        [InlineKeyboardButton(text="⚙️ All Live Settings", callback_data="settings:show")],
+        [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+    ])
+
+
 def _fees_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Change MEV / Risk Settings", callback_data="settings:risk")],
@@ -1618,40 +1631,36 @@ async def cmd_safety(message: Message) -> None:
 
 @router.callback_query(F.data == "safety:show")
 async def cb_safety_show(callback: CallbackQuery) -> None:
+    svc = _svc()
     await callback.answer()
+    config = await svc.db.get_settings(callback.from_user.id)
     await callback.message.edit_text(
-        "🛡️ ANTI-RUG SAFETY FILTERS\n\n"
-        "These checks protect both paper and live entries. Critical checks stay ON and cannot be disabled.\n\n"
-        "🔒 Mint authority revoked: REQUIRED\n"
-        "🔒 Freeze authority revoked: REQUIRED\n"
-        "🔒 Creator and top-holder concentration: CHECKED\n"
-        "🔒 Token extensions and transfer restrictions: CHECKED\n"
-        "🔒 Pool liquidity and LP lock/burn: REQUIRED\n\n"
-        "An entry is blocked whenever a required result is missing or cannot be verified.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Paper Safety Thresholds", callback_data="paper:settings")],
-            [InlineKeyboardButton(text="Live Safety Thresholds", callback_data="safety:live")],
-            [InlineKeyboardButton(text="Back", callback_data="home:show")],
-        ]),
+        "🛡️ ANTI-RUG SAFETY GATEKEEPER · SOLANA\n\n"
+        "Every required check must pass. Missing or unverifiable evidence blocks the buy.\n\n"
+        "✅ Mint authority revoked: REQUIRED · locked ON\n"
+        "✅ Freeze authority revoked: REQUIRED · locked ON\n"
+        f"✅ LP burned/locked minimum: {config.get('min_lp_locked_pct','80')}%\n"
+        f"✅ Minimum liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
+        f"✅ Maximum top-10 share: {config.get('max_top10_concentration_pct','25')}%\n"
+        f"✅ Maximum single developer share: {config.get('max_dev_wallet_pct','5')}%\n\n"
+        "Mint and freeze authority requirements cannot be disabled. The gatekeeper fails closed.",
+        reply_markup=_safety_keyboard(config),
+    )
+
+
+@router.callback_query(F.data.startswith("safety:locked:"))
+async def cb_safety_locked(callback: CallbackQuery) -> None:
+    which = callback.data.rsplit(":", 1)[-1]
+    label = "Mint authority revocation" if which == "mint" else "Freeze authority revocation"
+    await callback.answer(
+        f"{label} is mandatory and cannot be disabled.",
+        show_alert=True,
     )
 
 
 @router.callback_query(F.data == "safety:live")
 async def cb_live_safety(callback: CallbackQuery) -> None:
-    svc = _svc()
-    await callback.answer()
-    config = await svc.db.get_settings(callback.from_user.id)
-    await callback.message.edit_text(
-        "🔒 LIVE SAFETY FILTERS · REAL WALLET\n\n"
-        "Mint authority revocation: REQUIRED · LOCKED ON\n"
-        "Freeze authority revocation: REQUIRED · LOCKED ON\n"
-        f"Minimum pool liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
-        f"Minimum LP locked/burned: {config.get('min_lp_locked_pct','80')}%\n"
-        f"Maximum top-10 share: {config.get('max_top10_concentration_pct','25')}%\n"
-        f"Maximum developer share: {config.get('max_dev_wallet_pct','5')}%\n\n"
-        "Critical authority checks cannot be disabled. Change the numeric thresholds below; an unverified safety result still blocks every live buy.",
-        reply_markup=_settings_keyboard(config),
-    )
+    await cb_safety_show(callback)
 
 
 @router.message(Command("history"))
