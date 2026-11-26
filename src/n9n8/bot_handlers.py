@@ -760,7 +760,10 @@ async def _send_live_positions(message: Message, rows: list[dict]) -> None:
             InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
             InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
         ])
-    buttons.append([InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")])
+    buttons.extend([
+        [InlineKeyboardButton(text="🧨 PANIC SELL ALL LIVE POSITIONS", callback_data="positions:panic_all:ask")],
+        [InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")],
+    ])
     await message.answer("\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 
@@ -787,8 +790,64 @@ async def cb_live_positions(callback: CallbackQuery) -> None:
             InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
             InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
         ])
-    buttons.append([InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")])
+    buttons.extend([
+        [InlineKeyboardButton(text="🧨 PANIC SELL ALL LIVE POSITIONS", callback_data="positions:panic_all:ask")],
+        [InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")],
+    ])
     await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data == "positions:panic_all:ask")
+async def cb_panic_all_ask(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    rows = await svc.db.active_positions(callback.from_user.id)
+    if not rows:
+        await callback.message.edit_text("No open live positions to close.", reply_markup=_live_menu_keyboard(False, False))
+        return
+    if len(rows) > 8:
+        await callback.message.answer(
+            f"You have {len(rows)} live positions. This bulk action is capped at 8 per confirmation; "
+            "close some first, then repeat."
+        )
+        return
+    await callback.message.edit_text(
+        "⚠️ CONFIRM PANIC SELL ALL\n\n"
+        f"This will attempt to sell all {len(rows)} open real-wallet token positions, one by one, "
+        "using fresh Jupiter quotes and the current live safety/execution settings.\n\n"
+        "Each sell has its own transaction signature and may fail independently. "
+        "Do not retry an unknown transaction outcome.\n\n"
+        "This action cannot be undone.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧨 CONFIRM SELL ALL", callback_data="positions:panic_all:confirm")],
+            [InlineKeyboardButton(text="Cancel", callback_data="positions:live")],
+        ]),
+    )
+
+
+@router.callback_query(F.data == "positions:panic_all:confirm")
+async def cb_panic_all_confirm(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Processing live position exits…")
+    await svc.engine.stop_live_user(callback.from_user.id)
+    rows = await svc.db.active_positions(callback.from_user.id)
+    results = []
+    for row in rows[:8]:
+        position_id = int(row["id"])
+        try:
+            await svc.engine.panic_sell(callback.from_user.id, position_id)
+            results.append(f"Position #{position_id}: sell submitted; verify its receipt.")
+        except Exception as exc:
+            results.append(f"Position #{position_id}: not confirmed — {type(exc).__name__}: {str(exc)[:120]}")
+    await callback.message.edit_text(
+        "PANIC SELL ALL RESULTS\n\n"
+        + ("\n".join(results) if results else "No open live positions were found.")
+        + "\n\nNew live entries are OFF. Check /live_positions and /live_history for receipts.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Refresh Live Positions", callback_data="positions:live")],
+            [InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")],
+        ]),
+    )
 
 
 @router.callback_query(F.data.startswith("position:sell50:"))
