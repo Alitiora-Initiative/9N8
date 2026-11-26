@@ -1,155 +1,151 @@
-# 9N8 — Private OKX Spot Trading Bot
+# 9N8 — Solana Telegram Launchpad Bot
 
-9N8 is a **personal, owner-only Telegram bot** for one Telegram account and one OKX account. It is not a public exchange-API service and does not collect API keys from other users.
+9N8 is a Telegram-first Solana launchpad monitoring and trading application. It combines an aiogram bot, a FastAPI Telegram Mini App, Helius RPC/WebSockets, Pump.fun/Raydium launch detection, Jupiter Swap API v2 routing, Jito bundle submission, encrypted per-user Solana wallets, and a Decimal-based risk/exit engine.
 
-The bot runs on your Windows laptop at no monthly hosting cost. The laptop must remain on and connected to the internet while you use it. A paid always-on server can be considered later, but it is not required for the local setup.
+**The current feature branch removes the old OKX spot application.** It is intentionally being developed on `feature/solana-telegram-sniper`; it does not replace `main` until a pull request is reviewed and merged.
 
-## Current scope
+## Current implementation status
 
-- OKX v5 REST integration using your own API key, secret and passphrase.
-- Spot cash trading only: market and limit orders.
-- Demo trading by default, using OKX's simulated-trading request header.
-- Live trading requires both `OKX_TRADING_MODE=live` and `OKX_LIVE_TRADING_ENABLED=true` in your local `.env`.
-- Every new order is previewed in Telegram and requires pressing a **Confirm order** button before an API order request is sent.
-- Every order is capped by `OKX_MAX_ORDER_NOTIONAL` (default 10 quote-currency units).
-- Open-order viewing and cancellation, account status and balance reads.
-- OKX spot ticker/candles and EMA(9)/EMA(21)/RSI(14) observations.
-- Telegram owner lock: only the numeric `TELEGRAM_OWNER_ID` can use the bot, and only in a private chat.
+Implemented in this branch:
 
-## Explicit exclusions
+- Per-Telegram-user Solana Ed25519 wallet generation/import, encrypted-at-rest key storage, balance queries, and 60-second key-message deletion attempt.
+- Aiogram dashboard, parameter FSM, activation/withdrawal/rotation confirmation flows, and status notifications.
+- Exact Decimal/SOL/lamport helpers, slippage bounds, position sizing, PnL, moon-bag split, realized-profit fee calculation, and daily risk persistence.
+- Helius JSON-RPC client and reconnecting per-program `logsSubscribe` WebSocket subscriptions for Pump.fun and Raydium program addresses.
+- Pump.fun bonding-curve PDA derivation, reserve parsing, and account-change monitoring.
+- Mint/freeze authority checks, top-holder concentration screen, indexed liquidity check, and fail-closed Raydium LP-lock screening.
+- Jupiter Swap API v2 raw instruction builder and Jito atomic bundle submission with landing-status checks.
+- Background position supervision, TP/SL/max-hold and daily risk controls.
+- FastAPI Mini App endpoints with Telegram `initData` HMAC validation and per-user WebSocket telemetry.
+- Dark-mode responsive Telegram Mini App.
+- Dockerfile and Docker Compose configuration with persistent SQLite storage.
 
-- No MT5, MetaApi or MetaTrader terminal.
-- No Cloudflare Worker or D1 database.
-- No other users' exchange accounts or API credential collection.
-- No withdrawals, internal transfers, wallet operations or private-key handling.
-- No futures, perpetual swaps, margin, borrowing or leverage.
-- No unattended autonomous trade execution. Signals never place orders.
-- The bot does not attach stop-loss/take-profit algos to exchange orders yet. The order preview warns you that no exchange-side stop is attached.
+Not yet certified or fully implemented:
 
-A confirmed order can be accepted but remain unfilled, partially filled, or be rejected by OKX. Always check `/openorders` and your OKX account. Market orders can execute at a different price from the last displayed quote.
+- EVM/BNB/Base/Robinhood-chain wallet generation, deposit monitoring, and automatic cross-chain bridging are not wired in this branch. Do not send EVM assets to the Solana deposit address.
+- Pump.fun direct buy/sell instruction construction and a complete direct Raydium AMM V4/CPMM swap builder are not yet implemented. Detection uses on-chain data; execution routes through Jupiter.
+- Developer initial-buy min/max filtering is not yet implemented.
+- The Raydium LP-lock parser is deliberately fail-closed, but its RugCheck schema needs live integration tests against representative pools.
+- The requested 250 ms exit quote interval is not used. Quote polling is rate-limited to stay within upstream API quotas; actual decision latency depends on quote provider, RPC, and chain conditions.
+- Profit fee is included in the exit transaction based on a conservative minimum-output estimate; exact finalized net profit reconciliation and ledger settlement still require an additional post-confirmation accounting pass.
+- This branch has not been independently audited, tested with real mainnet funds, or certified for unattended trading. Live mode is disabled by default.
 
-## Setup on Windows (local, no hosting bill)
+A launch detector finding a token is not proof that it is safe or tradeable. Liquidity can disappear, quotes can become stale, token programs may be unusual, transactions can fail or land late, and slippage/MEV can make outcomes differ from estimates. Never assume a 10% target is guaranteed.
 
-### 1. Install Python
+## Architecture
 
-Install Python 3.11 or newer from https://www.python.org/downloads/windows/. During setup, enable **Add Python to PATH**.
-
-### 2. Download your repository
-
-Download the `exchange-api` branch from GitHub as a ZIP, extract it, then open the extracted `9N8` folder.
-
-Repository branch:
-https://github.com/Alitiora-Initiative/9N8/tree/exchange-api
-
-### 3. Install dependencies
-
-Double-click `setup_windows.bat`, or open PowerShell in the repository folder and run:
-
-```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-py -m pip install --upgrade pip
-py -m pip install -r requirements.txt
+```text
+Telegram user
+   ├── aiogram 3.x dashboard + FSM
+   └── Telegram Mini App (HTML/CSS/JS)
+          │ Telegram initData HMAC
+          ▼
+       FastAPI REST + WebSocket
+          │
+   ┌──────┴──────────────────────────────────────────────┐
+   │ Encrypted SQLite │ Decimal risk engine │ Telemetry │
+   └──────┬───────────────────────┬─────────────────────┘
+          │                       │
+   Helius RPC / WS          Jupiter Swap API v2
+   Pump.fun / Raydium       Jito Block Engine bundles
+          │                       │
+          └──── Solana mainnet ───┘
 ```
 
-### 4. Create your private environment file
+## Windows setup
 
-Copy `.env.example` to `.env` in the repository root. Open `.env` in Notepad and enter your own values:
+Requirements: Python 3.11+, a Telegram bot token, a Helius API key, a Solana treasury address, and a persistent local database folder.
+
+1. Download this branch:
+   https://github.com/Alitiora-Initiative/9N8/tree/feature/solana-telegram-sniper
+2. Run `setup_windows.bat`.
+3. Open `.env` and fill in the required values below.
+4. Start the bot with `start_9n8.bat`.
+5. Send `/start` to your Telegram bot.
+
+Required environment settings:
 
 ```env
 TELEGRAM_BOT_TOKEN=your_botfather_token
-TELEGRAM_OWNER_ID=your_numeric_telegram_user_id
-
-OKX_API_KEY=
-OKX_API_SECRET=
-OKX_API_PASSPHRASE=
-
-OKX_API_BASE=https://www.okx.com
-OKX_TRADING_MODE=demo
-OKX_LIVE_TRADING_ENABLED=false
-OKX_MAX_ORDER_NOTIONAL=10
+HELIUS_API_KEY=your_helius_api_key
+MASTER_TREASURY_ADDRESS=your_solana_treasury_public_key
+ENCRYPTION_MASTER_KEY=your_fernet_key
+N9N8_TRADING_MODE=paper
+LIVE_TRADING_ENABLED=false
+WEBAPP_URL=https://your-https-host.example
 ```
 
-Get your Telegram user ID by starting the bot and sending `/id`. Before the owner lock is set, all commands except `/id` are blocked. Put the returned numeric ID in `TELEGRAM_OWNER_ID`, save `.env`, and restart the bot.
-
-**Never commit or send the real `.env` file.** The repository's `.gitignore` excludes it. Never paste exchange credentials into Telegram, GitHub Issues, code or this chat.
-
-### 5. Create an OKX DEMO API key
-
-In your OKX account, open Demo Trading, then the Demo Trading API page and create a demo API key. Store the API key, secret and passphrase in your local `.env`.
-
-For the first test, use a DEMO API key and keep `OKX_TRADING_MODE=demo`. OKX demo requests require `x-simulated-trading: 1`, which this bot adds automatically in demo mode.
-
-### 6. Secure the API key
-
-- Give the key **Read** and **Trade** permission only if you need order placement.
-- Keep **Withdraw** permission OFF. 9N8 also checks the permission list and refuses to stage an order if OKX reports Withdraw permission.
-- Important: OKX's current API docs describe the Trade permission as allowing orders, cancellations and funding transfers. This app does not call transfer endpoints, but the Trade key itself may have capabilities beyond this bot. Keep the key dedicated to 9N8 and IP-restrict it where possible.
-- Bind the key to your IP address if you have a stable IP.
-- Never put the key in a Telegram message or a GitHub secret for this local setup.
-- Use a separate API key for this bot and revoke it from OKX if the laptop or local `.env` file is compromised.
-
-OKX notes that API keys have three permissions (Read, Trade and Withdraw), recommends IP binding, and documents a 14-day inactivity expiry for trade/withdraw keys that are not IP-bound. Review OKX's current rules for your account region.
-
-### 7. Start 9N8
-
-In PowerShell, from the repository folder:
+Generate the Fernet encryption key once:
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-py -m src.bot
+py -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Or double-click `start_9n8.bat` after completing setup.
+Store the generated key in a password manager and keep a separate offline backup. If it is lost, the encrypted wallet records cannot be decrypted. Changing it after users have wallets will make old encrypted secrets unreadable unless you perform a deliberate key migration.
 
-The bot is reachable from Telegram while the laptop and bot process are running. Closing the terminal or sleeping/shutting down the laptop stops the bot.
+Helius endpoints are derived automatically from `HELIUS_API_KEY`. You can instead set both `SOLANA_RPC_URL` and `SOLANA_WSS_URL` explicitly.
 
-## Telegram commands
+## GitHub Secrets vs runtime environment
 
-```text
-/id
-/start
-/help
-/okx_status
-/balance
-/ticker BTC-USDT
-/scan BTC-USDT 15m
-/order BTC-USDT buy limit 0.001 90000
-/order BTC-USDT buy market 10
-/order BTC-USDT sell market 0.001
-/openorders
-/cancel BTC-USDT ORDER_ID
-```
+Adding `HELIUS_API_KEY` under **GitHub Actions Secrets** does not automatically make it available to a bot running on a Windows laptop or on Render/Koyeb/Fly.io.
 
-Order size rules:
-- **Limit buy/sell:** size is in base currency (for BTC-USDT, BTC); include limit price.
-- **Market buy:** size is quote-currency spend (for BTC-USDT, USDT).
-- **Market sell:** size is base-currency quantity (for BTC-USDT, BTC).
+- For GitHub Actions, explicitly map it into the workflow step's `env:` block if a workflow needs to access it.
+- For a hosted service, add `HELIUS_API_KEY` to that provider's service environment variables.
+- For local Windows, add it to the untracked `.env` file in the repository root.
 
-Before submitting, 9N8 checks the spot instrument, market state, lot/tick precision, minimum size and your configured notional cap. It then displays a confirmation button. No order is sent until you press it.
+Never print secrets in logs or commit `.env`.
 
-## Switching from demo to live
+## Paper and live modes
 
-Do not enable live mode until you have checked demo orders, balances, order states, cancellation and your own risk limits.
+Paper mode is the default. It listens to real launchpad events and reports discoveries, but it does not claim to fill simulated positions or manufacture PnL.
 
-To deliberately enable live order submissions, edit your local `.env`:
+Live mode requires both:
 
 ```env
-OKX_TRADING_MODE=live
-OKX_LIVE_TRADING_ENABLED=true
+N9N8_TRADING_MODE=live
+LIVE_TRADING_ENABLED=true
 ```
 
-Restart the bot after changing the file. The bot will then show **LIVE — real funds** in each order preview, and each live order still requires a separate Telegram confirmation. The `OKX_MAX_ORDER_NOTIONAL` cap remains active. To lock live orders again, return to `OKX_TRADING_MODE=demo` and `OKX_LIVE_TRADING_ENABLED=false`.
+Do not enable these flags until you have tested wallet creation/import, key backups, token-risk screens, Jupiter transaction construction, Jito bundle landing, partial exits, stop-loss/max-hold exits, account closure, daily circuit breakers, withdrawals, and key rotation with a dedicated small-value test wallet. Live execution can irreversibly lose funds.
 
-## OKX account region
+## Local Docker
 
-The default API domain is `https://www.okx.com`. OKX documents different REST domains for some regional accounts, including `https://eea.okx.com` for EEA accounts and `https://us.okx.com` for US/Australia accounts. Use the domain applicable to the account you registered; set it in `OKX_API_BASE`.
+```bash
+docker compose up --build -d
+docker compose logs -f
+```
+
+SQLite data is stored in the Docker named volume `9n8-data`. Back up this volume securely. The app exposes `/health` on port 8080.
 
 ## Tests
 
-```powershell
-py -m pip install -r requirements.txt pytest
-py -m pytest -q
+```bash
+python -m pip install -r requirements.txt pytest pytest-asyncio httpx
+python -m compileall -q src tests
+python -m pytest -q
 ```
 
-The tests mock the exchange HTTP responses. They do not use your API key, access your funds or place exchange orders.
+The test suite should use mocked network calls. Never put private keys, real wallet funds, Helius API keys, or a live treasury private key into test fixtures.
+
+## Telegram Mini App
+
+Telegram Mini Apps require an HTTPS URL. Set `WEBAPP_URL` to the public HTTPS base URL of the FastAPI service. Configure the same URL as the bot's Web App domain in Telegram's bot settings where required.
+
+## Treasury fees
+
+- $1.00 equivalent activation fee (first live activation).
+- 0.1% fee on positive realized trade profit estimates.
+- $1.00 equivalent full withdrawal fee.
+- $1.00 equivalent stop-and-rotate fee.
+- Network fees and Jito tips are separate.
+
+The $1 equivalent is converted from a fresh SOL/USD oracle observation. If a trustworthy fresh price is unavailable or the wallet cannot cover the fee and network cost, the operation must fail rather than use a hard-coded exchange rate.
+
+## Security
+
+- Per-user private keys are Fernet-encrypted in SQLite.
+- Telegram recovery-key messages are scheduled for deletion after 60 seconds, but deletion cannot remove screenshots, notification previews, backups or messages already copied elsewhere.
+- Use dedicated wallets. Do not import a wallet holding long-term savings.
+- The Mini App validates Telegram `initData`; do not expose unauthenticated wallet endpoints behind a reverse proxy.
+- Use an HTTPS host, persistent disk, restricted access to environment variables, regular encrypted backups and key rotation procedures.
+- Do not treat a clean test run as an audit or guarantee of trading safety.
