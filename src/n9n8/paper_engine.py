@@ -128,6 +128,9 @@ class PaperTradingEngine:
             max_top10_pct=str(config.get("max_top10_concentration_pct", "25")),
             min_liquidity_usd=minimum_liquidity_usd,
             min_lp_locked_pct=str(config.get("min_lp_locked_pct", "80")),
+            max_dev_pct=str(config.get("max_dev_wallet_pct", "5")),
+            require_mint_authority_revoked=bool(config.get("require_mint_authority_revoked", True)),
+            require_freeze_authority_revoked=bool(config.get("require_freeze_authority_revoked", True)),
         )
         if not risk.passed:
             await self.notify(
