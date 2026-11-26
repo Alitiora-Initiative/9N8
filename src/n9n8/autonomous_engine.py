@@ -467,6 +467,14 @@ class AutonomousEngine:
             treasury_fee_lamports=treasury_lamports,
             use_jito=use_jito,
         )
+        if treasury_lamports > 0:
+            await self.db.record_fee(
+                telegram_id,
+                "profit",
+                treasury_lamports,
+                result.signature,
+                f"profit:{position_id}:{result.signature}",
+            )
         remaining = await self.helius.token_balance_raw(str(wallet_key.pubkey()), mint)
         fully_closed = remaining == 0
         net_realized_lamports = min_out - basis_sold - sell_fees - treasury_lamports
