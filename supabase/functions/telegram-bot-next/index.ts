@@ -2552,7 +2552,13 @@ async function handleMessage(update: any) {
       "/live — live lock and risk status\n" +
       "/risk — current account risk limits\n" +
       "/approvals — pending trade proposals\n" +
-      "/paper — paper-trading status and fills\n" +
+      "/sniper — open complete Solana Sniper dashboard\n" +
+      "/solana_paper — separate virtual Solana trading\n" +
+      "/solana_live — gated Solana live-wallet controls\n" +
+      "/positions — open Paper and Live positions\n" +
+      "/settings — open sniper trade settings\n" +
+      "/safety — open anti-rug filters\n" +
+      "/paper — open Solana Paper Trading\n" +
       "/pause — pause strategies and block new execution\n" +
       "/stop — emergency stop and kill switch\n" +
       "/resume — request to resume paper scanning; live stays off\n\n" +
@@ -2688,6 +2694,21 @@ async function handleCallback(update: any) {
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
   if (q.data === "n8:services") await send(Number(chat.id), serviceOverview(), mainKeyboard());
+  if (q.data === "n8:solana_paper") {
+    await send(Number(chat.id), "🧪 SOLANA PAPER TRADING\n\nLive market data · virtual SOL · separate practice ledger · no blockchain transaction is signed or broadcast.", solanaPanelKeyboard("paper"));
+  }
+  if (q.data === "n8:solana_live") {
+    await send(Number(chat.id), "🔴 SOLANA LIVE CONTROLS\n\nReal-wallet trading remains gated by the readiness checks displayed in the Live panel. Opening the panel does not enable live orders.", solanaPanelKeyboard("live"));
+  }
+  if (q.data === "n8:solana_positions") {
+    await send(Number(chat.id), "📊 Open Paper and Live positions in the Solana dashboard.", solanaPanelKeyboard("positions"));
+  }
+  if (q.data === "n8:solana_settings") {
+    await send(Number(chat.id), "⚙️ Open sniper settings and exit rules in the Solana dashboard.", solanaPanelKeyboard("settings"));
+  }
+  if (q.data === "n8:solana_safety") {
+    await send(Number(chat.id), "🛡 Open the anti-rug safety gatekeeper in the Solana dashboard.", solanaPanelKeyboard("safety"));
+  }
   if (q.data === "n8:paper_start_crypto") {
     const started = await startCryptoPaper(row.id, Number(chat.id));
     await send(Number(chat.id), started.message, {
