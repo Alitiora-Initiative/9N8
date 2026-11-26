@@ -90,14 +90,25 @@ class JupiterJitoExecutor:
             raise ExecutionError(f"Jupiter route error: {str(data['error'])[:180]}")
         return data
 
-    async def quote(self, input_mint: str, output_mint: str, amount_raw: int) -> dict[str, Any]:
+    async def quote(
+        self,
+        input_mint: str,
+        output_mint: str,
+        amount_raw: int,
+        slippage_bps: int | None = None,
+    ) -> dict[str, Any]:
         if amount_raw <= 0:
             raise ValueError("Quote amount must be positive.")
-        return await self._jupiter_get("/order", {
+        params = {
             "inputMint": input_mint,
             "outputMint": output_mint,
             "amount": str(amount_raw),
-        })
+        }
+        if slippage_bps is not None:
+            if not 1 <= int(slippage_bps) <= 5000:
+                raise ValueError("Quote slippage must be between 1 and 5000 basis points.")
+            params["slippageBps"] = str(int(slippage_bps))
+        return await self._jupiter_get("/order", params)
 
     async def _jito_rpc(
         self, method: str, params: list[Any], base_url: str | None = None
