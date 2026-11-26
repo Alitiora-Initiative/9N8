@@ -1073,6 +1073,26 @@ async def cmd_safety(message: Message) -> None:
     )
 
 
+@router.callback_query(F.data == "safety:show")
+async def cb_safety_show(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text(
+        "🛡️ ANTI-RUG SAFETY FILTERS\n\n"
+        "These checks protect both paper and live entries. Critical checks stay ON and cannot be disabled.\n\n"
+        "🔒 Mint authority revoked: REQUIRED\n"
+        "🔒 Freeze authority revoked: REQUIRED\n"
+        "🔒 Creator and top-holder concentration: CHECKED\n"
+        "🔒 Token extensions and transfer restrictions: CHECKED\n"
+        "🔒 Pool liquidity and LP lock/burn: REQUIRED\n\n"
+        "An entry is blocked whenever a required result is missing or cannot be verified.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Paper Safety Thresholds", callback_data="paper:settings")],
+            [InlineKeyboardButton(text="Live Safety Thresholds", callback_data="safety:live")],
+            [InlineKeyboardButton(text="Back", callback_data="home:show")],
+        ]),
+    )
+
+
 @router.callback_query(F.data == "safety:live")
 async def cb_live_safety(callback: CallbackQuery) -> None:
     svc = _svc()
