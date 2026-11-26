@@ -1,7 +1,8 @@
 import {
   decidePaperAction,
-  simulatedFillPrice,
+  estimateOrderBookFill,
   type PaperCandle,
+  type PaperOrderBook,
 } from "./paper-engine.ts";
 
 const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/+$/, "");
@@ -32,6 +33,10 @@ type Position = {
   average_entry_price: number; mark_price: number | null; realized_pnl_usd: number;
   unrealized_pnl_usd: number; entry_fees_usd: number; stop_loss_price: number;
   take_profit_price: number; status: string;
+};
+type Ticker24h = {
+  quoteVolume: number; volume: number; priceChangePercent: number;
+  highPrice: number; lowPrice: number;
 };
 
 function json(data: Obj, status = 200): Response {
@@ -81,22 +86,49 @@ async function fetchCandles(symbol: string): Promise<PaperCandle[]> {
   if (candles.length < 23) throw new Error("market_history_not_ready");
   return candles;
 }
-async function persistMarketData(instrument: Instrument, candles: PaperCandle[]): Promise<void> {
-  const latest = candles[candles.length - 1];
-  const observedAt = new Date().toISOString();
-  await db("n8_market_snapshots", "POST", [{
-    instrument_id: instrument.id, source: SOURCE, observed_at: observedAt,
-    price: latest.close, volume_24h: null, liquidity_usd: null, change_24h_pct: null,
-    metadata: { timeframe: "1m", candle_open_time: iso(latest.openTime), provider: "Binance public spot market data" },
-  }], "return=minimal");
-  const payload = candles.map((candle) => ({
-    instrument_id: instrument.id, source: SOURCE, timeframe: "1m",
-    open_time: iso(candle.openTime), close_time: iso(candle.closeTime),
-    open: candle.open, high: candle.high, low: candle.low, close: candle.close,
-    volume: candle.volume, quote_volume: candle.quoteVolume ?? null,
-    trades_count: candle.trades ?? null, metadata: {},
+
+async function fetchOrderBook(symbol: string): Promise<PaperOrderBook> {
+  if (!/^[A-Z0-9]{3,20}USDT$/.test(symbol)) throw new Error("unsupported_market_symbol");
+  const url=BINANCE_BASE+"/api/v3/depth?symbol="+encodeURIComponent(symbol)+"&limit=20";
+  const result=await fetch(url,{signal:AbortSignal.timeout(8_000)});
+  if(!result.ok)throw new Error("order_book_http_"+result.status);
+  const raw=await result.json();
+  if(!Array.isArray(raw?.bids)||!Array.isArray(raw?.asks))throw new Error("order_book_invalid_response");
+  const parse=(rows:any[])=>rows.map(row=>({price:n(row?.[0]),quantity:n(row?.[1])}))
+    .filter(level=>level.price>0&&level.quantity>0);
+  const book:PaperOrderBook={bids:parse(raw.bids),asks:parse(raw.asks),updateId:n(raw.lastUpdateId)};
+  if(!book.bids.length||!book.asks.length)throw new Error("order_book_empty");
+  return book;
+}
+async function fetchTicker24h(symbol:string):Promise<Ticker24h|null>{
+  const url=BINANCE_BASE+"/api/v3/ticker/24hr?symbol="+encodeURIComponent(symbol);
+  const result=await fetch(url,{signal:AbortSignal.timeout(8_000)});
+  if(!result.ok)return null;
+  const raw=await result.json();
+  return {quoteVolume:n(raw?.quoteVolume),volume:n(raw?.volume),priceChangePercent:n(raw?.priceChangePercent),
+    highPrice:n(raw?.highPrice),lowPrice:n(raw?.lowPrice)};
+}
+async function persistMarketData(instrument:Instrument,candles:PaperCandle[],book:PaperOrderBook,ticker:Ticker24h|null):Promise<void>{
+  const latest=candles[candles.length-1];
+  const bestBid=book.bids.slice().sort((a,b)=>b.price-a.price)[0];
+  const bestAsk=book.asks.slice().sort((a,b)=>a.price-b.price)[0];
+  const midpoint=(bestBid.price+bestAsk.price)/2;
+  const spreadBps=midpoint>0?((bestAsk.price-bestBid.price)/midpoint)*10_000:null;
+  await db("n8_market_snapshots","POST",[{
+    instrument_id:instrument.id,source:SOURCE,observed_at:new Date().toISOString(),
+    price:midpoint,bid:bestBid.price,ask:bestAsk.price,
+    volume_24h:ticker?.quoteVolume??null,liquidity_usd:null,
+    change_24h_pct:ticker?.priceChangePercent??null,
+    metadata:{timeframe:"1m",candle_open_time:iso(latest.openTime),provider:"Binance public Spot REST + order book",
+      book_update_id:book.updateId??null,best_bid_quantity:bestBid.quantity,best_ask_quantity:bestAsk.quantity,
+      spread_bps:spreadBps,high_24h:ticker?.highPrice??null,low_24h:ticker?.lowPrice??null}
+  }],"return=minimal");
+  const payload=candles.map(candle=>({
+    instrument_id:instrument.id,source:SOURCE,timeframe:"1m",open_time:iso(candle.openTime),close_time:iso(candle.closeTime),
+    open:candle.open,high:candle.high,low:candle.low,close:candle.close,volume:candle.volume,
+    quote_volume:candle.quoteVolume??null,trades_count:candle.trades??null,metadata:{}
   }));
-  await db("n8_market_candles?on_conflict=instrument_id,source,timeframe,open_time", "POST", payload,
+  await db("n8_market_candles?on_conflict=instrument_id,source,timeframe,open_time","POST",payload,
     "resolution=merge-duplicates,return=minimal");
 }
 function idempotencyKey(sessionId: string, symbol: string, side: string, candleOpenTime: number): string {
@@ -111,7 +143,8 @@ async function processSession(session: Session): Promise<Obj> {
   const maxPositionUsd = Math.min(250, Math.max(5, n(config.max_position_usd, 50)));
   const maxOpenPositions = Math.max(1, Math.min(10, Math.floor(n(config.max_open_positions, 3))));
   const feeRate = Math.min(0.02, Math.max(0, n(config.fee_rate, 0.001)));
-  const slippageBps = Math.min(100, Math.max(0, n(config.slippage_bps, 5)));
+  const maxSlippageBps = Math.min(500, Math.max(1, n(config.max_slippage_bps, 100)));
+  const maxSpreadBps = Math.min(1_000, Math.max(1, n(config.max_spread_bps, 75)));
   const stopLossPct = Math.min(0.20, Math.max(0.005, n(config.stop_loss_pct, 0.02)));
   const takeProfitPct = Math.min(0.50, Math.max(0.01, n(config.take_profit_pct, 0.04)));
   const [instruments, positions, states] = await Promise.all([
@@ -136,12 +169,18 @@ async function processSession(session: Session): Promise<Obj> {
   const candleTimes = new Map<string, number>();
   for (const instrument of instruments as Instrument[]) {
     try {
-      const providerSymbol = String(instrument.metadata?.provider_symbol ?? instrument.symbol).toUpperCase();
-      const candles = await fetchCandles(providerSymbol);
-      const latest = candles[candles.length - 1];
-      prices.set(instrument.id, latest.close);
-      candleTimes.set(instrument.id, latest.openTime);
-      await persistMarketData(instrument, candles);
+      const providerSymbol=String(instrument.metadata?.provider_symbol??instrument.symbol).toUpperCase();
+      const [candles,book,ticker]=await Promise.all([
+        fetchCandles(providerSymbol),fetchOrderBook(providerSymbol),fetchTicker24h(providerSymbol)
+      ]);
+      const latest=candles[candles.length-1];
+      const bestBid=book.bids.slice().sort((a,b)=>b.price-a.price)[0];
+      const bestAsk=book.asks.slice().sort((a,b)=>a.price-b.price)[0];
+      const midpoint=(bestBid.price+bestAsk.price)/2;
+      // Mark spot longs at the best executable bid, not just last-trade close.
+      prices.set(instrument.id,bestBid.price);
+      candleTimes.set(instrument.id,latest.openTime);
+      await persistMarketData(instrument,candles,book,ticker);
       metrics.symbolsScanned++;
 
       const priorState = stateByInstrument.get(instrument.id);
@@ -153,48 +192,54 @@ async function processSession(session: Session): Promise<Obj> {
       let actualAction = decision.action;
       let tradeResult: any = null;
 
-      if (decision.action === "buy" || decision.action === "sell") {
+      let execution:ReturnType<typeof estimateOrderBookFill>|null=null;
+      let actualReason=decision.reason;
+      if(decision.action==="buy"||decision.action==="sell"){
         metrics.signalsGenerated++;
-        if (decision.action === "buy" && openByInstrument.size >= maxOpenPositions) {
-          actualAction = "hold";
-        } else {
-          const fillPrice = simulatedFillPrice(latest.close, decision.action, slippageBps);
-          tradeResult = await rpc("n8_apply_paper_trade", {
-            p_session_id: session.id,
-            p_worker_lock_token: token,
-            p_instrument_id: instrument.id,
-            p_symbol: instrument.symbol,
-            p_side: decision.action,
-            p_fill_price: fillPrice,
-            p_notional_usd: decision.action === "buy" ? maxPositionUsd : 0,
-            p_fee_rate: feeRate,
-            p_stop_loss_pct: stopLossPct,
-            p_take_profit_pct: takeProfitPct,
-            p_idempotency_key: idempotencyKey(session.id, instrument.symbol, decision.action, latest.openTime),
-            p_signal_reason: decision.reason,
-            p_reference_price: latest.close,
-            p_candle_open_time: iso(latest.openTime),
-          });
-          if (tradeResult?.ok === true) {
-            cash = n(tradeResult.cash_balance_usd, cash);
-            if (decision.action === "buy") {
-              metrics.openedTrades++;
-              const created = tradeResult.position as Position | undefined;
-              if (created) openByInstrument.set(instrument.id, created);
-              else openByInstrument.set(instrument.id, {
-                id: "", instrument_id: instrument.id, symbol: instrument.symbol,
-                quantity: n(tradeResult.quantity), average_entry_price: fillPrice,
-                mark_price: latest.close, realized_pnl_usd: 0, unrealized_pnl_usd: 0,
-                entry_fees_usd: n(tradeResult.fee_usd), stop_loss_price: fillPrice * (1-stopLossPct),
-                take_profit_price: fillPrice * (1+takeProfitPct), status: "open",
+        if(decision.action==="buy"&&openByInstrument.size>=maxOpenPositions){
+          actualAction="hold";actualReason="Entry skipped: maximum open paper positions reached";
+        }else{
+          try{
+            execution=estimateOrderBookFill(decision.action,book,decision.action==="buy"
+              ?{quoteNotional:maxPositionUsd}:{baseQuantity:n(position?.quantity)});
+            if(execution.spreadBps>maxSpreadBps){
+              actualAction="hold";
+              actualReason="Paper order skipped: live spread "+execution.spreadBps.toFixed(2)+" bps exceeds "+maxSpreadBps+" bps";
+            }else if(execution.slippageBps>maxSlippageBps){
+              actualAction="hold";
+              actualReason="Paper order skipped: depth VWAP slippage "+execution.slippageBps.toFixed(2)+" bps exceeds "+maxSlippageBps+" bps";
+            }else{
+              const executionReason=decision.reason+" | Binance depth VWAP | spread "+
+                execution.spreadBps.toFixed(2)+" bps | slippage "+execution.slippageBps.toFixed(2)+
+                " bps | book "+String(book.updateId??"unknown");
+              tradeResult=await rpc("n8_apply_paper_trade",{
+                p_session_id:session.id,p_worker_lock_token:token,p_instrument_id:instrument.id,p_symbol:instrument.symbol,
+                p_side:decision.action,p_fill_price:execution.fillPrice,
+                p_notional_usd:decision.action==="buy"?maxPositionUsd:0,p_fee_rate:feeRate,
+                p_stop_loss_pct:stopLossPct,p_take_profit_pct:takeProfitPct,
+                p_idempotency_key:idempotencyKey(session.id,instrument.symbol,decision.action,latest.openTime),
+                p_signal_reason:executionReason,p_reference_price:execution.referencePrice,
+                p_candle_open_time:iso(latest.openTime)
               });
-            } else {
-              metrics.closedTrades++;
-              openByInstrument.delete(instrument.id);
+              if(tradeResult?.ok===true){
+                cash=n(tradeResult.cash_balance_usd,cash);actualReason=executionReason;
+                if(decision.action==="buy"){
+                  metrics.openedTrades++;
+                  const created=tradeResult.position as Position|undefined;
+                  if(created)openByInstrument.set(instrument.id,created);
+                  else openByInstrument.set(instrument.id,{
+                    id:"",instrument_id:instrument.id,symbol:instrument.symbol,quantity:n(tradeResult.quantity),
+                    average_entry_price:execution.fillPrice,mark_price:bestBid.price,realized_pnl_usd:0,
+                    unrealized_pnl_usd:0,entry_fees_usd:n(tradeResult.fee_usd),
+                    stop_loss_price:execution.fillPrice*(1-stopLossPct),
+                    take_profit_price:execution.fillPrice*(1+takeProfitPct),status:"open"
+                  });
+                }else{metrics.closedTrades++;openByInstrument.delete(instrument.id);}
+              }else{
+                actualAction="hold";actualReason="Paper order rejected: "+String(tradeResult?.reason??"database risk guard");
+              }
             }
-          } else {
-            actualAction = "hold";
-          }
+          }catch(error){actualAction="hold";actualReason="Paper order skipped: "+String(error).slice(0,120);}
         }
       }
 
@@ -207,8 +252,11 @@ async function processSession(session: Session): Promise<Obj> {
       metrics.details.push({
         symbol: instrument.symbol, price: latest.close, ema9: decision.emaFast,
         ema21: decision.emaSlow, rsi14: decision.rsi, signal: actualAction,
-        reason: actualAction === "hold" ? decision.reason : decision.reason,
-        trade: tradeResult?.ok === true ? tradeResult.trade_id ?? null : null,
+        bid:bestBid.price,ask:bestAsk.price,
+        spreadBps:midpoint>0?((bestAsk.price-bestBid.price)/midpoint)*10_000:null,
+        fillPrice:execution?.fillPrice??null,fillSlippageBps:execution?.slippageBps??null,
+        reason:actualReason,
+        trade:tradeResult?.ok===true?tradeResult.trade_id??null:null,
       });
     } catch (error) {
       metrics.symbolsFailed++;
@@ -262,8 +310,9 @@ async function processSession(session: Session): Promise<Obj> {
 
 Deno.serve(async (req: Request) => {
   if (req.method === "GET") return json({
-    ok: true, service: "9N8 paper-only market worker", execution: "simulated-only",
-    realOrdersEnabled: false, marketData: "Binance public spot candles",
+    ok:true,service:"9N8 live-market paper simulator",execution:"simulated-only",
+    realOrdersEnabled:false,marketData:"Binance public Spot candles + order book depth",
+    paperFillModel:"ask/bid depth VWAP + configured fee and spread/slippage gates",
   });
   if (req.method !== "POST") return json({ ok: false, error: "method_not_allowed" }, 405);
   const secret = req.headers.get(HEADER) ?? "";

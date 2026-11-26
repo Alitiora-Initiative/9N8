@@ -1,3 +1,11 @@
+# 9N8 — Multi-Asset Python Engine
+
+The modular Python engine is developed separately on the **multi-asset-python** feature branch. It does not replace the existing Supabase Telegram paper-trading worker. See [MULTI_ASSET_PYTHON.md](MULTI_ASSET_PYTHON.md) for the full directory tree, install steps, paper/testnet configuration, risk controls and current live-execution restrictions.
+
+The Python branch is not merged or deployed. Paper mode is the default. Live execution is hard-locked by the certification flag until the 48-hour sandbox soak and provider-specific order-protection checks pass.
+
+---
+
 # 9N8 — Universal Trading Intelligence (Paper Pilot)
 
 ## Current deployed paper-trading path

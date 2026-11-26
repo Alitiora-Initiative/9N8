@@ -15,6 +15,13 @@ export type PaperPosition = {
   takeProfitPrice: number;
 };
 
+export type BookLevel = { price: number; quantity: number };
+export type PaperOrderBook = { bids: BookLevel[]; asks: BookLevel[]; updateId?: number };
+export type PaperBookFill = {
+  fillPrice: number; baseQuantity: number; quoteNotional: number;
+  referencePrice: number; spreadBps: number; slippageBps: number; levelsUsed: number;
+};
+
 export type PaperDecision = {
   action: "buy" | "sell" | "hold";
   reason: string;
@@ -84,11 +91,13 @@ export function decidePaperAction(
   if (!(latest.close > 0) || !Number.isFinite(latest.close)) return hold("Invalid market price");
 
   if (position) {
-    if (position.stopLossPrice > 0 && latest.close <= position.stopLossPrice) {
-      return { action: "sell", reason: "Stop-loss threshold reached", emaFast, emaSlow, rsi };
+    // If both protective levels are touched within one candle, assume the adverse
+    // stop was reached first. This is the conservative candle-only interpretation.
+    if (position.stopLossPrice > 0 && latest.low <= position.stopLossPrice) {
+      return { action: "sell", reason: "Stop-loss threshold touched intrabar", emaFast, emaSlow, rsi };
     }
-    if (position.takeProfitPrice > 0 && latest.close >= position.takeProfitPrice) {
-      return { action: "sell", reason: "Take-profit threshold reached", emaFast, emaSlow, rsi };
+    if (position.takeProfitPrice > 0 && latest.high >= position.takeProfitPrice) {
+      return { action: "sell", reason: "Take-profit threshold touched intrabar", emaFast, emaSlow, rsi };
     }
     if ((fast[index - 1] ?? 0) >= (slow[index - 1] ?? 0) && emaFast < emaSlow) {
       return { action: "sell", reason: "EMA 9 crossed below EMA 21", emaFast, emaSlow, rsi };
@@ -112,4 +121,50 @@ export function simulatedFillPrice(referencePrice: number, side: "buy" | "sell",
   }
   const factor = side === "buy" ? 1 + slippageBps / 10_000 : 1 - slippageBps / 10_000;
   return referencePrice * factor;
+}
+
+
+/** Use real Binance depth levels to estimate quote-notional buys and base-quantity sells. */
+export function estimateOrderBookFill(
+  side: "buy" | "sell",
+  book: PaperOrderBook,
+  size: { quoteNotional?: number; baseQuantity?: number },
+): PaperBookFill {
+  const clean = (levels: BookLevel[]) => levels
+    .filter((level) => Number.isFinite(level.price) && level.price > 0 &&
+      Number.isFinite(level.quantity) && level.quantity > 0)
+    .map((level) => ({ price: level.price, quantity: level.quantity }));
+  const bids = clean(book.bids).sort((a, b) => b.price - a.price);
+  const asks = clean(book.asks).sort((a, b) => a.price - b.price);
+  if (!bids.length || !asks.length) throw new Error("paper_order_book_empty");
+  const bestBid=bids[0].price, bestAsk=asks[0].price;
+  if(bestAsk<bestBid)throw new Error("paper_order_book_crossed");
+  const referencePrice=(bestBid+bestAsk)/2;
+  if(!(referencePrice>0))throw new Error("paper_order_book_reference_invalid");
+  const levels=side==="buy"?asks:bids;
+  let remaining=side==="buy"?Number(size.quoteNotional):Number(size.baseQuantity);
+  if(!Number.isFinite(remaining)||remaining<=0)throw new Error(side==="buy"?"paper_quote_notional_invalid":"paper_base_quantity_invalid");
+  const original=remaining;
+  let baseQuantity=0,quoteNotional=0,levelsUsed=0;
+  for(const level of levels){
+    if(remaining<=1e-10)break;
+    if(side==="buy"){
+      const quoteTaken=Math.min(remaining,level.price*level.quantity);
+      baseQuantity+=quoteTaken/level.price;
+      quoteNotional+=quoteTaken;
+      remaining-=quoteTaken;
+    }else{
+      const baseTaken=Math.min(remaining,level.quantity);
+      baseQuantity+=baseTaken;
+      quoteNotional+=baseTaken*level.price;
+      remaining-=baseTaken;
+    }
+    levelsUsed++;
+  }
+  if(remaining>Math.max(1e-8,original*1e-8))throw new Error("paper_order_book_depth_insufficient");
+  if(!(baseQuantity>0)||!(quoteNotional>0))throw new Error("paper_order_book_fill_invalid");
+  const fillPrice=quoteNotional/baseQuantity;
+  const spreadBps=((bestAsk-bestBid)/referencePrice)*10_000;
+  const adverseMove=side==="buy"?(fillPrice-referencePrice)/referencePrice:(referencePrice-fillPrice)/referencePrice;
+  return {fillPrice,baseQuantity,quoteNotional,referencePrice,spreadBps,slippageBps:Math.max(0,adverseMove*10_000),levelsUsed};
 }

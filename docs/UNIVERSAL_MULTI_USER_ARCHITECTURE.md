@@ -236,27 +236,58 @@ Do not mark a feature complete until:
 - the active Edge Function and GitHub source are in sync.
 
 
-## Implementation status — 2026-11-25
+## Implementation status — 2026-11-26
 
-The database foundation is deployed to Supabase and the candidate Edge Function is deployed separately from the legacy function.
+This section describes the current deployed Supabase candidate and the separate Python development branch. "Implemented" means source and backend handlers exist; it does not imply that every user's external account has been configured or that real-money trading is available.
 
-Implemented in the candidate:
-- multi-user Telegram identity registration and user-specific data model;
-- backend-only RLS tables and Vault credential-storage/retrieval/revocation procedures;
-- atomic Telegram update claims with short retryable leases;
-- exchange-key validation for OKX Demo, Binance Spot Testnet and Bybit Demo;
-- Vercel-hosted Telegram Mini App pages for exchange setup, watch-only address entry, webhook setup, and browser-side QR scanning of public wallet receive addresses (camera or image-file input);
-- watch-only EVM and Solana public-address records;
-- group-setup and manual moderator commands with administrator checks.
+### Deployed Supabase candidate
 
-Not yet implemented:
-- exchange balances, market information and open-order reads for each attached connection;
-- actual WalletConnect/Phantom wallet sessions, wallet balances or transactions. The QR scanner only extracts public receive addresses for watch-only linking; WalletConnect pairing QR codes are deliberately rejected;
-- paper/demo trade execution, order reconciliation, strategies and scheduler jobs;
-- live trading (remains disabled);
-- full connection revoke/dashboard UI and comprehensive end-to-end test suite.
+Verified against the connected 9N8 Supabase project:
 
-Deployment state:
-- Supabase function `telegram-bot-next` is ACTIVE. The shared Telegram bot token and webhook secret are now detected by the live function; Telegram webhook registration still needs a successful confirmation from the `/setup` page.
-- The stable legacy function and `main` branch have not been replaced or merged.
-- The universal code is isolated in branch `universal-multi-user`.
+- `telegram-bot-next` is ACTIVE at deployed version 37 when inspected; it is the multi-user Telegram/Mini App candidate, separate from the preserved legacy function.
+- `n8-paper-worker` is ACTIVE at version 2, and a one-minute `pg_cron` job invokes it.
+- The database contained a running crypto paper session with recurring successful ticks. Recent worker rows reported 10 symbols scanned and 0 symbol failures; a tick with no signal intentionally creates no trade.
+- The deployed paper worker uses Binance public Spot market data and a virtual balance. It does not submit an exchange order.
+
+### Implemented in the deployed candidate
+
+- Telegram identity registration, private-chat account scoping, backend-only access and RLS-backed user data.
+- Vault-backed user-specific Binance Spot Live and OKX Spot Live credential storage, validation, retrieval and owner-scoped revoke procedure.
+- Binance/OKX account read actions in the secure Mini App. These reads do not activate order placement.
+- EVM and Solana wallet ownership proof through challenge/signature verification, plus public watch-only address linking.
+- Wallet-link/session revocation; these are address/ownership features, not wallet trading or signing automation.
+- Jupiter Swap V2 can generate a wallet-bound quote and unsigned transaction preview in the private Mini App, with a 55-second quote expiry, maximum 2% price impact, maximum 0.05 SOL-equivalent per request, 0.10 SOL-equivalent rolling 24-hour cap and one unresolved quote limit.
+- Jupiter signed execution remains locked because the active certification row is testing, with manual live execution and delegated automation both false. Jupiter Trigger DCA remains unavailable because it uses a Jupiter/Privy-managed vault deposit.
+- Paper crypto session lifecycle, Binance public one-minute candle/ticker/order-book reads, simulated visible-depth fills, virtual fees/slippage, persisted trades/positions/equity, pause/stop/resume controls and a one-minute scheduled worker.
+- Telegram webhook update claims with leases, duplicate suppression and retry handling.
+- Group setup and permission-checked manual moderator commands.
+- Exchange disconnect path is deployed: `/connections` displays a connection ID and `/disconnect CONNECTION_ID` asks for confirmation, then removes the corresponding 9N8 Vault secret through the owner-scoped database procedure. This removes the stored credential from 9N8; the user must separately revoke the API key at Binance or OKX.
+- The Mini App displays owner-scoped Binance/OKX connections, refreshes balances for a selected connection and supports owner-confirmed exchange-secret revocation. It lists verified/watch-only wallets and allows an owner to revoke a link by connection ID.
+- The private Mini App creates live Jupiter Swap V2 quote previews for a verified Solana Mainnet wallet, including expected/minimum output, route, price impact and expiry. No swap signature or broadcast is requested by the quote screen.
+
+### Implemented separately in the Python development branch
+
+- A multi-asset Python paper engine with live provider quotes/candles and virtual fills.
+- Bybit public crypto spot defaults, OANDA practice connector and an Alpaca U.S. stock/ETF market-data adapter.
+- Alpaca stock data is read-only and paper-only. It does not read Alpaca brokerage balances or submit orders. It is disabled by default and requires the user's own Alpaca market-data credentials and feed entitlement.
+- Persistent approval proposals, SQLite atomic paper fills, fee-aware partial exits, risk gates, Telegram private owner controls and restart recovery.
+- The stock adapter has automated tests; it has not yet been verified using a user's live Alpaca subscription.
+
+### Not implemented or not certified
+
+- Live exchange order submission in the deployed Supabase candidate.
+- Uncertified Jupiter signed swap execution, automated wallet trading, token approvals, bridge operations, and Jupiter Trigger DCA/delegated custody. Quote previews work; execution remains locked.
+- Solana/EVM DEX entries in the Python engine; their data/security adapters are integration code only and the engine blocks entries.
+- Stock order submission, stock shorting/borrow handling, broker account reads, non-U.S. stock venue coverage, and a live stock connector.
+- Live Forex/CFD execution certification, live partial exits/trailing amendments, complete exchange-native bracket reconciliation and post-bracket position reconciliation.
+- Automated group anti-spam moderation, news feed publishing, copy trading, sniping and DCA.
+- A continuous 48-hour testnet/practice soak, independent execution/security review, and production certification.
+
+### Deployment and source-of-truth boundary
+
+- The deployed Supabase v36 source was synchronized, then the branch updates were deployed as `telegram-bot-next` v37. The deployment adds fresh-initData protection for destructive Mini App actions, per-connection account reads, owner-scoped wallet/exchange revocation and keyless Jupiter Swap V2 quote preview. The deployed function reports ACTIVE; the legacy Telegram function and scheduled paper worker were left unchanged.
+- The preserved legacy Telegram function and GitHub `main` branch have not been replaced.
+- Pull Request #5 is open and remains a draft, not merged. The active Supabase v37 function was deployed explicitly from its source; this did not merge the branch into GitHub main.
+- The Vercel preview for the same branch has not been published because Vercel's Hobby team limit of 100 API deployment requests per day has been reached. The frontend build is verified by GitHub Actions.
+- The Telegram webhook's current registration state has not been confirmed in this audit. A successful `/setup` registration/confirmation is required before claiming Telegram delivery is operational for the candidate.
+- The production paper worker's successful ticks prove its scheduled market-data scan is running, not that the strategy is profitable or every user's Telegram connection is configured.

@@ -40,46 +40,68 @@ button:disabled{opacity:.55;cursor:wait}
 .footer{font-size:12px;color:#7f93ab;text-align:center;margin:28px 0}
 .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid #315344;border-radius:999px;padding:5px 9px;color:#9de6c1;font-size:11px;font-weight:700}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-@media(max-width:520px){body{padding:16px 12px 36px}.card{padding:16px}.grid{grid-template-columns:1fr}.tag{font-size:10px}}
+.connection-list{border-top:1px solid #34465f;margin-top:20px;padding-top:16px}
+.connection-list-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.connection-list-head h3{font-size:15px;margin:0}
+.compact-button{width:auto;padding:8px 12px;margin:0;font-size:12px}
+.connection-items{display:grid;gap:10px;margin:12px 0}
+.connection-item{padding:14px;border:1px solid #324861;border-radius:12px;background:#0b1524;overflow-wrap:anywhere}
+.connection-item b{color:#edf2f7}
+.connection-meta{font-size:12px;color:#9eb0c6;margin:5px 0;line-height:1.5}
+.connection-id{font:11px ui-monospace,monospace;color:#8193a9;overflow-wrap:anywhere}
+.connection-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.connection-actions button{margin:0;padding:10px 12px;font-size:12px}
+.connection-actions .danger{background:#45242a;border:1px solid #83414c;color:#ffd8dc}
+.account-snapshot{border-top:1px solid #2c3f56;margin-top:10px;padding-top:10px;font-size:12px;color:#b7c7d9;white-space:pre-wrap;line-height:1.5}
+#jupiterQuoteResult{min-height:34px}
+#jupiterQuoteResult .quote-line{display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid #24354b}
+#jupiterQuoteResult .quote-line:last-child{border-bottom:0}
+#jupiterQuoteResult .quote-line strong{text-align:right;overflow-wrap:anywhere}
+@media(max-width:520px){body{padding:16px 12px 36px}.card{padding:16px}.grid{grid-template-columns:1fr}.tag{font-size:10px}.connection-actions{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <main>
-  <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">SECURE · DEMO FIRST</div></div>
+  <div class="top"><div class="logo">9N8</div><div class="brand">9N8 CONTROL</div><div class="tag">SECURE · ACCOUNT ACCESS</div></div>
   <section id="connectPage">
     <span class="pill">PRIVATE ACCOUNT CONNECTIONS</span>
     <h1>Connect your accounts.</h1>
-    <p>Connect exchange demo accounts and add public wallet addresses from your Telegram private chat. Your personal connections are never available to group members.</p>
+    <p>Connect your own Binance Spot or OKX account for secure account reads, or link an EVM/Solana wallet. All connections are private to your Telegram account. 9N8's automated paper trading stays virtual; this connection page does not place real orders.</p>
     <div class="tabs" role="tablist">
       <button class="tab" id="exchangeTab" role="tab" aria-selected="true" type="button">Exchange</button>
       <button class="tab" id="walletTab" role="tab" aria-selected="false" type="button">Wallet watch</button>
     </div>
     <section class="card" id="exchangePanel">
       <h2>Exchange connection</h2>
-      <p class="muted">Use an API key you create yourself on the exchange. Select demo or testnet only. We verify access before encrypting and saving the credentials.</p>
-      <div class="notice">Never enable withdrawals. Do not use a live-trading API key here. This version only validates account access and does not place trades.</div>
+      <p class="muted">Use a dedicated API key you create in your own exchange account. 9N8 validates private account access and encrypts the credential in Supabase Vault. It does not submit orders.</p>
+      <div class="notice">Use Binance Spot with read + Spot permissions only, or an OKX read-only key. Disable withdrawals, internal transfers, futures, margin and options. OKX read-only account access is supported; 9N8 does not execute trades from these keys. For complete key safety, restrict by IP where your exchange supports it.</div>
       <form id="exchangeForm" autocomplete="off">
         <label for="provider">Exchange</label>
         <select id="provider" required>
-          <option value="okx">OKX Demo Trading</option>
-          <option value="binance">Binance Spot Testnet</option>
-          <option value="bybit">Bybit Demo Trading</option>
+          <option value="okx">OKX Spot account access</option>
+          <option value="binance">Binance Spot account access</option>
         </select>
         <label for="environment">Environment</label>
-        <select id="environment" required><option value="demo">Demo Trading</option></select>
+        <select id="environment" required><option value="live">Live exchange account · read/access only</option></select>
         <div class="grid">
           <div><label for="apiKey">API key</label><input id="apiKey" type="password" maxlength="512" autocomplete="off" required></div>
           <div><label for="apiSecret">API secret</label><input id="apiSecret" type="password" maxlength="1024" autocomplete="off" required></div>
         </div>
         <div id="passphraseWrap"><label for="passphrase">OKX API passphrase</label><input id="passphrase" type="password" maxlength="256" autocomplete="off" required></div>
+        <div id="okxRegionWrap"><label for="okxRegion">OKX account region</label><select id="okxRegion"><option value="global">Global</option><option value="us">United States</option><option value="eea">EEA</option></select></div>
         <button id="saveExchange" type="submit">Verify and save securely</button>
         <div class="status" id="exchangeStatus" role="status"></div>
       </form>
+      <section class="connection-list">
+        <div class="connection-list-head"><h3>Your exchange connections</h3><button class="secondary compact-button" id="refreshConnections" type="button">Refresh</button></div>
+        <div id="exchangeConnections" class="connection-items"><p class="muted">Open this page from your Telegram private chat to load your connections.</p></div>
+        <p class="muted">Disconnecting here deletes the stored 9N8 Vault secret. It does not delete the API key at Binance or OKX; revoke that key in the exchange's security settings too.</p>
+      </section>
     </section>
     <section class="card hidden" id="walletPanel">
       <h2>Wallet sessions and address watch</h2>
-      <p class="muted">Connect Phantom, Trust Wallet, MetaMask or another supported wallet through WalletConnect. The session is used for wallet identity and interactive signing requests; autonomous trading still needs a separate, explicitly granted permission.</p>
-      <div class="notice">Never enter a seed phrase, recovery phrase, private key, or wallet password. Only paste a public receiving address.</div>
+      <p class="muted">Connect Phantom, Trust Wallet, MetaMask or another supported wallet through WalletConnect. 9N8 asks for one harmless signed message to prove ownership and save the link to your Telegram account.</p>
+      <div class="notice">Never enter a seed phrase, recovery phrase, private key, or wallet password. Wallet signatures here prove ownership only; they do not enable swaps, transfers, approvals or automated trading. A plain public address creates a watch-only link.</div>
       <div class="scanner-panel" id="walletSessionPanel">
         <span class="pill">WALLET SESSION</span>
         <p class="muted">Connect to a real wallet session. Desktop users can scan the WalletConnect QR in their wallet; mobile users can open their wallet app or use its deep link. 9N8 will request one harmless ownership message before saving the address.</p>
@@ -123,6 +145,36 @@ button:disabled{opacity:.55;cursor:wait}
         <button id="saveWallet" type="submit">Save watch-only address</button>
         <div class="status" id="walletStatus" role="status"></div>
       </form>
+      <section class="connection-list">
+        <div class="connection-list-head"><h3>Your linked wallets</h3><button class="secondary compact-button" id="refreshWallets" type="button">Refresh</button></div>
+        <div id="walletConnections" class="connection-items"><p class="muted">Open this page from your Telegram private chat to load your wallet links.</p></div>
+        <p class="muted">Removing a link removes it from 9N8. It does not disable or delete the wallet inside Phantom, Trust Wallet or MetaMask.</p>
+      </section>
+      <section class="connection-list" id="jupiterQuotePanel">
+        <div class="connection-list-head"><h3>Solana swap quote preview</h3><span class="pill">QUOTE ONLY</span></div>
+        <p class="muted">Build a real Jupiter Swap V2 quote for a verified Solana Mainnet wallet. This does not sign or submit a transaction. Live swap execution and Jupiter Trigger DCA remain locked pending independent release certification.</p>
+        <form id="jupiterQuoteForm" autocomplete="off">
+          <label for="jupiterWallet">Verified Solana Mainnet wallet</label>
+          <select id="jupiterWallet" required><option value="">Load a verified Solana wallet first</option></select>
+          <div class="grid">
+            <div>
+              <label for="jupiterSide">Swap direction</label>
+              <select id="jupiterSide"><option value="buy">Buy token with SOL</option><option value="sell">Sell token for SOL</option></select>
+            </div>
+            <div>
+              <label for="jupiterAmount" id="jupiterAmountLabel">Amount · SOL</label>
+              <input id="jupiterAmount" type="number" min="0.000000001" step="any" inputmode="decimal" placeholder="0.01" required>
+            </div>
+          </div>
+          <label for="jupiterTokenMint">Token mint address</label>
+          <input id="jupiterTokenMint" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Paste the Solana token mint" required>
+          <button id="jupiterQuoteButton" type="submit" disabled>Get live quote</button>
+          <div class="status" id="jupiterQuoteStatus" role="status">Connect and verify a Solana Mainnet wallet to request a quote.</div>
+        </form>
+        <div id="jupiterQuoteResult" class="account-snapshot" aria-live="polite">No quote requested yet.</div>
+        <p class="muted">Quote guardrails: 2% maximum price impact, 0.05 SOL-equivalent per quote, 0.10 SOL-equivalent rolling 24-hour cap and a 55-second expiry. An existing unresolved quote must expire or be reconciled before requesting another.</p>
+        <p class="muted">Never enter a seed phrase or private key here. No transaction signature is requested by this preview.</p>
+      </section>
     </section>
   </section>
   <section id="setupPage" class="hidden">
@@ -140,7 +192,7 @@ button:disabled{opacity:.55;cursor:wait}
     </div>
     <p class="muted">The page sends the secret over HTTPS to 9N8 for the Telegram setWebhook call. It does not save it in browser storage.</p>
   </section>
-  <div class="footer">9N8 · Independent accounts · Demo/testnet only · No withdrawals · No seed phrases</div>
+  <div class="footer">9N8 · Private account access · Virtual paper automation · No wallet keys · No withdrawals</div>
 </main>
 <script>
 (function(){
@@ -169,15 +221,17 @@ button:disabled{opacity:.55;cursor:wait}
   const env=document.getElementById("environment");
   const passphraseWrap=document.getElementById("passphraseWrap");
   const passphrase=document.getElementById("passphrase");
+  const okxRegionWrap=document.getElementById("okxRegionWrap");
   function refreshProvider(){
     const v=provider.value;
     env.innerHTML="";
     const option=document.createElement("option");
-    option.value=v==="binance"?"testnet":"demo";
-    option.textContent=v==="binance"?"Spot Testnet":"Demo Trading";
+    option.value="live";
+    option.textContent="Live exchange account · read/access only";
     env.appendChild(option);
     passphraseWrap.classList.toggle("hidden",v!=="okx");
     passphrase.required=v==="okx";
+    okxRegionWrap.classList.toggle("hidden",v!=="okx");
   }
   provider.addEventListener("change",refreshProvider);
   refreshProvider();
@@ -193,21 +247,210 @@ button:disabled{opacity:.55;cursor:wait}
     if(!response.ok || payload.ok!==true) throw new Error(payload.message || payload.error || "Request rejected.");
     return payload;
   }
+  const htmlEscape=value=>String(value??"").replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[char]));
+  const displayAmount=value=>Number.isFinite(Number(value))?Number(value).toLocaleString("en-US",{maximumFractionDigits:8}):"—";
+  function showConnectionMessage(id,message){const node=document.getElementById(id);if(node)node.textContent=message;}
+  function populateJupiterWallets(wallets){
+    const select=document.getElementById("jupiterWallet");
+    const button=document.getElementById("jupiterQuoteButton");
+    if(!select)return;
+    const verified=(Array.isArray(wallets)?wallets:[]).filter(wallet=>
+      wallet && wallet.status==="verified" &&
+      wallet.chain_namespace==="solana" &&
+      wallet.chain_id==="mainnet-beta" &&
+      /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(wallet.public_address||""))
+    );
+    select.innerHTML="";
+    if(!verified.length){
+      const option=document.createElement("option");
+      option.value="";
+      option.textContent="No verified Solana Mainnet wallet linked";
+      select.appendChild(option);
+      if(button)button.disabled=true;
+      return;
+    }
+    for(const wallet of verified){
+      const option=document.createElement("option");
+      option.value=String(wallet.id);
+      option.dataset.address=String(wallet.public_address);
+      option.textContent=String(wallet.provider||"Wallet")+" · "+String(wallet.public_address).slice(0,7)+"…"+String(wallet.public_address).slice(-5);
+      select.appendChild(option);
+    }
+    if(button)button.disabled=false;
+  }
+  let lastJupiterQuoteAt=0;
+  const jupiterSide=document.getElementById("jupiterSide");
+  function updateJupiterAmountLabel(){
+    const side=jupiterSide?.value||"buy";
+    const label=document.getElementById("jupiterAmountLabel");
+    const amount=document.getElementById("jupiterAmount");
+    if(label)label.textContent=side==="buy"?"Amount · SOL":"Amount · token units";
+    if(amount)amount.placeholder=side==="buy"?"0.01":"100";
+  }
+  jupiterSide?.addEventListener("change",updateJupiterAmountLabel);
+  updateJupiterAmountLabel();
+  document.getElementById("jupiterQuoteForm")?.addEventListener("submit",async function(event){
+    event.preventDefault();
+    const status=document.getElementById("jupiterQuoteStatus");
+    const resultBox=document.getElementById("jupiterQuoteResult");
+    const button=document.getElementById("jupiterQuoteButton");
+    const walletSelect=document.getElementById("jupiterWallet");
+    const walletOption=walletSelect?.selectedOptions?.[0];
+    const walletConnectionId=walletSelect?.value||"";
+    const address=walletOption?.dataset?.address||"";
+    const side=jupiterSide?.value||"buy";
+    const amount=document.getElementById("jupiterAmount")?.value?.trim()||"";
+    const tokenMint=document.getElementById("jupiterTokenMint")?.value?.trim()||"";
+    if(!tg?.initData){status.textContent="Open this page from your Telegram private chat.";return;}
+    if(!walletConnectionId||!address){status.textContent="Select a verified Solana Mainnet wallet.";return;}
+    if(!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(tokenMint)){status.textContent="Enter a valid Solana token mint address.";return;}
+    if(!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(amount)||Number(amount)<=0){status.textContent="Enter a positive swap amount.";return;}
+    const now=Date.now();
+    if(now-lastJupiterQuoteAt<2000){status.textContent="Please wait before making another quote request.";return;}
+    lastJupiterQuoteAt=now;
+    button.disabled=true;
+    status.textContent="Requesting a live Jupiter Swap V2 quote…";
+    resultBox.textContent="Fetching a quote and checking the route, price impact and safety limits…";
+    try{
+      const quote=await apiPost({
+        action:"jupiter_swap_order",
+        initData:tg.initData,
+        walletConnectionId,
+        address,
+        side,
+        tokenMint,
+        amount
+      });
+      const impact=Number(quote.priceImpactPct);
+      const lines=[
+        ["Direction",side==="buy"?"SOL → token":"token → SOL"],
+        ["Input",String(quote.inputAmount||"—")],
+        ["Expected output",String(quote.outputAmount||"—")],
+        ["Minimum output",String(quote.minimumOutput||"—")],
+        ["Route",String(quote.router||"Jupiter")],
+        ["Price impact",Number.isFinite(impact)?(impact*100).toFixed(3)+"%":"—"],
+        ["Jupiter fee",quote.feeBps==null?"Not disclosed":String(quote.feeBps)+" bps"],
+        ["Quote expires",quote.expiresAt?new Date(quote.expiresAt).toLocaleTimeString():"—"]
+      ];
+      resultBox.innerHTML=lines.map(([label,value])=>
+        '<div class="quote-line"><span>'+htmlEscape(label)+'</span><strong>'+htmlEscape(value)+'</strong></div>'
+      ).join("");
+      status.textContent="Live quote received. No transaction was signed or submitted. "+String(quote.liveExecutionCertification||"Execution remains locked.");
+    }catch(error){
+      resultBox.textContent="No quote available. "+(error.message||"Jupiter request failed.");
+      status.textContent="Quote request failed. Check wallet verification, token mint, RPC/provider availability and the one-open-quote limit.";
+    }finally{
+      button.disabled=!document.getElementById("jupiterWallet")?.value;
+    }
+  });
+  async function refreshConnections(){
+    if(!tg || !tg.initData){
+      showConnectionMessage("exchangeConnections","Open this page from your Telegram private chat to load your connections.");
+      showConnectionMessage("walletConnections","Open this page from your Telegram private chat to load your wallet links.");
+      return;
+    }
+    const exchangeList=document.getElementById("exchangeConnections");
+    const walletList=document.getElementById("walletConnections");
+    if(exchangeList)exchangeList.textContent="Loading your exchange connections…";
+    if(walletList)walletList.textContent="Loading your wallet links…";
+    try{
+      const result=await apiPost({action:"live_connections",initData:tg.initData});
+      const exchanges=Array.isArray(result.exchanges)?result.exchanges:[];
+      const wallets=Array.isArray(result.wallets)?result.wallets:[];
+      populateJupiterWallets(wallets);
+      if(exchangeList){
+        exchangeList.innerHTML=exchanges.length?exchanges.map(connection=>{
+          const id=htmlEscape(connection.id);
+          const provider=htmlEscape(String(connection.provider||"").toLowerCase());
+          return '<article class="connection-item">'+
+            '<b>'+htmlEscape(connection.label||String(connection.provider||"").toUpperCase())+'</b>'+
+            '<div class="connection-meta">'+htmlEscape(String(connection.environment||"").toUpperCase())+' · '+htmlEscape(connection.status||"active")+'</div>'+
+            '<div class="connection-id">ID · '+id+'</div>'+
+            '<div class="connection-actions">'+
+              '<button type="button" class="secondary" data-account-provider="'+provider+'" data-connection-id="'+id+'">Refresh balances</button>'+
+              '<button type="button" class="danger" data-revoke-exchange="'+id+'">Disconnect 9N8</button>'+
+            '</div>'+
+            '<div class="account-snapshot" id="account-'+id+'">Balance snapshot not refreshed in this session.</div>'+
+          '</article>';
+        }).join(""):'<p class="muted">No active exchange connections are saved to this Telegram account.</p>';
+      }
+      if(walletList){
+        walletList.innerHTML=wallets.length?wallets.map(wallet=>{
+          const id=htmlEscape(wallet.id);
+          return '<article class="connection-item">'+
+            '<b>'+htmlEscape(String(wallet.provider||"wallet").replaceAll("_"," ").toUpperCase())+'</b>'+
+            '<div class="connection-meta">'+htmlEscape(wallet.network||"")+' · '+htmlEscape(wallet.status||"")+' · '+htmlEscape(wallet.connection_type||"address link")+'</div>'+
+            '<div class="connection-id">'+htmlEscape(wallet.masked_address||wallet.public_address||"")+'</div>'+
+            '<div class="connection-actions"><button type="button" class="danger" data-revoke-wallet="'+id+'">Revoke 9N8 link</button></div>'+
+          '</article>';
+        }).join(""):'<p class="muted">No linked wallet records are saved to this Telegram account.</p>';
+      }
+      exchangeList?.querySelectorAll("[data-account-provider]").forEach(button=>button.addEventListener("click",()=>refreshAccount(button.dataset.accountProvider,button.dataset.connectionId)));
+      exchangeList?.querySelectorAll("[data-revoke-exchange]").forEach(button=>button.addEventListener("click",()=>revokeExchange(button.dataset.revokeExchange)));
+      walletList?.querySelectorAll("[data-revoke-wallet]").forEach(button=>button.addEventListener("click",()=>revokeWallet(button.dataset.revokeWallet)));
+    }catch(error){
+      if(exchangeList)exchangeList.textContent="Could not load exchange connections: "+(error.message||"Request failed.");
+      if(walletList)walletList.textContent="Could not load linked wallets: "+(error.message||"Request failed.");
+    }
+  }
+  async function refreshAccount(provider,connectionId){
+    const box=document.getElementById("account-"+connectionId);
+    if(!box)return;
+    box.textContent="Refreshing account balances from the exchange…";
+    const action=provider==="binance"?"binance_account":provider==="okx"?"okx_account":"";
+    if(!action){box.textContent="Unsupported account provider.";return;}
+    try{
+      const result=await apiPost({action,connectionId,initData:tg.initData});
+      const lines=["Checked at "+new Date(result.updatedAt||Date.now()).toLocaleString()];
+      const quote=result.quoteBalance||{};
+      if(quote.asset)lines.push(quote.asset+" available · "+displayAmount(quote.free)+" · locked "+displayAmount(quote.locked));
+      if(result.accountEquityUsdApprox!=null)lines.push("Account equity (approx. USD) · "+displayAmount(result.accountEquityUsdApprox));
+      if(Array.isArray(result.balances)){
+        lines.push("Balances:");
+        for(const balance of result.balances.slice(0,20)){
+          lines.push(String(balance.asset||"") +" · free "+displayAmount(balance.free)+" · locked "+displayAmount(balance.locked));
+        }
+      }
+      if(result.liveOrdersEnabled===false)lines.push("9N8 order execution · LOCKED");
+      box.textContent=lines.join("\n");
+    }catch(error){box.textContent="Balance refresh failed: "+(error.message||"Exchange request failed.");}
+  }
+  async function revokeExchange(connectionId){
+    if(!window.confirm("Disconnect this exchange from 9N8? This deletes the stored API secret from 9N8 Vault. It does NOT revoke the API key at Binance/OKX; delete that key separately in the exchange's security settings."))return;
+    try{
+      const result=await apiPost({action:"exchange_revoke",connectionId,initData:tg.initData});
+      showConnectionMessage("exchangeStatus",result.message||"Exchange connection removed from 9N8.");
+      await refreshConnections();
+    }catch(error){showConnectionMessage("exchangeStatus","Disconnect failed: "+(error.message||"Request failed."));}
+  }
+  async function revokeWallet(connectionId){
+    if(!window.confirm("Remove this wallet link from 9N8? This removes only the 9N8 record; it does not change your wallet app or the blockchain."))return;
+    try{
+      const result=await apiPost({action:"wallet_revoke",connectionId,initData:tg.initData});
+      showConnectionMessage("walletStatus",result.message||"Wallet link removed from 9N8.");
+      await refreshConnections();
+    }catch(error){showConnectionMessage("walletStatus","Wallet removal failed: "+(error.message||"Request failed."));}
+  }
+  document.getElementById("refreshConnections").addEventListener("click",refreshConnections);
+  document.getElementById("refreshWallets").addEventListener("click",refreshConnections);
   document.getElementById("exchangeForm").addEventListener("submit",async function(event){
     event.preventDefault();
     if(!tg || !tg.initData){document.getElementById("exchangeStatus").textContent="Open this page using the Connect button in your 9N8 Telegram private chat.";return;}
     const button=document.getElementById("saveExchange");
     const status=document.getElementById("exchangeStatus");
-    button.disabled=true;status.textContent="Checking the selected demo/testnet account…";
+    button.disabled=true;status.textContent="Validating your live account access; no order will be sent…";
     const credentials={
       apiKey:document.getElementById("apiKey").value.trim(),
       apiSecret:document.getElementById("apiSecret").value.trim()
     };
-    if(provider.value==="okx")credentials.passphrase=passphrase.value;
+    if(provider.value==="okx"){
+      credentials.passphrase=passphrase.value;
+      credentials.region=document.getElementById("okxRegion").value;
+    }
     try{
       const result=await apiPost({action:"connect_exchange",initData:tg.initData,provider:provider.value,environment:env.value,credentials});
-      status.textContent="Connected: "+result.label+". Credentials encrypted and saved; they will not be displayed again.";
-      this.reset();refreshProvider();
+      status.textContent="Connected: "+result.label+". Credential stored securely. This connection does not enable real order placement.";
+      this.reset();refreshProvider();await refreshConnections();
     }catch(error){status.textContent=error.message||"Connection failed.";}
     finally{
       credentials.apiKey="";credentials.apiSecret="";credentials.passphrase="";
@@ -219,6 +462,7 @@ button:disabled{opacity:.55;cursor:wait}
   });
   // Wallet QR scanning: scan locally, extract only a public address, and require
   // the user to review and submit it. No QR contents are uploaded or logged.
+  if(!isSetup && tg?.initData)refreshConnections();
   const qrPanel=document.getElementById("qrScannerPanel");
   const qrReader=document.getElementById("qrReader");
   const qrImageInput=document.getElementById("qrImageInput");
