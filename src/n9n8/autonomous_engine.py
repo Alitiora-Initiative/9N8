@@ -589,10 +589,18 @@ class AutonomousEngine:
             estimate = max(0, baseline - realized_loss)
             dd = drawdown_pct(estimate, baseline)
             if dd >= max_drawdown:
-                await self.db.update_settings(telegram_id, {"enabled": False})
+                await self.db.update_settings(
+                    telegram_id,
+                    {"enabled": False, "live_enabled": False},
+                )
+                await self.db.security_event(
+                    telegram_id,
+                    "live_daily_circuit_breaker",
+                    f"Realized drawdown {dd:.2f}% reached the {max_drawdown}% daily limit. New live entries were paused.",
+                )
                 await self.notify(
                     telegram_id,
-                    f"DAILY CIRCUIT BREAKER\nRealized drawdown {dd:.2f}% reached the {max_drawdown}% limit. New entries paused.",
+                    f"DAILY CIRCUIT BREAKER\nRealized drawdown {dd:.2f}% reached the {max_drawdown}% limit. New live entries are OFF; existing positions remain under exit monitoring.",
                 )
                 return
 
