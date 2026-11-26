@@ -69,6 +69,7 @@ _pending_live_snipes: dict[int, dict] = {}
 _withdraw_locks: dict[int, asyncio.Lock] = {}
 _dashboard_message_ids: dict[int, int] = {}
 _pending_detected_mints: dict[int, str] = {}
+_wallet_reveal_locks: dict[int, asyncio.Lock] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
@@ -367,6 +368,49 @@ async def _send_sensitive_key(message: Message, address: str, secret: str) -> No
     asyncio.create_task(_delete_after(message.bot, sent.chat.id, sent.message_id, 60))
 
 
+
+async def _onboarding_text(telegram_id: int, key_revealed: bool = False) -> str:
+    svc = _svc()
+    address = await svc.db.get_wallet_address(telegram_id)
+    if not address:
+        return "9N8 WALLET ONBOARDING\n\nNo Solana wallet is connected."
+    balance_text = "Temporarily unavailable"
+    rpc_latency = "not measured"
+    try:
+        started = time.perf_counter()
+        balance = await svc.wallet.balance(telegram_id)
+        rpc_latency = f"{(time.perf_counter() - started) * 1000:.0f} ms"
+        balance_text = f"{format_sol(balance)} SOL"
+    except Exception:
+        pass
+    jito_status = "configured" if bool(getattr(svc.settings, "jito_base_url", "")) else "not configured"
+    key_status = (
+        "Private key reveal: USED — this wallet's one-time reveal is complete. Keep your offline backup safe."
+        if key_revealed
+        else "Private key: ENCRYPTED AND HIDDEN. Reveal it once below, save it offline, and never share it. The Telegram message will be deleted after 60 seconds, but deletion cannot erase screenshots or notification copies."
+    )
+    return (
+        "🔐 9N8 SECURE WALLET ONBOARDING\n\n"
+        "Your dedicated Solana Mainnet trading wallet has been created. Its private key is encrypted at rest in the 9N8 wallet vault.\n\n"
+        f"Wallet address:\n{address}\n\n"
+        f"Balance: {balance_text}\n"
+        f"Helius RPC response: {rpc_latency}\n"
+        f"Jito Block Engine endpoint: {jito_status}\n\n"
+        f"{key_status}\n\n"
+        "EVM wallets: not generated in this release. Base, Ethereum and BNB Chain remain non-executable."
+    )
+
+
+def _onboarding_keyboard(key_revealed: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if not key_revealed:
+        rows.append([InlineKeyboardButton(text="🔑 Reveal Private Key (One-Time)", callback_data="wallet:reveal")])
+    else:
+        rows.append([InlineKeyboardButton(text="✅ Private Key Revealed", callback_data="wallet:reveal")])
+    rows.append([InlineKeyboardButton(text="➡️ Continue to Main Dashboard", callback_data="home:show")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 async def _dashboard_text(telegram_id: int) -> str:
     svc = _svc()
     await svc.db.ensure_user(telegram_id)
@@ -590,15 +634,35 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         return
     svc = _svc()
     await state.clear()
-    existing = await svc.db.get_user(message.from_user.id)
+    telegram_id = message.from_user.id
+    existing = await svc.db.get_user(telegram_id)
     if not existing and await svc.db.user_count() >= svc.settings.max_users:
         await message.answer("9N8 is currently at its onboarding capacity. Please contact the operator.")
         return
-    await svc.db.ensure_user(message.from_user.id)
+    await svc.db.ensure_user(telegram_id)
+    address = await svc.db.get_wallet_address(telegram_id)
+    if not address:
+        try:
+            address, _secret = await svc.wallet.create_wallet(telegram_id)
+            await svc.engine.watch_wallet(telegram_id)
+            await svc.db.security_event(telegram_id, "wallet_created_onboarding", address)
+        except Exception as exc:
+            await message.answer(
+                "9N8 could not create the dedicated Solana wallet. No deposit address is available.\n"
+                f"{type(exc).__name__}: {str(exc)[:180]}"
+            )
+            return
+        await _show_command_panel(
+            message,
+            await _onboarding_text(telegram_id),
+            _onboarding_keyboard(),
+        )
+        return
+    revealed = await svc.db.wallet_key_was_revealed(telegram_id, address)
     await _show_command_panel(
         message,
-        await _dashboard_text(message.from_user.id),
-        _home_keyboard(svc.settings.webapp_url),
+        await _dashboard_text(telegram_id) if revealed else await _onboarding_text(telegram_id),
+        _home_keyboard(svc.settings.webapp_url) if revealed else _onboarding_keyboard(),
     )
 
 
@@ -654,6 +718,9 @@ async def cb_network_wallets(callback: CallbackQuery) -> None:
     rows = []
     if address:
         rows.append([InlineKeyboardButton(text="📥 Deposit SOL", callback_data="deposit:show")])
+        revealed = await _svc().db.wallet_key_was_revealed(callback.from_user.id, address)
+        if not revealed:
+            rows.append([InlineKeyboardButton(text="🔑 Reveal Private Key (One-Time)", callback_data="wallet:reveal")])
     else:
         rows.extend([
             [InlineKeyboardButton(text="Create Solana Wallet", callback_data="wallet:create")],
@@ -1557,15 +1624,54 @@ async def cb_create_wallet(callback: CallbackQuery) -> None:
     svc = _svc()
     await callback.answer()
     try:
-        address, secret = await svc.wallet.create_wallet(callback.from_user.id)
+        await svc.wallet.create_wallet(callback.from_user.id)
         await svc.engine.watch_wallet(callback.from_user.id)
-        await callback.message.answer(
-            f"Wallet created. Solana deposit address:\n{address}\n\n"
-            "Your recovery key will arrive in a separate auto-deleting message."
+        address = await svc.db.get_wallet_address(callback.from_user.id)
+        if address:
+            await svc.db.security_event(callback.from_user.id, "wallet_created_onboarding", address)
+        await callback.message.edit_text(
+            await _onboarding_text(callback.from_user.id),
+            reply_markup=_onboarding_keyboard(),
         )
-        await _send_sensitive_key(callback.message, address, secret)
     except WalletError as exc:
         await callback.message.answer(str(exc))
+
+
+@router.callback_query(F.data == "wallet:reveal")
+async def cb_wallet_reveal(callback: CallbackQuery) -> None:
+    svc = _svc()
+    telegram_id = callback.from_user.id
+    lock = _wallet_reveal_locks.setdefault(telegram_id, asyncio.Lock())
+    async with lock:
+        address = await svc.db.get_wallet_address(telegram_id)
+        if not address:
+            await callback.answer("No Solana wallet is connected.", show_alert=True)
+            return
+        if await svc.db.wallet_key_was_revealed(telegram_id, address):
+            await callback.answer(
+                "This wallet's one-time key reveal has already been used. If the backup is lost, use the wallet-rotation flow.",
+                show_alert=True,
+            )
+            await callback.message.edit_text(
+                await _onboarding_text(telegram_id, key_revealed=True),
+                reply_markup=_onboarding_keyboard(key_revealed=True),
+            )
+            return
+        try:
+            secret = await svc.db.load_secret(telegram_id)
+            await svc.db.security_event(telegram_id, "wallet_key_revealed", address)
+            await callback.answer("Sending the one-time recovery key in a 60-second auto-deleting message.")
+            await _send_sensitive_key(callback.message, address, secret)
+            await callback.message.edit_text(
+                await _onboarding_text(telegram_id, key_revealed=True),
+                reply_markup=_onboarding_keyboard(key_revealed=True),
+            )
+        except Exception as exc:
+            logger.exception("One-time wallet reveal failed for Telegram account %s", telegram_id)
+            await callback.answer(
+                f"Private key could not be revealed ({type(exc).__name__}).",
+                show_alert=True,
+            )
 
 
 @router.callback_query(F.data == "wallet:import")
@@ -1586,7 +1692,15 @@ async def handle_import_wallet(message: Message, state: FSMContext) -> None:
             return
         address = await svc.wallet.import_wallet(message.from_user.id, (message.text or "").strip())
         await svc.engine.watch_wallet(message.from_user.id)
-        await message.answer(f"Wallet imported successfully.\nSolana address:\n{address}")
+        await message.answer(
+            "Solana wallet imported and encrypted at rest.\n"
+            f"Address: {address}\n"
+            "You can reveal the stored recovery key once from the wallet onboarding screen."
+        )
+        await message.answer(
+            await _onboarding_text(message.from_user.id),
+            reply_markup=_onboarding_keyboard(),
+        )
     except WalletError as exc:
         await message.answer(f"Wallet import failed: {exc}")
     finally:
