@@ -163,6 +163,8 @@ class WalletManager:
 
         keypair = await self.keypair_for(telegram_id)
         source = keypair.pubkey()
+        if recipient == source:
+            raise WalletError("Destination must be a different wallet from your 9N8 trading wallet.")
         balance = await self.balance(telegram_id)
         blockhash = await self._latest_hash()
         instruction = transfer(TransferParams(
