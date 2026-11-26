@@ -4,6 +4,7 @@ on:
     branches: [main, feature/solana-telegram-sniper, feature/9n8-neon-platform-split, feature/solana-live-controls-completion, feature/9n8-telegram-network-controls]
   pull_request:
     branches: [main, feature/solana-live-controls-completion]
+  workflow_dispatch:
 permissions:
   contents: read
 
@@ -62,7 +63,7 @@ jobs:
   # Runs only on the dedicated one-time sync commit; never prints or exports secret values.
   sync-production-runtime:
     name: Sync existing production secrets to Vercel
-    if: github.event_name == 'push' && github.event.head_commit.message == 'Sync 9N8 production runtime environment'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'Sync 9N8 production runtime environment')
     runs-on: ubuntu-latest
     permissions:
       contents: read
