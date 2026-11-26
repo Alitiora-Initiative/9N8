@@ -14,6 +14,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "launchpad": "both",
     "buy_amount_sol": "0.05",
     "slippage_pct": "15",
+    "sell_slippage_pct": "20",
     "priority_fee_lamports": 10000,
     "jito_tip_lamports": 2000000,
     "take_profit_pct": "100",
@@ -522,6 +523,19 @@ class Database:
                 (telegram_id, event_type, detail[:1000], utc_now()),
             )
             await db.commit()
+
+    async def recent_rejections(self, telegram_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                """SELECT id,event_type,detail,created_at
+                   FROM security_events
+                   WHERE telegram_id=? AND event_type='token_rejected'
+                   ORDER BY id DESC LIMIT ?""",
+                (int(telegram_id), max(1, min(int(limit), 50))),
+            )
+            rows = await cur.fetchall()
+        return [dict(row) for row in rows]
 
     async def set_payout_address(self, telegram_id: int, address: str) -> None:
         async with self._lock, aiosqlite.connect(self.path) as db:
