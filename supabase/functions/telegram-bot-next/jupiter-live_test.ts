@@ -40,6 +40,12 @@ Deno.test("quote guard rejects transactionless quotes, wrong taker and v1 transa
     otherAmountThreshold: "85", priceImpactPct: "0.001",
   };
   assertSolanaOrder(order, "Wallet111");
+  let missingImpactRejected = false;
+  try {
+    const { priceImpactPct: _ignored, ...missingImpact } = order;
+    assertSolanaOrder(missingImpact, "Wallet111");
+  } catch { missingImpactRejected = true; }
+  if (!missingImpactRejected) throw new Error("missing_price_impact_accepted");
   let rejected = false;
   try { assertSolanaOrder({ ...order, transaction: "" }, "Wallet111"); } catch { rejected = true; }
   if (!rejected) throw new Error("transactionless_order_accepted");

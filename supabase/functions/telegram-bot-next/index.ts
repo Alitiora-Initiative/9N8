@@ -1094,7 +1094,7 @@ async function createJupiterSwapOrder(user: any, row: any, body: any): Promise<R
     apiKey: JUPITER_API_KEY || undefined,
   });
   assertSolanaOrder(order, wallet.public_address);
-  const impact = priceImpactFraction(order.priceImpactPct ?? 0);
+  const impact = priceImpactFraction(order.priceImpactPct);
   let tx: VersionedTransaction;
   try {
     tx = VersionedTransaction.deserialize(base64ToBytes(String(order.transaction)));

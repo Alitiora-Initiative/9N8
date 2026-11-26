@@ -132,7 +132,10 @@ export function assertSolanaOrder(order: any, walletAddress: string): void {
   finitePositive(order.inAmount, "jupiter_input_amount_invalid");
   finitePositive(order.outAmount, "jupiter_output_amount_invalid");
   finitePositive(order.otherAmountThreshold, "jupiter_minimum_output_invalid");
-  priceImpactFraction(order.priceImpactPct ?? 0);
+  if (order.priceImpactPct === undefined || order.priceImpactPct === null || order.priceImpactPct === "") {
+    throw new Error("jupiter_price_impact_missing");
+  }
+  priceImpactFraction(order.priceImpactPct);
 }
 
 export function assertSwapExecution(response: any): "success" | "failed" {
