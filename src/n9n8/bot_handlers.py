@@ -278,10 +278,8 @@ def _mode_keyboard(mode: str, enabled: bool) -> InlineKeyboardMarkup:
 
 
 def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
-    launchpad = str(config.get("launchpad", "both"))
-    pump_mode = str(config.get("pump_mode", "fresh"))
     mev = "ON" if config.get("mev_shield", True) else "OFF"
-    rows = [
+    return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="Pump.fun", callback_data="settings:launchpad:pump.fun"),
             InlineKeyboardButton(text="Raydium", callback_data="settings:launchpad:raydium"),
@@ -291,41 +289,57 @@ def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Fresh Launch", callback_data="settings:pumpmode:fresh"),
             InlineKeyboardButton(text="Migration", callback_data="settings:pumpmode:migration"),
         ],
+        [InlineKeyboardButton(text=f"MEV Shield: {mev}", callback_data="settings:toggle:mev_shield")],
         [
-            InlineKeyboardButton(text=f"MEV Shield: {mev}", callback_data="settings:toggle:mev_shield"),
+            InlineKeyboardButton(text=f"Buy: {config.get('buy_amount_sol','0.05')} SOL", callback_data="settings:field:buy_amount_sol"),
+            InlineKeyboardButton(text=f"Buy slip: {config.get('slippage_pct','15')}%", callback_data="settings:field:slippage_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Buy SOL: {config['buy_amount_sol']}", callback_data="settings:field:buy_amount_sol"),
-            InlineKeyboardButton(text=f"Slippage: {config['slippage_pct']}%", callback_data="settings:field:slippage_pct"),
+            InlineKeyboardButton(text=f"Sell slip: {config.get('sell_slippage_pct','20')}%", callback_data="settings:field:sell_slippage_pct"),
+            InlineKeyboardButton(text=f"Jito tip: {format_sol(int(config.get('jito_tip_lamports',2000000)))} SOL", callback_data="settings:field:jito_tip_lamports"),
         ],
         [
-            InlineKeyboardButton(text=f"Priority μLamports: {config['priority_fee_lamports']}", callback_data="settings:field:priority_fee_lamports"),
-            InlineKeyboardButton(text=f"Jito Tip: {format_sol(int(config['jito_tip_lamports']))} SOL", callback_data="settings:field:jito_tip_lamports"),
+            InlineKeyboardButton(text=f"Priority fee: {config.get('priority_fee_lamports',10000)} μLamports", callback_data="settings:field:priority_fee_lamports"),
         ],
         [
-            InlineKeyboardButton(text=f"Take Profit: {config['take_profit_pct']}%", callback_data="settings:field:take_profit_pct"),
-            InlineKeyboardButton(text=f"Stop Loss: {config['stop_loss_pct']}%", callback_data="settings:field:stop_loss_pct"),
+            InlineKeyboardButton(text=f"TP1: +{config.get('take_profit_pct','100')}% / sell 50%", callback_data="settings:field:take_profit_pct"),
+            InlineKeyboardButton(text=f"Trail: {config.get('trailing_stop_pct','20')}%", callback_data="settings:field:trailing_stop_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Max Hold: {config['max_hold_seconds']}s", callback_data="settings:field:max_hold_seconds"),
-            InlineKeyboardButton(text=f"Moon Bag: {config['moon_bag_pct']}%", callback_data="settings:field:moon_bag_pct"),
+            InlineKeyboardButton(text=f"Hard stop: -{config.get('stop_loss_pct','30')}%", callback_data="settings:field:stop_loss_pct"),
+            InlineKeyboardButton(text=f"Max hold: {int(config.get('max_hold_seconds',14400))//3600}h", callback_data="settings:field:max_hold_seconds"),
         ],
         [
-            InlineKeyboardButton(text=f"Daily Trades: {config['daily_position_limit']}", callback_data="settings:field:daily_position_limit"),
-            InlineKeyboardButton(text=f"Daily Drawdown: {config['max_daily_drawdown_pct']}%", callback_data="settings:field:max_daily_drawdown_pct"),
+            InlineKeyboardButton(text=f"Min liquidity: {config.get('min_liquidity_sol','5')} SOL", callback_data="settings:field:min_liquidity_sol"),
+            InlineKeyboardButton(text=f"LP lock: {config.get('min_lp_locked_pct','80')}%", callback_data="settings:field:min_lp_locked_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Migration Trigger: {config.get('pump_migration_progress_pct', '80')}%", callback_data="settings:field:pump_migration_progress_pct"),
-            InlineKeyboardButton(text=f"Min Liquidity USD: {config.get('min_liquidity_usd', '5000')}", callback_data="settings:field:min_liquidity_usd"),
+            InlineKeyboardButton(text=f"Top 10 cap: {config.get('max_top10_concentration_pct','25')}%", callback_data="settings:field:max_top10_concentration_pct"),
+            InlineKeyboardButton(text=f"Dev cap: {config.get('max_dev_wallet_pct','5')}%", callback_data="settings:field:max_dev_wallet_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Top-10 Cap: {config['max_top10_concentration_pct']}%", callback_data="settings:field:max_top10_concentration_pct"),
+            InlineKeyboardButton(text=f"Daily trades: {config.get('daily_position_limit',5)}", callback_data="settings:field:daily_position_limit"),
+            InlineKeyboardButton(text=f"Daily loss cap: {config.get('max_daily_drawdown_pct','15')}%", callback_data="settings:field:max_daily_drawdown_pct"),
         ],
+        [InlineKeyboardButton(text="🛡️ Open Anti-Rug Gatekeeper", callback_data="safety:live")],
         [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    ])
 
 
+def _safety_keyboard(config: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Mint authority revoked: REQUIRED", callback_data="safety:locked:mint")],
+        [InlineKeyboardButton(text="✅ Freeze authority revoked: REQUIRED", callback_data="safety:locked:freeze")],
+        [InlineKeyboardButton(text=f"LP burned/locked minimum: {config.get('min_lp_locked_pct','80')}%", callback_data="settings:field:min_lp_locked_pct")],
+        [InlineKeyboardButton(text=f"Minimum liquidity: {config.get('min_liquidity_sol','5')} SOL", callback_data="settings:field:min_liquidity_sol")],
+        [InlineKeyboardButton(text=f"Max top-10 holders: {config.get('max_top10_concentration_pct','25')}%", callback_data="settings:field:max_top10_concentration_pct")],
+        [InlineKeyboardButton(text=f"Max single developer: {config.get('max_dev_wallet_pct','5')}%", callback_data="settings:field:max_dev_wallet_pct")],
+        [InlineKeyboardButton(text="⚙️ All Trading Settings", callback_data="settings:show")],
+        [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+    ])
+
+
+def _fees_keyboard() -> InlineKeyboardMarkup:
 def _fees_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Change MEV / Risk Settings", callback_data="settings:risk")],
@@ -392,25 +406,31 @@ async def _dashboard_text(telegram_id: int) -> str:
     )
     scanner_task = getattr(svc.engine, "_scanner_task", None)
     scanner_status = "RUNNING" if scanner_task and not scanner_task.done() else "IDLE"
+    pump_mode = str(live_config.get("pump_mode", "migration")).upper()
     return (
-        "⚡ 9N8 · SOLANA TRADING CONTROL\n\n"
-        "Execution network: SOLANA MAINNET · only connected trading engine\n"
-        "EVM networks: visible in the network selector, not execution-enabled\n\n"
-        "TWO SEPARATE MODES\n"
-        f"🧪 Paper Trading: {'RUNNING' if paper_on else 'PAUSED'}\n"
-        f"Virtual cash: {paper_balance}\n"
-        f"Practice days: {paper_days}/7\n"
-        f"🔴 Live Solana Sniper: {'ARMED' if live_on else 'LOCKED / OFF'}\n"
-        f"Market listener: {scanner_status}\n"
-        f"Live positions: {len(live_positions)}\n"
-        f"Marked unrealized PnL: {format_sol(unrealized)} SOL\n\n"
-        f"Live wallet: {live_balance} · {live_balance_usd}\n"
+        "⚡ 9N8 · SOLANA SNIPER DASHBOARD\n\n"
+        "NETWORK: 🟣 SOLANA MAINNET\n"
+        "EVM networks: displayed in selector · execution not connected\n\n"
+        "TWO SEPARATE BOOKS\n"
+        f"🧪 Paper Trading: {'RUNNING' if paper_on else 'PAUSED'} · {paper_balance}\n"
+        f"Paper practice days: {paper_days}/7\n"
+        f"🔴 AUTONOMOUS LIVE MODE: {'ON' if live_on else 'OFF'}\n"
+        f"Blockchain listener: {scanner_status} · Pump.fun / Raydium\n"
+        f"Open live positions: {len(live_positions)}\n"
+        f"Marked live PnL: {format_sol(unrealized)} SOL\n\n"
+        f"Wallet: {live_balance} · {live_balance_usd}\n"
         f"Wallet RPC response: {rpc_latency}\n"
-        f"Deposit address: {address or 'Create a wallet to receive SOL'}\n"
-        f"Live activation: {activation}\n"
-        f"Operator live switch: {'ON' if svc.settings.live_trading_enabled else 'OFF'}\n\n"
-        "Paper trades use real market quotes but virtual funds only. Live mode uses your wallet "
-        "and needs a separate readiness check and your confirmation."
+        f"Address: {address or 'Create a wallet to receive SOL'}\n"
+        f"Activation: {activation} · Operator live switch: {'ON' if svc.settings.live_trading_enabled else 'OFF'}\n\n"
+        "ACTIVE LIVE RULES\n"
+        f"• Strategy: {live_config.get('launchpad','both')} · Pump mode: {pump_mode}\n"
+        f"• Buy: {live_config.get('buy_amount_sol','0.05')} SOL · Min pool: {live_config.get('min_liquidity_sol','5')} SOL\n"
+        f"• Buy/sell slippage: {live_config.get('slippage_pct','15')}% / {live_config.get('sell_slippage_pct','20')}%\n"
+        f"• Jito tip: {format_sol(int(live_config.get('jito_tip_lamports',2000000)))} SOL\n"
+        f"• TP1: +{live_config.get('take_profit_pct','100')}% (sell 50%) · Trail: {live_config.get('trailing_stop_pct','20')}%\n"
+        f"• Hard stop: -{live_config.get('stop_loss_pct','30')}% · Max hold: {int(live_config.get('max_hold_seconds',14400))//3600}h\n\n"
+        "Paper trades use real quotes and virtual funds only. Live mode uses real SOL and requires separate readiness and confirmation. "
+        "This dashboard does not invent pool-scan or win-rate statistics."
     )
 
 
@@ -556,6 +576,12 @@ async def _history_text(telegram_id: int, mode: str = "both") -> str:
                 f"· {str(row.get('mint') or 'SOL')[:8]}…"
             )
             lines.append(f"  https://solscan.io/tx/{signature}")
+        rejections = await svc.db.recent_rejections(telegram_id, 10)
+        lines.extend(["", "RECENT SAFETY REJECTIONS"])
+        if not rejections:
+            lines.append("No stored token rejections.")
+        for row in rejections:
+            lines.append("• " + str(row.get("detail") or "Rejected token")[:240])
     return "\n".join(lines)
 
 
@@ -928,57 +954,58 @@ async def cmd_live_positions(message: Message) -> None:
         return
     svc = _svc()
     rows = await svc.db.active_positions(message.from_user.id)
-    if not rows:
-        await message.answer("No open live positions in your real Solana wallet.")
-        return
     await _send_live_positions(message, rows)
 
 
-async def _send_live_positions(message: Message, rows: list[dict]) -> None:
-    lines = ["🔴 LIVE POSITIONS · REAL WALLET", ""]
+async def _live_positions_view(rows: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+    lines = ["📊 LIVE ACTIVE POSITIONS · SOLANA", ""]
     buttons = []
+    if not rows:
+        lines.append("No open live positions.")
     for row in rows[:8]:
         mint = str(row["mint"])
+        entry = int(row.get("initial_cost_lamports") or 0)
+        current = int(row.get("last_value_lamports") or 0)
+        realized = int(row.get("realized_lamports") or 0)
+        net = realized + current - entry if current > 0 else realized
+        pnl_pct = Decimal(str(row.get("last_pnl_pct") or "0"))
+        phase = "MOONBAG · TRAILING ACTIVE" if bool(row.get("tp1_done")) else "INITIAL · WAITING FOR TP1"
         lines.append(
             f"{mint}\n"
-            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
-            f"Current PnL: {row.get('last_pnl_pct','0')}%\n"
-            f"Tokens: {row['token_amount_raw']} raw units\n"
-            f"Exit phase: {row.get('exit_reason') or 'monitoring'}"
+            f"• Initial cost: {format_sol(entry)} SOL\n"
+            f"• Current quoted exit value: {format_sol(current)} SOL\n"
+            f"• Net PnL estimate: {format_sol(net)} SOL ({pnl_pct:+.2f}% mark)\n"
+            f"• Realized PnL ledger: {format_sol(realized)} SOL\n"
+            f"• Tokens: {row['token_amount_raw']} raw units\n"
+            f"• Phase: {phase}"
         )
         buttons.append([
-            InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
-            InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
+            InlineKeyboardButton(text=f"💰 Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
+            InlineKeyboardButton(text=f"🚨 Sell 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
         ])
-    buttons.append([InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")])
-    await message.answer("\n\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        buttons.append([
+            InlineKeyboardButton(text="📈 Live Chart", url="https://dexscreener.com/solana/" + mint),
+        ])
+    buttons.extend([
+        [InlineKeyboardButton(text="🔄 Refresh Live Prices", callback_data="positions:live")],
+        [InlineKeyboardButton(text="🧨 PANIC SELL ALL POSITIONS", callback_data="positions:panic_all:prompt")],
+        [InlineKeyboardButton(text="🏠 Back to Dashboard", callback_data="home:show")],
+    ])
+    return "\n\n".join(lines), InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+async def _send_live_positions(message: Message, rows: list[dict]) -> None:
+    text, keyboard = await _live_positions_view(rows)
+    await message.answer(text, reply_markup=keyboard, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data == "positions:live")
 async def cb_live_positions(callback: CallbackQuery) -> None:
     svc = _svc()
-    await callback.answer()
+    await callback.answer("Refreshing position marks…")
     rows = await svc.db.active_positions(callback.from_user.id)
-    if not rows:
-        await callback.message.edit_text("No open live positions.",reply_markup=_live_menu_keyboard(False,False))
-        return
-    lines = ["LIVE POSITIONS · REAL WALLET",""]
-    buttons = []
-    for row in rows[:8]:
-        mint = str(row["mint"])
-        lines.append(
-            f"Mint: {mint}\n"
-            f"Entry cost: {format_sol(int(row.get('initial_cost_lamports') or 0))} SOL\n"
-            f"Current PnL: {row.get('last_pnl_pct','0')}%\n"
-            f"Tokens: {row['token_amount_raw']} raw\n"
-            f"Target state: {row.get('exit_reason') or 'monitoring'}"
-        )
-        buttons.append([
-            InlineKeyboardButton(text=f"Sell 50% {mint[:7]}…", callback_data=f"position:sell50:{row['id']}"),
-            InlineKeyboardButton(text=f"Panic 100% {mint[:7]}…", callback_data=f"position:panic:{row['id']}"),
-        ])
-    buttons.append([InlineKeyboardButton(text="Back to Live Menu",callback_data="live:menu")])
-    await callback.message.edit_text("\n\n".join(lines),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    text, keyboard = await _live_positions_view(rows)
+    await callback.message.edit_text(text, reply_markup=keyboard, disable_web_page_preview=True)
 
 
 @router.callback_query(F.data.startswith("position:sell50:"))
@@ -988,9 +1015,77 @@ async def cb_live_sell50(callback: CallbackQuery) -> None:
     try:
         position_id = int(callback.data.rsplit(":", 1)[-1])
         await svc.engine.sell_position_percent(callback.from_user.id, position_id, 50)
-        await callback.message.answer("50% sell was processed by the live engine. Check the on-chain receipt before another trade.")
+        rows = await svc.db.active_positions(callback.from_user.id)
+        text, keyboard = await _live_positions_view(rows)
+        await callback.message.edit_text("✅ 50% sell submitted.\n\n" + text, reply_markup=keyboard, disable_web_page_preview=True)
     except Exception as exc:
-        await callback.message.answer(f"50% sell was not completed: {type(exc).__name__}: {str(exc)[:200]}")
+        await callback.message.edit_text(
+            f"50% sell was not completed: {type(exc).__name__}: {str(exc)[:250]}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Refresh Positions", callback_data="positions:live")],
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
+        )
+
+
+@router.callback_query(F.data.startswith("position:panic:"))
+async def cb_panic_sell(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Submitting full position exit…")
+    try:
+        position_id = int(callback.data.rsplit(":", 1)[-1])
+        await svc.engine.panic_sell(callback.from_user.id, position_id)
+        rows = await svc.db.active_positions(callback.from_user.id)
+        text, keyboard = await _live_positions_view(rows)
+        await callback.message.edit_text("✅ Full-position exit submitted. Verify the on-chain receipt.\n\n" + text, reply_markup=keyboard, disable_web_page_preview=True)
+    except Exception as exc:
+        await callback.message.edit_text(
+            f"Full-position exit was not completed: {type(exc).__name__}: {str(exc)[:250]}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔄 Refresh Positions", callback_data="positions:live")],
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
+        )
+
+
+@router.callback_query(F.data == "positions:panic_all:prompt")
+async def cb_panic_sell_all_prompt(callback: CallbackQuery) -> None:
+    rows = await _svc().db.active_positions(callback.from_user.id)
+    if not rows:
+        await callback.answer("There are no open live positions.", show_alert=True)
+        return
+    await callback.answer()
+    await callback.message.edit_text(
+        "⚠️ CONFIRM PANIC SELL ALL\n\n"
+        f"This will attempt to market-sell all {len(rows)} open Solana positions sequentially. "
+        "Quotes, network fees, slippage and failed transactions can affect the outcome. "
+        "Check every resulting Solscan receipt.\n\n"
+        "Do not press twice while exits are processing.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧨 CONFIRM SELL ALL", callback_data="positions:panic_all:confirm")],
+            [InlineKeyboardButton(text="Cancel", callback_data="positions:live")],
+        ]),
+    )
+
+
+@router.callback_query(F.data == "positions:panic_all:confirm")
+async def cb_panic_sell_all_confirm(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer("Processing open positions one by one…")
+    rows = await svc.db.active_positions(callback.from_user.id)
+    outcomes = []
+    for row in rows:
+        position_id = int(row["id"])
+        mint = str(row["mint"])
+        try:
+            await svc.engine.panic_sell(callback.from_user.id, position_id)
+            outcomes.append(f"✅ {mint[:9]}… — exit submitted")
+        except Exception as exc:
+            outcomes.append(f"❌ {mint[:9]}… — {type(exc).__name__}: {str(exc)[:120]}")
+    refreshed = await svc.db.active_positions(callback.from_user.id)
+    text, keyboard = await _live_positions_view(refreshed)
+    report = "🧨 PANIC SELL ALL RESULTS\n" + ("\n".join(outcomes) if outcomes else "No open positions were found.")
+    await callback.message.edit_text(report + "\n\n" + text, reply_markup=keyboard, disable_web_page_preview=True)
 
 
 @router.message(Command("settings"))
@@ -1268,58 +1363,52 @@ async def handle_snipe_mint(message: Message, state: FSMContext) -> None:
 async def cmd_safety(message: Message) -> None:
     if not _is_private(message):
         return
+    config = await _svc().db.get_settings(message.from_user.id)
     await message.answer(
-        "🛡️ ANTI-RUG SAFETY FILTERS\n\n"
-        "These checks protect both paper and live entries. Critical checks stay ON and cannot be disabled.\n\n"
-        "🔒 Mint authority revoked: REQUIRED\n"
-        "🔒 Freeze authority revoked: REQUIRED\n"
-        "🔒 Creator and top-holder concentration: CHECKED\n"
-        "🔒 Token extensions and transfer restrictions: CHECKED\n"
-        "🔒 Pool liquidity and LP lock/burn: REQUIRED\n\n"
-        "You can adjust thresholds separately for the paper account and live wallet. A missing or unverifiable result blocks the entry.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Paper Safety Thresholds", callback_data="paper:settings")],
-            [InlineKeyboardButton(text="Live Safety Thresholds", callback_data="safety:live")],
-            [InlineKeyboardButton(text="Back", callback_data="home:show")],
-        ]),
+        "🛡️ ANTI-RUG SAFETY GATEKEEPER · SOLANA\n\n"
+        "Every required check must pass. Missing or unverifiable evidence blocks the buy.\n\n"
+        "✅ Mint authority disabled: REQUIRED · cannot be switched off\n"
+        "✅ Freeze authority disabled: REQUIRED · cannot be switched off\n"
+        f"✅ LP burned/locked: minimum {config.get('min_lp_locked_pct','80')}%\n"
+        f"✅ Minimum liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
+        f"✅ Maximum top-10 wallet share: {config.get('max_top10_concentration_pct','25')}%\n"
+        f"✅ Maximum developer share: {config.get('max_dev_wallet_pct','5')}%\n\n"
+        "The two authority rules are hard safety requirements and cannot be disabled from Telegram.",
+        reply_markup=_safety_keyboard(config),
     )
 
 
 @router.callback_query(F.data == "safety:show")
 async def cb_safety_show(callback: CallbackQuery) -> None:
+    svc = _svc()
     await callback.answer()
+    config = await svc.db.get_settings(callback.from_user.id)
     await callback.message.edit_text(
-        "🛡️ ANTI-RUG SAFETY FILTERS\n\n"
-        "These checks protect both paper and live entries. Critical checks stay ON and cannot be disabled.\n\n"
-        "🔒 Mint authority revoked: REQUIRED\n"
-        "🔒 Freeze authority revoked: REQUIRED\n"
-        "🔒 Creator and top-holder concentration: CHECKED\n"
-        "🔒 Token extensions and transfer restrictions: CHECKED\n"
-        "🔒 Pool liquidity and LP lock/burn: REQUIRED\n\n"
-        "An entry is blocked whenever a required result is missing or cannot be verified.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Paper Safety Thresholds", callback_data="paper:settings")],
-            [InlineKeyboardButton(text="Live Safety Thresholds", callback_data="safety:live")],
-            [InlineKeyboardButton(text="Back", callback_data="home:show")],
-        ]),
+        "🛡️ ANTI-RUG SAFETY GATEKEEPER · SOLANA\n\n"
+        "Every required check must pass. Missing or unverifiable evidence blocks the buy.\n\n"
+        "✅ Mint authority disabled: REQUIRED · locked ON\n"
+        "✅ Freeze authority disabled: REQUIRED · locked ON\n"
+        f"✅ LP burned/locked minimum: {config.get('min_lp_locked_pct','80')}%\n"
+        f"✅ Minimum liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
+        f"✅ Maximum top-10 share: {config.get('max_top10_concentration_pct','25')}%\n"
+        f"✅ Maximum single developer share: {config.get('max_dev_wallet_pct','5')}%\n\n"
+        "Authority checks cannot be disabled. Adjust the numeric thresholds using the buttons below.",
+        reply_markup=_safety_keyboard(config),
     )
 
 
 @router.callback_query(F.data == "safety:live")
 async def cb_live_safety(callback: CallbackQuery) -> None:
-    svc = _svc()
-    await callback.answer()
-    config = await svc.db.get_settings(callback.from_user.id)
-    await callback.message.edit_text(
-        "🔒 LIVE SAFETY FILTERS · REAL WALLET\n\n"
-        "Mint authority revocation: REQUIRED · LOCKED ON\n"
-        "Freeze authority revocation: REQUIRED · LOCKED ON\n"
-        f"Minimum pool liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
-        f"Minimum LP locked/burned: {config.get('min_lp_locked_pct','80')}%\n"
-        f"Maximum top-10 share: {config.get('max_top10_concentration_pct','25')}%\n"
-        f"Maximum developer share: {config.get('max_dev_wallet_pct','5')}%\n\n"
-        "Critical authority checks cannot be disabled. Change the numeric thresholds below; an unverified safety result still blocks every live buy.",
-        reply_markup=_settings_keyboard(config),
+    await cb_safety_show(callback)
+
+
+@router.callback_query(F.data.startswith("safety:locked:"))
+async def cb_safety_locked(callback: CallbackQuery) -> None:
+    which = callback.data.rsplit(":", 1)[-1]
+    label = "Mint authority revocation" if which == "mint" else "Freeze authority revocation"
+    await callback.answer(
+        f"{label} is mandatory and cannot be disabled.",
+        show_alert=True,
     )
 
 
@@ -1598,8 +1687,8 @@ async def cb_toggle_mev(callback: CallbackQuery) -> None:
 async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
     field = callback.data.split(":", 2)[2]
     allowed = {
-        "buy_amount_sol", "slippage_pct", "priority_fee_lamports",
-        "jito_tip_lamports", "take_profit_pct", "stop_loss_pct",
+        "buy_amount_sol", "slippage_pct", "sell_slippage_pct", "priority_fee_lamports",
+        "jito_tip_lamports", "take_profit_pct", "stop_loss_pct", "trailing_stop_pct",
         "max_hold_seconds", "moon_bag_pct", "daily_position_limit",
         "max_daily_drawdown_pct", "max_top10_concentration_pct",
         "pump_migration_progress_pct", "min_liquidity_usd",
@@ -1613,7 +1702,9 @@ async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(field=field)
     labels = {
         "buy_amount_sol": "Buy amount in SOL (for example 0.05)",
-        "slippage_pct": "Maximum slippage percentage (0.1 to 50)",
+        "slippage_pct": "Maximum BUY slippage percentage (0.1 to 50)",
+        "sell_slippage_pct": "Maximum SELL slippage percentage (0.1 to 50)",
+        "trailing_stop_pct": "Trailing stop drop from peak after TP1 (1 to 80)",
         "priority_fee_lamports": "Compute-unit price in micro-lamports (integer)",
         "jito_tip_lamports": "Jito tip in lamports (for example 1000000)",
         "take_profit_pct": "Take-profit percentage (for example 10)",
@@ -1642,9 +1733,11 @@ def _validated_setting(field: str, raw: str):
     ranges = {
         "buy_amount_sol": (Decimal("0.001"), Decimal("0.25")),
         "slippage_pct": (Decimal("0.1"), Decimal("50")),
+        "sell_slippage_pct": (Decimal("0.1"), Decimal("50")),
         "priority_fee_lamports": (Decimal("0"), Decimal("100000000")),
         "jito_tip_lamports": (Decimal("0"), Decimal("100000000")),
         "take_profit_pct": (Decimal("0.5"), Decimal("500")),
+        "trailing_stop_pct": (Decimal("1"), Decimal("80")),
         "stop_loss_pct": (Decimal("0.5"), Decimal("95")),
         "max_hold_seconds": (Decimal("5"), Decimal("86400")),
         "moon_bag_pct": (Decimal("0"), Decimal("90")),
@@ -2025,18 +2118,6 @@ async def cb_wipe_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.answer(f"Wallet rotation was not completed: {exc}")
     finally:
         await state.clear()
-
-
-@router.callback_query(F.data.startswith("position:panic:"))
-async def cb_panic_sell(callback: CallbackQuery) -> None:
-    svc = _svc()
-    await callback.answer()
-    try:
-        position_id = int(callback.data.rsplit(":", 1)[-1])
-        await svc.engine.panic_sell(callback.from_user.id, position_id)
-        await callback.message.answer("Panic sell submitted. Check the trade alert for confirmation.")
-    except Exception as exc:
-        await callback.message.answer(f"Panic sell failed: {exc}")
 
 
 @router.callback_query(F.data == "detected:paper")
