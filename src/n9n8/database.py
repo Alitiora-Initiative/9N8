@@ -399,7 +399,7 @@ class Database:
         async with self._lock, aiosqlite.connect(self.path) as db:
             await db.execute("PRAGMA secure_delete=ON")
             await db.execute(
-                "UPDATE users SET encrypted_secret=NULL, solana_address=NULL, enabled=0, updated_at=? WHERE telegram_id=?",
+                "UPDATE users SET encrypted_secret=NULL, solana_address=NULL, activation_paid=0, enabled=0, updated_at=? WHERE telegram_id=?",
                 (utc_now(), telegram_id),
             )
             await db.commit()
