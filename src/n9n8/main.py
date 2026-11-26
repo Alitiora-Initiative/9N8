@@ -23,7 +23,7 @@ from .security import TokenSecurity
 from .telemetry import TelemetryHub
 from .wallet import WalletManager
 from .webapp_server import create_webapp
-from .vercel_queue import VercelQueueClient, VercelQueueError
+from .worker_bridge import VercelWorkerBridge, WorkerBridgeError
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -37,18 +37,22 @@ async def run(worker_only: bool = False) -> None:
     settings = Settings.from_env()
     if worker_only and not settings.database_url:
         raise RuntimeError("The persistent 9N8 worker requires DATABASE_URL; SQLite is local-development only.")
-    queue_token = os.getenv("VERCEL_OIDC_TOKEN") or os.getenv("VERCEL_QUEUE_API_TOKEN", "")
-    if worker_only and not queue_token:
+    worker_api_url = os.getenv("N9N8_API_URL", "").strip()
+    worker_bridge_secret = os.getenv("N9N8_WORKER_BRIDGE_SECRET", "")
+    if worker_only and (not worker_api_url or len(worker_bridge_secret) < 32):
         raise RuntimeError(
-            "The Vercel Daemon requires an OIDC token for Vercel Queue poll mode. "
-            "Verify that VERCEL_OIDC_TOKEN is available to this Daemon runtime."
+            "Vercel Daemon requires its private N9N8_API_URL service binding and "
+            "a 32+ character N9N8_WORKER_BRIDGE_SECRET."
         )
     if settings.database_url:
         db = PostgresDatabase(settings.database_url, settings.encryption_key)
     else:
         db = Database(settings.database_path, settings.encryption_key)
     await db.initialize()
-    worker_queue = VercelQueueClient(settings.vercel_queue_region)
+    worker_bridge = (
+        VercelWorkerBridge(worker_api_url, worker_bridge_secret)
+        if worker_api_url and worker_bridge_secret else None
+    )
     if hasattr(db, "mark_stale_jobs_unknown"):
         stale_jobs = await db.mark_stale_jobs_unknown()
         if stale_jobs:
@@ -209,17 +213,11 @@ async def run(worker_only: bool = False) -> None:
                 return
 
     async def queue_loop() -> None:
-        if not queue_token:
+        if worker_bridge is None:
             return
         while not stop_event.is_set():
             try:
-                messages = await worker_queue.receive(
-                    settings.vercel_queue_topic,
-                    settings.vercel_queue_consumer,
-                    queue_token,
-                    limit=10,
-                    visibility_timeout_seconds=60,
-                )
+                messages = await worker_bridge.receive(limit=10)
                 if not messages:
                     await asyncio.sleep(5)
                     continue
@@ -232,12 +230,7 @@ async def run(worker_only: bool = False) -> None:
                             await process_queued_jobs()
                         else:
                             logger.warning("Ignoring unknown worker wake message type: %s", kind[:40])
-                        await worker_queue.acknowledge(
-                            settings.vercel_queue_topic,
-                            settings.vercel_queue_consumer,
-                            message.receipt_handle,
-                            queue_token,
-                        )
+                        await worker_bridge.acknowledge(message.receipt_handle)
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -254,7 +247,7 @@ async def run(worker_only: bool = False) -> None:
                     )
             except asyncio.CancelledError:
                 raise
-            except VercelQueueError as exc:
+            except WorkerBridgeError as exc:
                 logger.warning("Vercel Queue poll failed (%s); retrying.", type(exc).__name__)
                 await asyncio.sleep(10)
             except Exception:
@@ -313,7 +306,8 @@ async def run(worker_only: bool = False) -> None:
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await engine.shutdown()
-        await worker_queue.close()
+        if worker_bridge is not None:
+            await worker_bridge.close()
         if hasattr(db, "heartbeat"):
             try:
                 await db.heartbeat(worker_id, "stopped", settings.trading_mode)
