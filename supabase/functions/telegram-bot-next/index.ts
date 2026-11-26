@@ -53,7 +53,14 @@ const CORS_HEADERS = {
 const enc = new TextEncoder();
 
 type Provider = "okx" | "binance" | "bybit";
-type Credentials = { apiKey: string; apiSecret: string; passphrase?: string; region?: OkxRegion };
+type BybitRegion = "global" | "eea" | "uae" | "turkey" | "kazakhstan" | "georgia" | "indonesia" | "hongkong" | "japan";
+type Credentials = {
+  apiKey: string;
+  apiSecret: string;
+  passphrase?: string;
+  region?: OkxRegion;
+  bybitRegion?: BybitRegion;
+};
 type Obj = Record<string, unknown>;
 
 function response(data: Obj, status = 200): Response {
@@ -322,6 +329,18 @@ async function validateBinanceLive(c: Credentials, markets: ExchangeMarket[]) {
   };
 }
 
+const BYBIT_API_ORIGINS: Record<BybitRegion, string> = {
+  global: "https://api.bybit.com",
+  eea: "https://api.bybit.eu",
+  uae: "https://api.bybit.ae",
+  turkey: "https://api.bybit.tr",
+  kazakhstan: "https://api.bybit.kz",
+  georgia: "https://api.bybitgeorgia.ge",
+  indonesia: "https://api.bybit.id",
+  hongkong: "https://api.spark-fintech.com",
+  japan: "https://api.manepa.jp",
+};
+
 async function bybitSignedGet(
   c: Credentials,
   path: string,
@@ -336,7 +355,10 @@ async function bybitSignedGet(
     enc.encode(c.apiSecret),
     timestamp + c.apiKey + recvWindow + queryString,
   ));
-  const url = "https://api.bybit.com" + path + (queryString ? "?" + queryString : "");
+  const region = c.bybitRegion ?? "global";
+  const origin = BYBIT_API_ORIGINS[region];
+  if (!origin) throw new Error("bybit_region_unsupported");
+  const url = origin + path + (queryString ? "?" + queryString : "");
   return await jsonGet(url, {
     "X-BAPI-API-KEY": c.apiKey,
     "X-BAPI-SIGN": signature,
@@ -354,13 +376,14 @@ async function validateBybit(c: Credentials, markets: ExchangeMarket[]) {
   }
   const assessment = assessBybitPermissions(data.result, markets);
   return {
-    label: "Bybit LIVE · " + markets.map((market) => market.toUpperCase()).join(" + "),
+    label: "Bybit LIVE · " + (credentials.bybitRegion ?? "global").toUpperCase() + " · " + markets.map((market) => market.toUpperCase()).join(" + "),
     permissions: {
       read: true,
       withdraw: false,
       walletTransfers: false,
       ...assessment,
       readOnly: Number(data.result.readOnly) === 1,
+      region: credentials.bybitRegion ?? "global",
       marginNote: markets.includes("margin")
         ? "Bybit does not show a separate Margin API-key scope. SpotTrade is checked; your Unified Account must also have margin enabled."
         : undefined,
@@ -866,6 +889,8 @@ async function liveBybitAccount(user: any, userId: string): Promise<Obj> {
   const credentials: Credentials = {
     apiKey: clean(stored?.apiKey, 512),
     apiSecret: clean(stored?.apiSecret, 1024),
+    bybitRegion: (["global", "eea", "uae", "turkey", "kazakhstan", "georgia", "indonesia", "hongkong", "japan"].includes(String(stored?.bybitRegion ?? "global"))
+      ? String(stored.bybitRegion) : "global") as BybitRegion,
   };
   const markets = Array.isArray(connection.permissions?.selectedMarkets)
     ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
@@ -1743,11 +1768,14 @@ async function handleMiniApp(body: any): Promise<Response> {
       if (!["binance", "bybit", "okx"].includes(provider)) throw new Error("unsupported_provider");
       const requestedMarkets = normalizeRequestedMarkets(body?.requestedMarkets);
       const regionValue = clean(body?.credentials?.region, 16);
+      const bybitRegionValue = clean(body?.credentials?.bybitRegion, 20);
       const credentials: Credentials = {
         apiKey: clean(body?.credentials?.apiKey, 512),
         apiSecret: clean(body?.credentials?.apiSecret, 1024),
         passphrase: clean(body?.credentials?.passphrase, 256),
         region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
+        bybitRegion: (["global", "eea", "uae", "turkey", "kazakhstan", "georgia", "indonesia", "hongkong", "japan"].includes(bybitRegionValue)
+          ? bybitRegionValue : "global") as BybitRegion,
       };
       const validation = await validateExchange(provider, environment, credentials, requestedMarkets);
       const id = await saveExchange(Number(user.id), provider, environment, validation.label, credentials,
