@@ -2443,6 +2443,7 @@ async function setBotProfileAndCommands(): Promise<void> {
       short_description: "Solana Sniper · Separate Paper & Live controls · Safety gates."
     });
     await telegram("setMyCommands", {
+      scope: { type: "all_private_chats" },
       commands: [
         { command: "start", description: "Open the 9N8 Solana Sniper dashboard" },
         { command: "sniper", description: "Open the complete Solana Sniper control panel" },
