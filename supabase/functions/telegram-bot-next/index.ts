@@ -386,6 +386,12 @@ async function validateBinanceLive(c: Credentials, requestedMarkets?: ExchangeMa
         ipRestricted: restrictions.ipRestrict === true,
       },
       accountProducts: detected.accountProducts,
+      portfolioMarginStatus: restrictions.enablePortfolioMarginTrading === true &&
+        detected.accountProducts.portfolioMarginEnabled
+          ? "verified"
+          : restrictions.enablePortfolioMarginTrading === true
+          ? "binance_account_product_not_enabled"
+          : "api_key_permission_not_enabled",
       stockProductsNote: "The Spot/Margin/Stock API-key flag is shared. 9N8 does not report legacy stock products as a verified market.",
       liveOrdersEnabled: false,
     },
@@ -694,7 +700,7 @@ function connectHtml(): Response {
 "const autoDetect=document.getElementById('autoDetectMarkets');const marketFieldset=document.getElementById('marketFieldset');const binanceAutoRow=document.getElementById('binanceAutoRow');",
   "function showProvider(){const isBinance=provider.value==='binance';environment.innerHTML='';const o=document.createElement('option');o.value='live';o.textContent='Production / Live API (read settings only)';environment.appendChild(o);passphraseRow.classList.toggle('hidden',provider.value!=='okx');passphrase.required=provider.value==='okx';binanceAutoRow.classList.toggle('hidden',!isBinance);if(!isBinance)autoDetect.checked=false;marketFieldset.classList.toggle('hidden',isBinance&&autoDetect.checked)}provider.addEventListener('change',showProvider);autoDetect.addEventListener('change',showProvider);showProvider();",
 "async function post(data){if(!tg||!tg.initData)throw new Error('Open this page from the 9N8 Telegram private chat.');const r=await fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign({initData:tg.initData},data))});const j=await r.json().catch(()=>({}));if(!r.ok||j.ok!==true)throw new Error(j.message||'Request failed.');return j}",
-"exchangeForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('exchangeButton');button.disabled=true;exchangeStatus.textContent='Reading API-key and account product permissions…';const credentials={apiKey:document.getElementById('apiKey').value.trim(),apiSecret:document.getElementById('apiSecret').value.trim()};if(provider.value==='okx')credentials.passphrase=passphrase.value;const selected=Array.from(document.querySelectorAll('input[name=markets]:checked')).map(x=>x.value);const auto=provider.value==='binance'&&autoDetect.checked;if(!auto&&selected.length===0){exchangeStatus.textContent='Select at least one product to inspect.';button.disabled=false;return}try{const payload={action:'connect_exchange',provider:provider.value,environment:environment.value,credentials:credentials,autoDetectMarkets:auto};if(!auto)payload.requestedMarkets=selected;const j=await post(payload);const detected=(j.permissions&&j.permissions.detectedMarkets)||j.selectedMarkets||[];exchangeStatus.textContent='Connected: '+j.label+'\\nDetected products: '+(detected.length?detected.join(', '):'No trading product scopes; read-only settings saved.')+'\\nWithdrawal and transfer scopes are rejected. No order was placed.';exchangeForm.reset();autoDetect.checked=true;showProvider()}catch(err){exchangeStatus.textContent=err.message||'Connection failed.'}finally{credentials.apiKey='';credentials.apiSecret='';credentials.passphrase='';document.getElementById('apiKey').value='';document.getElementById('apiSecret').value='';passphrase.value='';button.disabled=false}});",
+"exchangeForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('exchangeButton');button.disabled=true;exchangeStatus.textContent='Reading API-key and account product permissions…';const credentials={apiKey:document.getElementById('apiKey').value.trim(),apiSecret:document.getElementById('apiSecret').value.trim()};if(provider.value==='okx')credentials.passphrase=passphrase.value;const selected=Array.from(document.querySelectorAll('input[name=markets]:checked')).map(x=>x.value);const auto=provider.value==='binance'&&autoDetect.checked;if(!auto&&selected.length===0){exchangeStatus.textContent='Select at least one product to inspect.';button.disabled=false;return}try{const payload={action:'connect_exchange',provider:provider.value,environment:environment.value,credentials:credentials,autoDetectMarkets:auto};if(!auto)payload.requestedMarkets=selected;const j=await post(payload);const p=j.permissions||{};const detected=p.detectedMarkets||j.selectedMarkets||[];const k=p.keyPermissions||{};const a=p.accountProducts||{};const flag=v=>v===true?'ON':v===false?'OFF':'unknown';const productSettings='\\nAPI-key flags: Read '+flag(k.reading)+', Spot/Margin '+flag(k.spotAndMarginTrading)+', Margin '+flag(k.margin)+', Futures '+flag(k.futures)+', Options '+flag(k.vanillaOptions)+', Portfolio Margin '+flag(k.portfolioMarginTrading)+', Withdrawals '+flag(k.withdrawals)+', Internal Transfer '+flag(k.internalTransfer)+', Universal Transfer '+flag(k.universalTransfer)+'.'+'\\nAccount products: Margin '+flag(a.marginEnabled)+', Futures '+flag(a.futuresEnabled)+', Options '+flag(a.optionsEnabled)+', Portfolio Margin '+flag(a.portfolioMarginEnabled)+'.';exchangeStatus.textContent='Connected: '+j.label+'\\nDetected products: '+(detected.length?detected.join(', '):'No trading product scopes; read-only settings saved.')+(provider.value==='binance'?productSettings:'')+'\\nWithdrawal and transfer scopes are rejected. No order was placed.';exchangeForm.reset();autoDetect.checked=true;showProvider()}catch(err){exchangeStatus.textContent=err.message||'Connection failed.'}finally{credentials.apiKey='';credentials.apiSecret='';credentials.passphrase='';document.getElementById('apiKey').value='';document.getElementById('apiSecret').value='';passphrase.value='';button.disabled=false}});",
 "walletForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('walletButton');button.disabled=true;walletStatus.textContent='Saving public address…';const selected=document.getElementById('chain');const parts=selected.value.split(':');try{const j=await post({action:'watch_wallet',provider:document.getElementById('walletProvider').value,namespace:parts[0],chainId:parts.slice(1).join(':'),network:selected.selectedOptions[0].textContent,address:document.getElementById('address').value.trim()});walletStatus.textContent='Saved '+j.address+' as a watch-only address. No wallet access or signing was granted.';document.getElementById('address').value=''}catch(err){walletStatus.textContent=err.message||'Could not save address.'}finally{button.disabled=false}})})();</script></body></html>"
   ].join("\n");
   return new Response(html, {
@@ -771,11 +777,9 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     apiKey: clean(credentials?.apiKey, 512),
     apiSecret: clean(credentials?.apiSecret, 1024),
   };
-  const storedMarkets = connection.permissions?.selectedMarkets;
-  const markets = Array.isArray(storedMarkets) && storedMarkets.length > 0
-    ? normalizeRequestedMarkets(storedMarkets)
-    : undefined;
-  const validation = await validateBinanceLive(exchangeCredentials, markets);
+  // Re-read all Binance product permissions on every refresh. Never assume the
+  // connection's original market list is still current after an API-key change.
+  const validation = await validateBinanceLive(exchangeCredentials);
   const detectedMarkets = validation.permissions.detectedMarkets as ExchangeMarket[];
 
   if (!detectedMarkets.some((market) => ["spot", "margin"].includes(market))) {
@@ -1957,6 +1961,11 @@ async function handleMiniApp(body: any): Promise<Response> {
       backend_not_configured: "The secure backend is not configured yet. No credentials were saved.",
       select_at_least_one_market: "Choose at least one market to connect.",
       exchange_market_not_supported: "One of the selected markets is not supported by this connection.",
+      binance_spot_account_read_failed: "Binance accepted the permission check but did not return the Spot account balances. Confirm the key has Reading access and IP restrictions allow 9N8.",
+      binance_read_permission_required: "Enable Reading for this Binance API key.",
+      binance_selected_product_not_enabled: "One or more selected Binance products are not enabled on both the API key and the Binance account. Use automatic detection or enable the required product in Binance.",
+      binance_transfer_permission_detected: "Disable Internal Transfer and Universal Transfer on the Binance API key. 9N8 will not store a key with those permissions.",
+      withdraw_permission_detected: "Disable withdrawals on the API key. 9N8 will not store a key that can withdraw funds.",
       binance_spot_margin_stock_permission_required: "On Binance, turn on “Spot & Margin & Stock Trading” for this API key.",
       binance_margin_permission_required: "Your Binance key does not have Margin access enabled.",
       binance_futures_permission_required: "Your Binance key does not have Futures access enabled.",
@@ -1998,13 +2007,16 @@ async function handleMiniApp(body: any): Promise<Response> {
       swap_previous_request_unresolved: "A previous Jupiter quote or transaction is unresolved. Refresh its status before creating another swap.",
       verified_solana_wallet_required: "Connect and verify your Solana-mainnet wallet before using the Jupiter terminal."
     };
-    return response({ ok: false, message: messages[code] ?? "Could not complete the request. Check the provider and try again." }, 400);
+    const friendly = code.startsWith("binance_selected_product_not_enabled:")
+      ? messages.binance_selected_product_not_enabled
+      : messages[code] ?? "Could not complete the request. Check the provider and try again.";
+    return response({ ok: false, message: friendly }, 400);
   }
 }
 async function listConnections(userId: string): Promise<string> {
   const rows = await db("n8_exchange_connections?select=provider,environment,label,status&user_id=eq." +
     encodeURIComponent(userId) + "&status=neq.revoked&order=created_at.desc");
-  if (!Array.isArray(rows) || rows.length === 0) return "No exchange accounts connected yet. Use /connect to link Binance Spot or OKX Spot.";
+  if (!Array.isArray(rows) || rows.length === 0) return "No exchange accounts connected yet. Use /connect to inspect Binance API permissions across Spot, Margin, USDⓈ-M and COIN-M Futures, Options, or connect Bybit / OKX.";
   return "YOUR EXCHANGE CONNECTIONS\n\n" + rows.map((v: any) =>
     String(v.provider).toUpperCase() + " · " + v.environment + "\n" + String(v.label ?? "Account") + " · " + v.status
   ).join("\n\n");
