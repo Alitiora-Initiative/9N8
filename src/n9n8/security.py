@@ -93,6 +93,7 @@ class TokenSecurity:
         max_top10_pct: str = "25",
         min_liquidity_usd: str = "5000",
         min_lp_locked_pct: str = "95",
+        excluded_token_accounts: set[str] | None = None,
     ) -> TokenRisk:
         reasons: list[str] = []
         mint_authority_disabled = False
@@ -129,7 +130,9 @@ class TokenSecurity:
                 self.helius.largest_accounts(mint),
             )
             supply_raw = int(supply["value"]["amount"])
-            top_raw = sum(int(row["amount"]) for row in holders[:10])
+            excluded = excluded_token_accounts or set()
+            ranked = [row for row in holders if str(row.get("address", "")) not in excluded]
+            top_raw = sum(int(row["amount"]) for row in ranked[:10])
             concentration = (
                 Decimal(top_raw) * Decimal(100) / Decimal(supply_raw)
                 if supply_raw else Decimal(100)
@@ -139,12 +142,13 @@ class TokenSecurity:
         except Exception:
             reasons.append("Holder concentration could not be verified")
 
-        try:
-            liquidity = await self._dex_liquidity(mint)
-            if liquidity < dec(min_liquidity_usd):
-                reasons.append(f"Pool liquidity {liquidity:.2f} USD is below configured minimum")
-        except Exception:
-            reasons.append("Live pool liquidity could not be verified")
+        if launchpad.lower() != "pump.fun":
+            try:
+                liquidity = await self._dex_liquidity(mint)
+                if liquidity < dec(min_liquidity_usd):
+                    reasons.append(f"Pool liquidity {liquidity:.2f} USD is below configured minimum")
+            except Exception:
+                reasons.append("Live pool liquidity could not be verified")
 
         if launchpad.lower() == "raydium":
             try:
