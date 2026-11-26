@@ -8,6 +8,7 @@ import {
 import type { OkxRegion } from "./okx-live.ts";
 import {
   assessBinancePermissions,
+  detectBinanceMarkets,
   assessBybitPermissions,
   assessOkxPermissions,
   normalizeRequestedMarkets,
@@ -24,7 +25,7 @@ import {
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
 import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
-import { TRIAL_DRYTEST_URL, trialDrytestKeyboard, trialDrytestText } from "./drytest.ts";
+
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
@@ -237,7 +238,6 @@ function networkSelectorKeyboard(): Obj {
 function mainKeyboard(): Obj {
   return { inline_keyboard: [
     [{ text: "🚀 OPEN SOLANA SNIPER CONTROL", web_app: { url: SOLANA_SNIPER_URL } }],
-    [{ text: "🧪 Trial Drytest · Virtual Only", web_app: { url: TRIAL_DRYTEST_URL } }],
     [{ text: "🧪 Paper Trading", callback_data: "n8:solana_paper" }, { text: "🔴 Live Controls", callback_data: "n8:solana_live" }],
     [{ text: "📊 Positions", callback_data: "n8:solana_positions" }, { text: "⚙️ Trading Settings", callback_data: "n8:solana_settings" }],
     [{ text: "🛡 Safety Filters", callback_data: "n8:solana_safety" }],
@@ -332,40 +332,64 @@ async function binanceSignedGet(c: Credentials, path: string): Promise<any> {
   });
 }
 
-async function validateBinanceLive(c: Credentials, markets: ExchangeMarket[]) {
+async function validateBinanceLive(c: Credentials, requestedMarkets?: ExchangeMarket[]) {
+  // Read Binance API-key scopes and account-level product activation separately.
   const restrictions = await binanceSignedGet(c, "/sapi/v1/account/apiRestrictions");
-  const assessment = assessBinancePermissions(restrictions, markets);
+  const accountInfo = await binanceSignedGet(c, "/sapi/v1/account/info");
 
-  // Read the Spot account only when the user requested a Spot-family product.
-  // Futures-only API keys are not forced to carry Spot permissions.
-  let account: any = null;
-  if (markets.some((market) => ["spot", "margin", "stocks"].includes(market))) {
-    account = await binanceSignedGet(c, "/api/v3/account");
-    if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
-      throw new Error("exchange_credentials_rejected");
-    }
-    if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
+  // Empty selection is intentional: inspect every product the key and account allow.
+  // These are signed GET requests only; no order endpoint is called.
+  assessBinancePermissions(restrictions, []);
+  const detected = detectBinanceMarkets(restrictions, accountInfo);
+  const markets = requestedMarkets ?? detected.selectedMarkets;
+  const assessment = assessBinancePermissions(restrictions, markets);
+  const unavailable = markets.filter((market) => !detected.selectedMarkets.includes(market));
+  if (unavailable.length) {
+    throw new Error("binance_selected_product_not_enabled:" + unavailable.join(","));
   }
 
+  let spotAccount: any = null;
+  if (markets.some((market) => ["spot", "margin"].includes(market))) {
+    spotAccount = await binanceSignedGet(c, "/api/v3/account");
+    if (!Array.isArray(spotAccount?.balances)) throw new Error("binance_spot_account_read_failed");
+    // canWithdraw on /api/v3/account is an account capability, not an API-key scope.
+    // Key-level withdrawal and transfer flags were checked by apiRestrictions above.
+  }
+
+  const label = markets.length
+    ? "Binance LIVE · " + markets.map((market) => market.toUpperCase()).join(" + ")
+    : "Binance LIVE · READ-ONLY PERMISSION DISCOVERY";
   return {
-    label: "Binance LIVE · " + markets.map((market) => market.toUpperCase()).join(" + "),
+    label,
     permissions: {
-      read: true,
-      withdraw: false,
-      internalTransfer: false,
-      universalTransfer: false,
-      ...assessment,
-      spotAndMarginTrading: restrictions.enableSpotAndMarginTrading === true,
-      marginApiPermission: restrictions.enableMargin === true,
-      futuresApiPermission: restrictions.enableFutures === true,
-      optionsApiPermission: restrictions.enableVanillaOptions === true,
-      portfolioMarginTrading: restrictions.enablePortfolioMarginTrading === true,
-      ipRestricted: restrictions.ipRestrict === true,
-      stockProductsNote: markets.includes("stocks")
-        ? "Uses the same Spot & Margin & Stock Trading API-key permission. Product availability depends on your Binance region and eligible instruments."
-        : undefined,
+      read: restrictions.enableReading === true,
+      withdraw: restrictions.enableWithdrawals === true,
+      internalTransfer: restrictions.enableInternalTransfer === true,
+      universalTransfer: restrictions.permitsUniversalTransfer === true,
+      selectedMarkets: markets,
+      detectedMarkets: detected.selectedMarkets,
+      marketPermissions: {
+        ...detected.marketPermissions,
+        ...assessment.marketPermissions,
+      },
+      permissionSource: "Binance signed /sapi/v1/account/apiRestrictions + /sapi/v1/account/info",
+      keyPermissions: {
+        reading: restrictions.enableReading === true,
+        withdrawals: restrictions.enableWithdrawals === true,
+        internalTransfer: restrictions.enableInternalTransfer === true,
+        universalTransfer: restrictions.permitsUniversalTransfer === true,
+        spotAndMarginTrading: restrictions.enableSpotAndMarginTrading === true,
+        margin: restrictions.enableMargin === true,
+        futures: restrictions.enableFutures === true,
+        vanillaOptions: restrictions.enableVanillaOptions === true,
+        portfolioMarginTrading: restrictions.enablePortfolioMarginTrading === true,
+        ipRestricted: restrictions.ipRestrict === true,
+      },
+      accountProducts: detected.accountProducts,
+      stockProductsNote: "The Spot/Margin/Stock API-key flag is shared. 9N8 does not report legacy stock products as a verified market.",
+      liveOrdersEnabled: false,
     },
-    accountHint: account?.uid == null ? null : "Binance UID · " + mask(String(account.uid)),
+    accountHint: spotAccount?.uid == null ? null : "Binance UID · " + mask(String(spotAccount.uid)),
   };
 }
 
@@ -435,7 +459,7 @@ async function validateExchange(
   provider: Provider,
   environment: string,
   credentials: Credentials,
-  markets: ExchangeMarket[],
+  markets?: ExchangeMarket[],
 ) {
   if (!credentials.apiKey || !credentials.apiSecret) throw new Error("api_key_and_secret_required");
   if (credentials.apiKey.length > 512 || credentials.apiSecret.length > 1024) {
@@ -443,6 +467,7 @@ async function validateExchange(
   }
   if (environment !== "live") throw new Error("unsupported_provider_environment");
   if (provider === "binance") return await validateBinanceLive(credentials, markets);
+  if (!markets?.length) throw new Error("select_at_least_one_market");
   if (provider === "bybit") return await validateBybit(credentials, markets);
   if (provider === "okx") return await validateOKX(credentials, markets);
   throw new Error("unsupported_provider");
@@ -743,27 +768,28 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     apiKey: clean(credentials?.apiKey, 512),
     apiSecret: clean(credentials?.apiSecret, 1024),
   };
-  const markets = Array.isArray(connection.permissions?.selectedMarkets)
-    ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
-    : ["spot" as ExchangeMarket];
+  const storedMarkets = connection.permissions?.selectedMarkets;
+  const markets = Array.isArray(storedMarkets) && storedMarkets.length > 0
+    ? normalizeRequestedMarkets(storedMarkets)
+    : undefined;
   const validation = await validateBinanceLive(exchangeCredentials, markets);
+  const detectedMarkets = validation.permissions.detectedMarkets as ExchangeMarket[];
 
-  if (!markets.some((market) => ["spot", "margin", "stocks"].includes(market))) {
+  if (!detectedMarkets.some((market) => ["spot", "margin"].includes(market))) {
     return {
       connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
       balances: [],
       permissions: validation.permissions,
       updatedAt: new Date().toISOString(),
       liveOrdersEnabled: false,
-      note: "Your selected permissions are for derivatives/options. This balance panel currently displays Spot balances only.",
+      note: "Binance key permissions and account product settings were refreshed. This panel displays Spot balances only; detected Futures, Margin and Options access is listed separately.",
     };
   }
 
   const account = await binanceSignedGet(exchangeCredentials, "/api/v3/account");
-  if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
-    throw new Error("exchange_credentials_rejected");
+  if (!Array.isArray(account?.balances)) {
+    throw new Error("binance_spot_account_read_failed");
   }
-  if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
   const balances = account.balances
     .map((entry: any) => ({
       asset: String(entry.asset ?? ""),
@@ -1806,7 +1832,10 @@ async function handleMiniApp(body: any): Promise<Response> {
       const provider = String(body.provider) as Provider;
       const environment = String(body.environment);
       if (!["binance", "bybit", "okx"].includes(provider)) throw new Error("unsupported_provider");
-      const requestedMarkets = normalizeRequestedMarkets(body?.requestedMarkets);
+      const requestedMarkets = provider === "binance" &&
+        (body?.autoDetectMarkets === true || !Array.isArray(body?.requestedMarkets))
+        ? undefined
+        : normalizeRequestedMarkets(body?.requestedMarkets);
       const regionValue = clean(body?.credentials?.region, 16);
       const bybitRegionValue = clean(body?.credentials?.bybitRegion, 20);
       const credentials: Credentials = {
@@ -1827,7 +1856,7 @@ async function handleMiniApp(body: any): Promise<Response> {
         ok: true,
         label: validation.label,
         connectionId: id,
-        selectedMarkets: requestedMarkets,
+        selectedMarkets: validation.permissions.selectedMarkets ?? requestedMarkets ?? [],
         permissions: validation.permissions,
         accountHint: validation.accountHint ?? null,
         liveOrdersEnabled: false,
@@ -2481,7 +2510,6 @@ async function setBotProfileAndCommands(): Promise<void> {
         { command: "safety", description: "Open anti-rug safety filters" },
         { command: "services", description: "See all 9N8 services" },
         { command: "simulator", description: "Open the exchange live-price simulator" },
-        { command: "drytest", description: "Open no-money trial drytest" },
         { command: "connect", description: "Connect Binance, Bybit or OKX" },
         { command: "connections", description: "See your connected accounts" },
         { command: "wallets", description: "See linked wallets" },
@@ -2519,7 +2547,6 @@ function serviceOverview(): string {
     "GET STARTED",
     "/sniper — open the Solana Sniper dashboard",
     "/solana_paper — open isolated virtual Solana trading",
-    "/drytest — open the no-money trial simulator",
     "/solana_live — open gated live-wallet controls",
     "/networks — show supported and unavailable chains",
     "/positions — open Paper and Live positions",
@@ -2613,7 +2640,6 @@ async function handleMessage(update: any) {
       "/approvals — pending trade proposals\n" +
       "/sniper — open complete Solana Sniper dashboard\n" +
       "/solana_paper — separate virtual Solana trading\n" +
-      "/drytest — public-market trial drytest (virtual only)\n" +
       "/solana_live — gated Solana live-wallet controls\n" +
        "/networks — show supported and unavailable chains\n" +
       "/positions — open Paper and Live positions\n" +
@@ -2713,8 +2739,10 @@ async function handleMessage(update: any) {
       solanaPanelKeyboard("paper"));
     return;
   }
-    if (command === "/drytest" || command === "/simulator") {
-    await send(chatId, trialDrytestText(), trialDrytestKeyboard());
+  if (command === "/simulator") {
+    await send(chatId, "LIVE-MARKET PAPER SIMULATOR\\n\\nReal Binance Spot candles, ticker and order-book data. Paper orders use virtual cash, visible depth VWAP and estimated fees; no real order is submitted.", {
+      inline_keyboard: [[{ text: "📈 Open 9N8 simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
+    });
     return;
   }
   if (command === "/approvals") {
