@@ -206,7 +206,7 @@ class PostgresDatabase:
             """INSERT INTO public.n9n8_fee_ledger
                  (telegram_id, fee_type, amount_lamports, tx_signature, idempotency_key)
                VALUES($1, $2, $3, $4, $5) ON CONFLICT(idempotency_key) DO NOTHING""",
-            int(telegram_id), fee_type, str(lamports), signature, idempotency_key,
+            int(telegram_id), fee_type, Decimal(str(lamports)), signature, idempotency_key,
         )
 
     async def create_position(
@@ -510,14 +510,14 @@ class PostgresDatabase:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         await self._pool().execute(
-            """INSERT INTO public.n9n8_trade_receipts
+            """INSERT INTO public.n9n8_trade_receipts AS existing
                  (telegram_id,event_type,signature,status,mint,position_id,
                   amount_lamports,token_amount_raw,metadata)
                VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
                ON CONFLICT(signature) DO UPDATE SET status=EXCLUDED.status,
-                 metadata=public.n9n8_trade_receipts.metadata || EXCLUDED.metadata,
+                 metadata=existing.metadata || EXCLUDED.metadata,
                  confirmed_at=CASE WHEN EXCLUDED.status IN ('confirmed','finalized')
-                                   THEN now() ELSE public.n9n8_trade_receipts.confirmed_at END""",
+                                   THEN now() ELSE existing.confirmed_at END""",
             int(telegram_id), event_type, signature, status, mint, position_id,
             Decimal(str(amount_lamports)) if amount_lamports is not None else None,
             Decimal(str(token_amount_raw)) if token_amount_raw is not None else None,
