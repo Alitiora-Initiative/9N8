@@ -248,10 +248,25 @@ class PostgresDatabase:
             )
         return _position(row)
 
+    async def update_position_metrics(
+        self, position_id: int, current_value_lamports: int, peak_value_lamports: int,
+        pnl_pct: str,
+    ) -> None:
+        await self._pool().execute(
+            """UPDATE public.n9n8_positions SET
+               peak_value_lamports=GREATEST(peak_value_lamports,$2),
+               last_value_lamports=$3,last_pnl_pct=$4,updated_at=now()
+               WHERE id=$1 AND status='open'""",
+            int(position_id),Decimal(str(peak_value_lamports)),
+            Decimal(str(current_value_lamports)),str(pnl_pct),
+        )
+
     async def close_position(
         self, position_id: int, remaining_raw: int, reason: str,
         realized_lamports: int, sell_signature: str, fully_closed: bool
     ) -> None:
+        tp1_update = True if reason in {"take_profit_1","take_profit_partial"} else None
+        tp2_update = True if reason == "take_profit_2" else None
         await self._pool().execute(
             """UPDATE public.n9n8_positions
                SET token_amount_raw=$2,
@@ -260,6 +275,8 @@ class PostgresDatabase:
                    exit_reason=$3,
                    realized_lamports=realized_lamports+$4,
                    sell_signature=NULLIF($5,''),
+                   tp1_done=COALESCE($7,tp1_done),
+                   tp2_done=COALESCE($8,tp2_done),
                    initial_cost_lamports=CASE
                      WHEN $6 THEN 0
                      WHEN token_amount_raw > 0
@@ -267,7 +284,7 @@ class PostgresDatabase:
                      ELSE initial_cost_lamports END
                WHERE id=$1""",
             int(position_id), Decimal(str(remaining_raw)), reason, Decimal(str(realized_lamports)),
-            sell_signature, bool(fully_closed),
+            sell_signature, bool(fully_closed), tp1_update, tp2_update,
         )
 
     async def ledger_totals(self, telegram_id: int) -> list[dict[str, Any]]:
