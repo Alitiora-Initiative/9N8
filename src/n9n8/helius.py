@@ -103,6 +103,37 @@ class HeliusClient:
         result = await self.rpc("getLatestBlockhash", [{"commitment": "confirmed"}])
         return str(result["value"]["blockhash"])
 
+
+    async def account_changes(self, address: str) -> AsyncIterator[dict[str, Any]]:
+        """Stream base64 account changes from one accountSubscribe filter."""
+        delay = 1.0
+        while True:
+            try:
+                async with websockets.connect(
+                    self.wss_url, ping_interval=20, ping_timeout=20,
+                    close_timeout=5, max_size=2**22,
+                ) as ws:
+                    await ws.send(json.dumps({
+                        "jsonrpc": "2.0", "id": 1, "method": "accountSubscribe",
+                        "params": [address, {"encoding": "base64", "commitment": "processed"}],
+                    }))
+                    ack = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+                    if "error" in ack:
+                        raise HeliusError("accountSubscribe rejected: " + str(ack["error"])[:160])
+                    delay = 1.0
+                    async for raw in ws:
+                        message = json.loads(raw)
+                        result = message.get("params", {}).get("result", {})
+                        value = result.get("value")
+                        if value is not None:
+                            yield value
+            except asyncio.CancelledError:
+                raise
+            except (OSError, websockets.WebSocketException, asyncio.TimeoutError, json.JSONDecodeError, HeliusError) as exc:
+                logger.warning("Helius account subscription reconnect after %s", type(exc).__name__)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 30.0)
+
     async def logs(self, programs: list[str]) -> AsyncIterator[dict[str, Any]]:
         """Subscribe separately per program; each mentions filter accepts exactly one pubkey."""
         if not programs:
