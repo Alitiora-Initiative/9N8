@@ -219,13 +219,13 @@ async def run(worker_only: bool = False) -> None:
             await engine.watch_wallet(telegram_id)
         paper_on = await paper_store.mode_enabled(telegram_id, "paper")
         live_on = await paper_store.mode_enabled(telegram_id, "live")
-        if paper_on:
+        if paper_on and telegram_id not in engine._paper_users:
             await engine.start_paper_user(telegram_id)
-        else:
+        elif not paper_on and telegram_id in engine._paper_users:
             await engine.stop_paper_user(telegram_id)
-        if live_on:
+        if live_on and telegram_id not in engine._live_users:
             await engine.start_live_user(telegram_id)
-        else:
+        elif not live_on and telegram_id in engine._live_users:
             await engine.stop_live_user(telegram_id)
         if paper_on or live_on:
             active_users.add(telegram_id)
