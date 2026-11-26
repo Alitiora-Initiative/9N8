@@ -215,7 +215,10 @@ class AutonomousEngine:
             wait = interval - (time.monotonic() - self._last_quote_at)
             if wait > 0:
                 await asyncio.sleep(wait)
-            quote = await self.executor.quote(SOL_MINT, canonical_mint, amount_lamports)
+            quote = await self.executor.quote(
+                SOL_MINT, canonical_mint, amount_lamports,
+                int(dec(config.get("buy_slippage_pct", config.get("slippage_pct", "15"))) * Decimal(100)),
+            )
             self._last_quote_at = time.monotonic()
         expected = int(quote.get("outAmount") or 0)
         minimum = int(quote.get("otherAmountThreshold") or expected)
@@ -687,7 +690,7 @@ class AutonomousEngine:
             raise ExecutionError("Live mode was switched off before the buy could be signed.")
         config = latest_config
         wallet_key = await self.wallet.keypair_for(telegram_id)
-        slippage_bps = int(dec(config.get("slippage_pct", "5")) * Decimal(100))
+        slippage_bps = int(dec(config.get("buy_slippage_pct", config.get("slippage_pct", "15"))) * Decimal(100))
         result = await self.executor.build_swap(
             wallet=wallet_key,
             input_mint=SOL_MINT,
@@ -1021,7 +1024,7 @@ class AutonomousEngine:
             input_mint=mint,
             output_mint=SOL_MINT,
             amount_raw=sell_amount,
-            slippage_bps=int(dec(config.get("slippage_pct", "5")) * Decimal(100)),
+            slippage_bps=int(dec(config.get("sell_slippage_pct", config.get("slippage_pct", "20"))) * Decimal(100)),
             priority_fee_micro_lamports=priority_micro,
             jito_tip_lamports=jito_tip,
             treasury_fee_lamports=treasury_lamports,
