@@ -24,6 +24,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_daily_drawdown_pct": "15",
     "mev_shield": True,
     "min_liquidity_usd": "5000",
+    "pump_mode": "fresh",
+    "pump_migration_progress_pct": "80",
     "max_top10_concentration_pct": "25",
     "enabled": False,
 }
