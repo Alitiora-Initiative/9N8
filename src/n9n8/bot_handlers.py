@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot, F, Router
@@ -241,11 +242,20 @@ async def _dashboard_text(telegram_id: int) -> str:
     live_config = await svc.db.get_settings(telegram_id)
     address = (user or {}).get("solana_address")
     live_balance = "Wallet not created"
+    live_balance_usd = "—"
+    rpc_latency = "not measured"
+    balance_lamports = 0
     if address:
         try:
-            live_balance = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
+            started = time.perf_counter()
+            balance_lamports = await svc.wallet.balance(telegram_id)
+            rpc_latency = f"{(time.perf_counter() - started) * 1000:.0f} ms"
+            live_balance = f"{format_sol(balance_lamports)} SOL"
+            sol_usd = await svc.oracle.sol_usd()
+            live_balance_usd = f"${(Decimal(format_sol(balance_lamports)) * sol_usd):.2f}"
         except Exception:
             live_balance = "Balance temporarily unavailable"
+
     paper_engine = svc.engine.paper_engine
     paper_account = await paper_engine.store.account(telegram_id) if paper_engine else None
     paper_on = await paper_engine.store.mode_enabled(telegram_id, "paper") if paper_engine else False
@@ -256,20 +266,32 @@ async def _dashboard_text(telegram_id: int) -> str:
         if paper_account else "Not started · $1,000 virtual value"
     )
     activation = "PAID" if (user or {}).get("activation_paid") else "NOT PAID"
+    live_positions = await svc.db.active_positions(telegram_id)
+    unrealized = sum(
+        int(p.get("last_value_lamports") or 0) - int(p.get("initial_cost_lamports") or 0)
+        for p in live_positions if int(p.get("last_value_lamports") or 0) > 0
+    )
+    scanner_task = getattr(svc.engine, "_scanner_task", None)
+    scanner_status = "RUNNING" if scanner_task and not scanner_task.done() else "IDLE"
     return (
         "⚡ 9N8 · SOLANA TRADING CONTROL\n\n"
         "TWO SEPARATE MODES\n"
         f"🧪 Paper Trading: {'RUNNING' if paper_on else 'PAUSED'}\n"
         f"Virtual cash: {paper_balance}\n"
         f"Practice days: {paper_days}/7\n"
-        f"🔴 Live Solana Sniper: {'ARMED' if live_on else 'LOCKED / OFF'}\n\n"
-        f"Live wallet: {live_balance}\n"
+        f"🔴 Live Solana Sniper: {'ARMED' if live_on else 'LOCKED / OFF'}\n"
+        f"Market listener: {scanner_status}\n"
+        f"Live positions: {len(live_positions)}\n"
+        f"Marked unrealized PnL: {format_sol(unrealized)} SOL\n\n"
+        f"Live wallet: {live_balance} · {live_balance_usd}\n"
+        f"Wallet RPC response: {rpc_latency}\n"
         f"Deposit address: {address or 'Create a wallet to receive SOL'}\n"
         f"Live activation: {activation}\n"
         f"Operator live switch: {'ON' if svc.settings.live_trading_enabled else 'OFF'}\n\n"
         "Paper trades use real market quotes but virtual funds only. Live mode uses your wallet "
         "and needs a separate readiness check and your confirmation."
     )
+
 
 def _paper_menu_keyboard(enabled: bool) -> InlineKeyboardMarkup:
     action = "paper:stop" if enabled else "paper:start"
