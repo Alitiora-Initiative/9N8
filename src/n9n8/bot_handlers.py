@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -22,6 +23,7 @@ from .math_engine import format_sol, to_lamports, usd_to_lamports
 from .oracle import PriceOracle
 from .wallet import WalletError, WalletManager
 from .autonomous_engine import AutonomousEngine
+from .networks import NETWORKS, execution_enabled, get_network
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -66,6 +68,8 @@ services: AppServices | None = None
 _pending_paper_snipes: dict[int, dict] = {}
 _pending_live_snipes: dict[int, dict] = {}
 _withdraw_locks: dict[int, asyncio.Lock] = {}
+_dashboard_message_ids: dict[int, int] = {}
+_wallet_reveal_locks: dict[int, asyncio.Lock] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
@@ -89,6 +93,180 @@ def _is_private(message: Message) -> bool:
     return message.chat.type == "private"
 
 
+async def _network_selector_text(telegram_id: int) -> str:
+    svc = _svc()
+    address = await svc.db.get_wallet_address(telegram_id)
+    sol_balance = "Wallet not created"
+    if address:
+        try:
+            sol_balance = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
+        except Exception:
+            sol_balance = "Temporarily unavailable"
+
+    lines = [
+        "🌐 9N8 NETWORK SELECTOR",
+        "",
+        "Selected execution network: 🟣 SOLANA MAINNET",
+        "",
+        f"🟣 Solana — ACTIVE · {sol_balance}",
+        "Markets: Pump.fun and Raydium",
+        "Data: Helius · Swaps: Jupiter · Private routing: Jito",
+        "",
+    ]
+    for network in NETWORKS:
+        if network.code == "solana":
+            continue
+        lines.extend([
+            f"{network.name} — NOT CONNECTED",
+            f"Native asset: {network.native_symbol}",
+            f"DEX targets: {network.dex_targets} (not wired)",
+            "Wallet and live balance: not configured",
+            "",
+        ])
+    lines.extend([
+        "Base, Ethereum and BNB Chain are listed for visibility only. They cannot be selected for trading until their EVM wallets, RPC listeners, contract-risk checks, swap routers and position monitors are implemented.",
+        "Do not send ETH or BNB assets to your Solana deposit address.",
+    ])
+    return "\n".join(lines)
+
+
+def _network_selector_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟣 Solana — ACTIVE", callback_data="network:select:solana")],
+        [
+            InlineKeyboardButton(text="🔵 Base — NOT CONNECTED", callback_data="network:select:base"),
+            InlineKeyboardButton(text="🔷 Ethereum — NOT CONNECTED", callback_data="network:select:ethereum"),
+        ],
+        [InlineKeyboardButton(text="🟡 BNB Chain — NOT CONNECTED", callback_data="network:select:bnb")],
+        [InlineKeyboardButton(text="💼 Manage Solana Wallet", callback_data="network:wallets")],
+        [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+    ])
+
+
+def _network_unavailable_text(code: str) -> str:
+    network = get_network(code)
+    if network is None:
+        return "Unknown network. The active execution network remains Solana Mainnet."
+    return (
+        f"⛔ {network.name.upper()} IS NOT CONNECTED\n\n"
+        "No chain switch was made. Solana Mainnet remains the only execution-enabled network.\n\n"
+        f"Requested DEX targets: {network.dex_targets}\n"
+        f"Status: {network.execution_note}\n\n"
+        "No EVM wallet was generated, no EVM balance was queried, and no EVM transaction can be submitted."
+    )
+
+
+async def _solana_wallet_text(telegram_id: int) -> str:
+    svc = _svc()
+    address = await svc.db.get_wallet_address(telegram_id)
+    if not address:
+        return (
+            "💼 SOLANA WALLET MANAGEMENT\n\n"
+            "No Solana trading wallet is connected. Create or import a dedicated Solana wallet."
+        )
+    try:
+        balance = f"{format_sol(await svc.wallet.balance(telegram_id))} SOL"
+    except Exception:
+        balance = "Temporarily unavailable"
+    return (
+        "💼 SOLANA WALLET MANAGEMENT\n\n"
+        f"Network: Solana Mainnet\n"
+        f"Address: {address}\n"
+        f"Balance: {balance}\n\n"
+        "Only send Solana-native assets to this address. Base, Ethereum and BNB Chain deposits are not supported."
+    )
+
+
+async def _show_command_panel(
+    message: Message, text: str, keyboard: InlineKeyboardMarkup,
+) -> None:
+    telegram_id = message.from_user.id
+    existing_id = _dashboard_message_ids.get(telegram_id)
+    if existing_id is not None:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=existing_id,
+                text=text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            if "message is not modified" not in str(exc).lower():
+                existing_id = None
+    if existing_id is None:
+        sent = await message.answer(
+            text,
+            reply_markup=keyboard,
+            disable_web_page_preview=True,
+        )
+        _dashboard_message_ids[telegram_id] = sent.message_id
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+async def _render_quick_snipe_panel(
+    message: Message, telegram_id: int, text: str, keyboard: InlineKeyboardMarkup,
+) -> None:
+    if message.from_user is not None and message.from_user.is_bot:
+        try:
+            await message.edit_text(
+                text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+            _dashboard_message_ids[telegram_id] = message.message_id
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                _dashboard_message_ids[telegram_id] = message.message_id
+                return
+            logger.warning(
+                "Could not edit originating quick-snipe message for Telegram account %s (%s)",
+                telegram_id,
+                type(exc).__name__,
+            )
+
+    panel_id = _dashboard_message_ids.get(telegram_id)
+    if panel_id is not None:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=panel_id,
+                text=text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+            if message.from_user is not None and message.from_user.id == telegram_id:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logger.warning(
+                "Could not edit stored quick-snipe panel for Telegram account %s (%s)",
+                telegram_id,
+                type(exc).__name__,
+            )
+
+    sent = await message.answer(
+        text,
+        reply_markup=keyboard,
+        disable_web_page_preview=True,
+    )
+    _dashboard_message_ids[telegram_id] = sent.message_id
+    if message.chat.type == "private" and message.from_user is not None and message.from_user.id == telegram_id:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+
 def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     if webapp_url.startswith("https://"):
@@ -97,6 +275,7 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
             web_app=WebAppInfo(url=webapp_url),
         )])
     rows.extend([
+        [InlineKeyboardButton(text="🌐 Switch Network / Chains", callback_data="network:show")],
         [
             InlineKeyboardButton(text="🧪 Paper Trading", callback_data="paper:menu"),
             InlineKeyboardButton(text="🔴 Live Solana Sniper", callback_data="live:menu"),
@@ -107,7 +286,7 @@ def _home_keyboard(webapp_url: str = "") -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="📜 Trade History", callback_data="history:show"),
         ],
         [
-            InlineKeyboardButton(text="⚙️ Paper Settings", callback_data="paper:settings"),
+            InlineKeyboardButton(text="⚙️ Live Settings", callback_data="settings:show"),
             InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show"),
         ],
         [
