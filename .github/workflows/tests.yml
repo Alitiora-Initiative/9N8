@@ -60,9 +60,9 @@ jobs:
       - name: Type-check Supabase edge functions
         run: deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts
 
-  # Runs only on the dedicated one-time sync commit; never prints or exports secret values.
+  # Send backend secrets only to a dedicated backend project, never the public Vite frontend.
   sync-production-runtime:
-    name: Sync existing production secrets to Vercel
+    name: Sync backend runtime secrets to Vercel
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.event.head_commit.message == 'Sync 9N8 production runtime environment')
     runs-on: ubuntu-latest
     permissions:
@@ -75,6 +75,7 @@ jobs:
       - name: Validate and sync runtime secrets without printing values
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_BACKEND_PROJECT_ID: ${{ vars.VERCEL_BACKEND_PROJECT_ID }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           AUTHORIZED_USER_ID: ${{ secrets.AUTHORIZED_USER_ID }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -92,8 +93,12 @@ jobs:
           import urllib.parse
           import urllib.request
 
-          project = "prj_ArbUq9ud6TwcO7r89DiQjed604Ue"
+          project = os.environ.get("VERCEL_BACKEND_PROJECT_ID", "").strip()
+          frontend_project = "prj_ArbUq9ud6TwcO7r89DiQjed604Ue"
           team = "team_Mlpz0l6o2HlH9tE8hetluFH3"
+          if not re.fullmatch(r"prj_[A-Za-z0-9]+", project) or project == frontend_project:
+              print("Set GitHub Actions variable VERCEL_BACKEND_PROJECT_ID to a dedicated backend Vercel project ID. Refusing to sync backend secrets into the frontend project.")
+              sys.exit(1)
           token = os.environ.get("VERCEL_TOKEN", "").strip()
           authorized = (os.environ.get("AUTHORIZED_USER_ID", "").strip()
                         or os.environ.get("TELEGRAM_CHAT_ID", "").strip())
@@ -115,7 +120,7 @@ jobs:
               sys.exit(1)
           if missing:
               print("Runtime sync not run. Missing GitHub Actions secrets: " + ", ".join(missing))
-              print("Add the named secrets to the 9N8 repository or grant this repository access to the organisation secrets, then rerun this workflow.")
+              print("Add the named secrets and VERCEL_BACKEND_PROJECT_ID variable to the 9N8 repository, then rerun this workflow.")
               sys.exit(1)
 
           endpoint = ("https://api.vercel.com/v10/projects/" + project +

@@ -307,3 +307,17 @@ standalone development session only, set `N9N8_TELEGRAM_TRANSPORT=polling`
 **after removing the Telegram webhook**. Telegram cannot deliver updates through
 a webhook and `getUpdates` long polling at the same time. Restore the webhook
 before returning to the hosted production bot.
+
+## Production deployment layout
+
+The Telegram webhook and command menu are owned by the Supabase
+`telegram-bot-next` function. The static Vite Mini App lives in `web/`.
+Keep the existing `9n8-secure-connect` frontend project rooted at `web/`;
+do not send backend secrets to it.
+
+The root `vercel.toml`, `index.py`, `src/`, and `worker/Dockerfile`
+belong to a dedicated Vercel backend project rooted at the repository root
+(`.`), or to an equivalent background-worker host. The GitHub Actions
+secret-sync job requires the Actions variable `VERCEL_BACKEND_PROJECT_ID`
+and refuses the known frontend project ID. Keep `N9N8_TRADING_MODE=paper`
+and `LIVE_TRADING_ENABLED=false` until live certification is complete.
