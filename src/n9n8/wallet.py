@@ -219,7 +219,7 @@ class WalletManager:
         if dust_raw_amount:
             instructions.append(Instruction(
                 program_pk,
-                b"\\x08" + int(dust_raw_amount).to_bytes(8, "little"),
+                b"\x08" + int(dust_raw_amount).to_bytes(8, "little"),
                 [
                     AccountMeta(account_pk, False, True),
                     AccountMeta(mint_pk, False, True),
@@ -228,7 +228,7 @@ class WalletManager:
             ))
         instructions.append(Instruction(
             program_pk,
-            b"\\x09",
+            b"\x09",
             [
                 AccountMeta(account_pk, False, True),
                 AccountMeta(owner, False, True),
