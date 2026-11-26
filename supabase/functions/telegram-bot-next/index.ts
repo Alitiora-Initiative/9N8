@@ -376,14 +376,14 @@ async function validateBybit(c: Credentials, markets: ExchangeMarket[]) {
   }
   const assessment = assessBybitPermissions(data.result, markets);
   return {
-    label: "Bybit LIVE · " + (credentials.bybitRegion ?? "global").toUpperCase() + " · " + markets.map((market) => market.toUpperCase()).join(" + "),
+    label: "Bybit LIVE · " + (c.bybitRegion ?? "global").toUpperCase() + " · " + markets.map((market) => market.toUpperCase()).join(" + "),
     permissions: {
       read: true,
       withdraw: false,
       walletTransfers: false,
       ...assessment,
       readOnly: Number(data.result.readOnly) === 1,
-      region: credentials.bybitRegion ?? "global",
+      region: c.bybitRegion ?? "global",
       marginNote: markets.includes("margin")
         ? "Bybit does not show a separate Margin API-key scope. SpotTrade is checked; your Unified Account must also have margin enabled."
         : undefined,
