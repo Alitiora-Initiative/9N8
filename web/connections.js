@@ -54,7 +54,9 @@ function syncExchangeFields() {
       ? "Automatic mode reads the Binance API-key switches and account-level product flags, then reports which products are enabled. USDⓈ-M and COIN-M share Binance’s Futures key permission."
       : "Manual mode checks only the selected products against the Binance API-key switches and account-level product flags.";
     saveButton.textContent = "Check Binance permissions and save";
-    exchangeStatus.textContent = "Choose the markets you want. Keep Withdraw, Internal Transfer and Universal Transfer turned off.";
+    exchangeStatus.textContent = autoDetect
+      ? "Ready to read all Binance API-key and account product flags. Use a key with Reading enabled and Withdraw, Internal Transfer and Universal Transfer turned off."
+      : "Choose the markets you want. Keep Withdraw, Internal Transfer and Universal Transfer turned off.";
   } else if (isOkx) {
     marketHint.textContent = "OKX has one broad Trade permission, not a separate API-key switch for each product. The account mode and available instruments still matter. Trade permission may also allow internal funding transfers; 9N8 does not use transfer endpoints.";
     saveButton.textContent = "Check OKX permissions and save";
