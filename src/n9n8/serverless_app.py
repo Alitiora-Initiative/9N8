@@ -71,10 +71,11 @@ def create_serverless_app():
             "SELECT EXTRACT(EPOCH FROM now() - $1::timestamptz)",
             row["last_seen_at"],
         )
-        fresh = float(age or 0) <= 45
+        fresh = float(age or 0) <= 300
         return {
             "connected": fresh,
-            "status": row["status"] if fresh else "stale",
+            "status": row["status"] if fresh else "idle_or_stale",
+            "presence_note": "Heartbeat records last database activity; an idle Daemon can be polling Vercel Queues without writing to Neon.",
             "trading_mode": row["trading_mode"],
             "last_seen_at": row["last_seen_at"].isoformat(),
             "metadata": row["metadata"],
