@@ -23,7 +23,6 @@ from solders.pubkey import Pubkey
 
 logger = logging.getLogger(__name__)
 SOL_MINT = "So11111111111111111111111111111111111111112"
-ATA_RENT_RESERVE = 2 * 2_039_280
 BASE_GAS_RESERVE = 10_000
 Notify = Callable[[int, str], Awaitable[None]]
 
@@ -213,6 +212,12 @@ class AutonomousEngine:
                 threshold = dec(config.get("pump_migration_progress_pct", "80"))
                 if curve.progress_pct < threshold:
                     return
+            elif pump_mode == "fresh":
+                if candidate.created_at_slot is None:
+                    return
+                current_slot = int(await self.helius.rpc("getSlot", [{"commitment": "processed"}]))
+                if current_slot - int(candidate.created_at_slot) > 3:
+                    return
             # Exclude Pump.fun's associated bonding-curve token vault from the
             # top-holder concentration calculation; it is protocol inventory.
             mint_info = await self.helius.account_info(candidate.mint, "base64")
@@ -252,9 +257,15 @@ class AutonomousEngine:
         priority_reserve = priority_micro
         use_jito = bool(config.get("mev_shield", True))
         jito_tip = int(config.get("jito_tip_lamports", 1_000_000)) if use_jito else 0
+        try:
+            # SPL token account data currently uses the base 165-byte account
+            # layout. Query the cluster instead of baking in a rent constant.
+            ata_rent_lamports = 2 * await self.helius.rent_exemption(165)
+        except Exception as exc:
+            raise ExecutionError("Could not verify current SPL token-account rent; entry blocked.") from exc
         required = BalanceRequirement(
             trade_lamports, priority_reserve, jito_tip,
-            ATA_RENT_RESERVE, BASE_GAS_RESERVE,
+            ata_rent_lamports, BASE_GAS_RESERVE,
         )
         if balance < required.total_lamports:
             await self.notify(
