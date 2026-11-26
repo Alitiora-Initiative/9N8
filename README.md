@@ -68,7 +68,16 @@ Safe current options:
 
 Do not treat UptimeRobot pings as storage durability. Keeping a free instance awake does not turn its filesystem into persistent storage.
 
-## Deployment topology\n\n- **Telegram:** the persistent worker runs aiogram polling for commands, approvals, wallet actions and notifications. Telegram Mini App `initData` is validated by the FastAPI service.\n- **Vercel request app:** root `index.py` exposes FastAPI routes for the Mini App, settings, status and queue submission. It does not run Helius subscriptions or trade-monitor loops.\n- **Neon:** use the separate `9n8-trading` project and `n9n8` database. Do not point 9N8 at the unrelated `vyra-markets` brokerage database. Apply `migrations/001_n9n8_postgres.sql` before runtime initialization.\n- **Vercel Daemon:** `worker/Dockerfile` runs `python -m src.n9n8.worker`. It polls Neon for queued actions and enabled users while maintaining Helius subscriptions and position monitors. All durable state is external to the container.\n\nThe Daemon is a Vercel public-beta product and starts only on production deployments. It is configured for one `iad1` instance. Vercel bills Daemon CPU and provisioned memory beyond plan inclusions; review current project usage and pricing before starting it. See <https://vercel.com/changelog/vercel-daemons-is-now-in-public-beta> and <https://vercel.com/pricing>. Do not start the daemon until runtime secrets and billing are reviewed.\n\n## Windows setup
+## Deployment topology
+
+- **Telegram:** the persistent worker runs aiogram polling for commands, approvals, wallet actions and notifications. Telegram Mini App `initData` is validated by the FastAPI service.
+- **Vercel request app:** root `index.py` exposes FastAPI routes for the Mini App, settings, status and queue submission. It does not run Helius subscriptions or trade-monitor loops.
+- **Neon:** use the separate `9n8-trading` project and `n9n8` database. Do not point 9N8 at the unrelated `vyra-markets` brokerage database. Apply `migrations/001_n9n8_postgres.sql` before runtime initialization.
+- **Vercel Daemon:** `worker/Dockerfile` runs `python -m src.n9n8.worker`. It polls Neon for queued actions and enabled users while maintaining Helius subscriptions and position monitors. All durable state is external to the container.
+
+The Daemon is a Vercel public-beta product and starts only on production deployments. It is configured for one `iad1` instance. Vercel bills Daemon CPU and provisioned memory beyond plan inclusions; review current project usage and pricing before starting it. See <https://vercel.com/changelog/vercel-daemons-is-now-in-public-beta> and <https://vercel.com/pricing>. Do not start the daemon until runtime secrets and billing are reviewed.
+
+## Windows setup
 
 Requirements: Python 3.11+, a Telegram bot token, a Helius API key, a Solana treasury address, and a persistent local database folder.
 
@@ -86,6 +95,8 @@ TELEGRAM_BOT_TOKEN=your_botfather_token
 HELIUS_API_KEY=your_helius_api_key
 MASTER_TREASURY_ADDRESS=your_solana_treasury_public_key
 ENCRYPTION_MASTER_KEY=your_fernet_key
+DATABASE_URL=your_9n8_neon_postgresql_url
+N9N8_REQUIRE_POSTGRES=true
 N9N8_TRADING_MODE=paper
 LIVE_TRADING_ENABLED=false
 WEBAPP_URL=https://your-https-host.example
