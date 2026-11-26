@@ -4,13 +4,52 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0B0E14">
-  <title>9N8 Live Terminal</title>
+  <title>9N8 · Paper & Live Control</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/assets/styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    .mode-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .mode-card{background:linear-gradient(145deg,#151b27,#111620);border:1px solid var(--line);border-radius:16px;padding:19px;min-width:0}
+    .mode-card.paper{border-top:3px solid var(--green)}
+    .mode-card.live{border-top:3px solid var(--red)}
+    .mode-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+    .mode-title{font-size:18px;font-weight:800;letter-spacing:-.5px}
+    .mode-note{color:var(--muted);font-size:11px;line-height:1.55;margin:8px 0 15px}
+    .mode-status{font:10px var(--mono);padding:6px 9px;border-radius:6px;background:#182331;border:1px solid #344052;color:#aab5c8}
+    .mode-status.on{color:var(--green);border-color:#1f6948;background:#10251e}
+    .mode-status.off{color:#f4c16e;border-color:#65502d;background:#282116}
+    .mode-metrics{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:12px 0}
+    .mode-metric{background:#0e141e;border:1px solid #263142;border-radius:9px;padding:11px;min-width:0}
+    .mode-metric small{display:block;color:var(--muted);font-size:9px;letter-spacing:.7px;text-transform:uppercase}
+    .mode-metric strong{display:block;font:16px var(--mono);margin-top:5px;overflow-wrap:anywhere}
+    .mode-actions{display:flex;gap:9px;margin:14px 0}
+    .mode-actions button,.sub-action{flex:1;min-height:42px;padding:9px 12px;border-radius:9px;border:1px solid #334154;background:#1b2735;color:var(--text);font-weight:800;font-size:10px;letter-spacing:.4px}
+    .mode-actions .paper-action{background:var(--green);color:#07130f;border-color:var(--green)}
+    .mode-actions .live-action{background:#70213c;color:#fff;border-color:#8a3451}
+    .mode-actions button:disabled{opacity:.45;cursor:not-allowed}
+    .readiness-list{display:grid;gap:6px;margin:10px 0 14px}
+    .readiness-item{font-size:10px;line-height:1.45;padding:7px 9px;border-radius:7px;background:#121a25;color:#c4ccd9}
+    .readiness-item.blocked{border-left:3px solid var(--red)}
+    .readiness-item.passed{border-left:3px solid var(--green)}
+    .subsection{border-top:1px solid var(--line);margin-top:15px;padding-top:13px}
+    .subsection h3{font-size:12px;margin:0 0 10px}
+    .mini-list{display:grid;gap:8px}
+    .mini-row{display:flex;align-items:flex-start;justify-content:space-between;gap:9px;padding:9px;border-radius:8px;background:#0e141d;border:1px solid #202b3a;font-size:10px}
+    .mini-row .muted{display:block;color:var(--muted);font-size:9px;margin-top:4px;overflow-wrap:anywhere}
+    .mini-row a{color:#80d9b7;text-decoration:none;white-space:nowrap}
+    .safe-note{border-left:3px solid var(--amber);padding:10px 12px;background:#282217;border-radius:7px;color:#e9d5a5;font-size:10px;line-height:1.55;margin:10px 0}
+    .settings-form{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+    .settings-form button{grid-column:1/-1}
+    .tiny-muted{font:9px var(--mono);color:var(--muted);line-height:1.5}
+    .mode-history-label{font:9px var(--mono);color:var(--muted);letter-spacing:.8px;margin-bottom:5px}
+    .snipe-help{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+    .snipe-help code{color:var(--green);background:#0c1915;padding:5px 8px;border-radius:6px}
+    @media(max-width:780px){.mode-grid{grid-template-columns:1fr}}
+  </style>
 </head>
 <body>
   <div class="app-shell">
@@ -19,7 +58,7 @@
         <div class="brand-mark">9<span>N</span>8</div>
         <div>
           <div class="brand-name">NINE EIGHT</div>
-          <div class="brand-sub">SOLANA AUTONOMOUS TERMINAL</div>
+          <div class="brand-sub">SOLANA TRADING CONTROL</div>
         </div>
       </div>
       <div class="connection"><span class="pulse-dot"></span><span id="connectionText">CONNECTING</span></div>
@@ -30,114 +69,143 @@
         <article class="metric-card">
           <div class="metric-label">SOL / USD <span class="mini-tag">ORACLE</span></div>
           <div class="metric-value" id="solPrice">—</div>
-          <div class="metric-foot" id="priceSource">Oracle connecting</div>
+          <div class="metric-foot" id="priceSource">Price source connecting</div>
         </article>
         <article class="metric-card">
-          <div class="metric-label">BOT WALLET</div>
+          <div class="metric-label">LIVE WALLET</div>
           <div class="metric-value mono" id="walletBalance">—</div>
-          <div class="metric-foot">SOL available</div>
+          <div class="metric-foot" id="walletAddress">No wallet connected</div>
         </article>
         <article class="metric-card">
-          <div class="metric-label">DAILY REALIZED PNL</div>
-          <div class="metric-value mono" id="dailyPnl">—</div>
-          <div class="metric-foot">Closed-trade ledger</div>
+          <div class="metric-label">PAPER CASH</div>
+          <div class="metric-value mono" id="paperCash">—</div>
+          <div class="metric-foot">Virtual SOL only</div>
         </article>
-        <article class="metric-card state-card">
-          <div class="metric-label">AUTONOMOUS ENGINE</div>
-          <div class="status-value" id="engineStatus"><span class="status-dot"></span> PAUSED</div>
-          <div class="metric-foot" id="modeLabel">PAPER MODE</div>
+        <article class="metric-card">
+          <div class="metric-label">PRACTICE DAYS</div>
+          <div class="metric-value mono" id="practiceDays">0 / 7</div>
+          <div class="metric-foot">Distinct UTC days</div>
         </article>
       </section>
 
-      <section class="control-panel panel">
+      <section class="panel">
         <div class="section-heading">
-          <div><span class="eyebrow">01 / CONTROL ROOM</span><h2>Master control</h2></div>
-          <span class="mode-pill" id="modePill">PAPER</span>
+          <div><span class="eyebrow">01 / TWO SEPARATE MODES</span><h2>Choose your trading account</h2></div>
+          <span class="mode-pill">PAPER ≠ LIVE</span>
         </div>
-        <div class="action-grid">
-          <button class="primary-action" id="engineToggle"><i data-lucide="zap"></i><span>START SNIPER</span></button>
-          <button class="secondary-action" id="copyAddress"><i data-lucide="copy"></i><span>COPY DEPOSIT</span></button>
-          <button class="secondary-action" id="withdrawOpen"><i data-lucide="arrow-up-right"></i><span>WITHDRAW ALL</span></button>
-          <button class="danger-action" id="wipeOpen"><i data-lucide="refresh-ccw"></i><span>WIPE & ROTATE</span></button>
-        </div>
-        <div class="wallet-address-row">
-          <span class="address-label">SOLANA WALLET</span>
-          <code id="walletAddress">Wallet not created</code>
+        <div class="mode-grid">
+          <article class="mode-card paper">
+            <div class="mode-head">
+              <div><span class="eyebrow">VIRTUAL ACCOUNT</span><div class="mode-title">🧪 Paper Trading</div></div>
+              <span class="mode-status off" id="paperStatus">PAUSED</span>
+            </div>
+            <p class="mode-note">Practise against real Solana token quotes with virtual SOL. Paper buys, sells, fees, balances and PnL are stored separately. It never signs or sends a blockchain transaction.</p>
+            <div class="mode-metrics">
+              <div class="mode-metric"><small>Virtual cash</small><strong id="paperCashDetail">—</strong></div>
+              <div class="mode-metric"><small>Open positions</small><strong id="paperOpenCount">0</strong></div>
+              <div class="mode-metric"><small>Realized practice PnL</small><strong id="paperRealized">—</strong></div>
+              <div class="mode-metric"><small>Marked practice PnL</small><strong id="paperUnrealized">—</strong></div>
+            </div>
+            <div class="mode-actions">
+              <button class="paper-action" id="paperToggle">START PAPER</button>
+              <button id="paperRefresh">REFRESH</button>
+            </div>
+            <div class="subsection">
+              <h3>Paper positions</h3>
+              <div class="mini-list" id="paperPositions"><div class="empty-state">No paper positions yet</div></div>
+            </div>
+            <div class="subsection">
+              <h3>Paper trading rules</h3>
+              <form id="paperSettingsForm" class="settings-form">
+                <label class="field"><span>Buy size (SOL)</span><input name="buy_amount_sol" type="number" min="0.001" max="0.5" step="0.001"></label>
+                <label class="field"><span>Slippage (%)</span><input name="slippage_pct" type="number" min="0.1" max="50" step="0.1"></label>
+                <label class="field"><span>TP1 (%)</span><input name="take_profit_pct" type="number" min="1" max="1000"></label>
+                <label class="field"><span>TP2 (%)</span><input name="take_profit_2_pct" type="number" min="1" max="1000"></label>
+                <label class="field"><span>TP2 sell remaining (%)</span><input name="take_profit_2_sell_pct" type="number" min="1" max="90"></label>
+                <label class="field"><span>Trailing stop (%)</span><input name="trailing_stop_pct" type="number" min="1" max="80"></label>
+                <label class="field"><span>Hard stop (%)</span><input name="stop_loss_pct" type="number" min="1" max="90"></label>
+                <label class="field"><span>Maximum hold (seconds)</span><input name="max_hold_seconds" type="number" min="60" max="86400"></label>
+                <label class="field"><span>Minimum liquidity (SOL)</span><input name="min_liquidity_sol" type="number" min="0.1" max="100000" step="0.1"></label>
+                <label class="field"><span>Minimum LP lock/burn (%)</span><input name="min_lp_locked_pct" type="number" min="50" max="100"></label>
+                <label class="field"><span>Top-10 wallet cap (%)</span><input name="max_top10_concentration_pct" type="number" min="1" max="100"></label>
+                <label class="field"><span>Developer wallet cap (%)</span><input name="max_dev_wallet_pct" type="number" min="0.1" max="100"></label>
+                <button class="save-button" type="submit">SAVE PAPER RULES</button>
+              </form>
+              <div class="tiny-muted" id="paperSettingsNotice">Default practice: TP1 +100% / sell 50%; TP2 +300% / sell 25% of remaining; trail 20%; hard stop −30%.</div>
+            </div>
+            <div class="subsection">
+              <div class="snipe-help">
+                <div><h3>Manual paper snipe</h3><div class="tiny-muted">Paste a mint in Telegram using /snipe. Confirming it records a virtual trade only.</div></div>
+                <code>/snipe MINT</code>
+              </div>
+            </div>
+            <div class="subsection">
+              <h3>Paper history · simulated fills only</h3>
+              <div class="mini-list" id="paperHistory"><div class="empty-state">No paper trades recorded</div></div>
+            </div>
+          </article>
+
+          <article class="mode-card live">
+            <div class="mode-head">
+              <div><span class="eyebrow">REAL SOLANA WALLET</span><div class="mode-title">🔴 Live Sniper</div></div>
+              <span class="mode-status off" id="liveStatus">OFF / LOCKED</span>
+            </div>
+            <p class="mode-note">Real SOL and token balances. Live entries require the operator switch, connected wallet, activation, seven distinct Paper practice days and at least $10 of SOL. Starting Live is a separate confirmed action.</p>
+            <div class="mode-metrics">
+              <div class="mode-metric"><small>Wallet SOL</small><strong id="liveSol">—</strong></div>
+              <div class="mode-metric"><small>Wallet value</small><strong id="liveUsd">—</strong></div>
+              <div class="mode-metric"><small>Activation</small><strong id="activationState">—</strong></div>
+              <div class="mode-metric"><small>Operator switch</small><strong id="operatorSwitch">—</strong></div>
+            </div>
+            <div class="safe-note">A token can lose its full value. This screen does not bypass server-side checks. Live is unavailable while any required gate is blocked.</div>
+            <div class="readiness-list" id="liveReadiness"><div class="readiness-item blocked">Checking live readiness…</div></div>
+            <div class="mode-actions">
+              <button class="live-action" id="liveToggle" disabled>LIVE LOCKED</button>
+              <button id="liveRefresh">CHECK AGAIN</button>
+            </div>
+            <div class="subsection">
+              <h3>Live positions · real wallet</h3>
+              <div class="mini-list" id="livePositions"><div class="empty-state">No live positions</div></div>
+            </div>
+            <div class="subsection">
+              <h3>Live history · on-chain receipts</h3>
+              <div class="mini-list" id="liveReceipts"><div class="empty-state">No live receipts recorded</div></div>
+            </div>
+            <div class="subsection">
+              <h3>Wallet controls</h3>
+              <div class="wallet-address-row"><span class="address-label">ADDRESS</span><code id="walletAddressLong">Wallet not created</code></div>
+              <div class="mode-actions">
+                <button id="copyAddress">COPY ADDRESS</button>
+                <button id="withdrawOpen">WITHDRAW SOL</button>
+              </div>
+              <div class="tiny-muted">Create/import a wallet and manage recovery securely in the private Telegram bot. Paper cash cannot be withdrawn.</div>
+            </div>
+          </article>
         </div>
       </section>
 
-      <section class="radar-panel panel">
+      <section class="panel">
         <div class="section-heading">
-          <div><span class="eyebrow">02 / LAUNCH MONITOR</span><h2>Launchpad radar</h2></div>
-          <span class="live-indicator"><span class="pulse-dot"></span> LIVE FEED</span>
-        </div>
-        <div class="radar-head"><span>LAUNCHPAD / TOKEN</span><span>CURVE</span><span>EVENT</span></div>
-        <div id="radarFeed" class="radar-feed">
-          <div class="empty-state"><i data-lucide="radar"></i><span>Waiting for Pump.fun and Raydium launch events</span></div>
-        </div>
-      </section>
-
-      <section class="positions-panel panel">
-        <div class="section-heading">
-          <div><span class="eyebrow">03 / LIVE EXPOSURE</span><h2>Active positions</h2></div>
-          <span class="count-pill" id="positionCount">0 OPEN</span>
-        </div>
-        <div id="positionsList" class="positions-list">
-          <div class="empty-state"><i data-lucide="layers-3"></i><span>No open positions</span></div>
-        </div>
-      </section>
-
-      <section class="settings-panel panel">
-        <div class="section-heading">
-          <div><span class="eyebrow">04 / EXECUTION RULES</span><h2>Sniper parameters</h2></div>
-          <span class="saved-state" id="settingsState">SYNCED</span>
-        </div>
-        <form id="settingsForm">
-          <div class="form-grid">
-            <label class="field"><span>Launchpad target</span><select name="launchpad"><option value="both">Pump.fun + Raydium</option><option value="pump.fun">Pump.fun only</option><option value="raydium">Raydium only</option></select></label>
-            <label class="field"><span>Pump.fun trigger</span><select name="pump_mode"><option value="fresh">Fresh launch</option><option value="migration">Migration momentum</option></select></label>
-            <label class="field"><span>Buy size (SOL)</span><input name="buy_amount_sol" type="number" min="0.001" max="0.25" step="0.001"></label>
-            <label class="field"><span>Slippage (%)</span><input name="slippage_pct" type="number" min="0.1" max="50" step="0.1"></label>
-            <label class="field"><span>Priority fee (μLamports/CU)</span><input name="priority_fee_lamports" type="number" min="0" step="1"></label>
-            <label class="field"><span>Jito tip (lamports)</span><input name="jito_tip_lamports" type="number" min="0" step="1000"></label>
-            <label class="field"><span>Take profit (%)</span><input name="take_profit_pct" type="number" min="0.5" step="0.5"></label>
-            <label class="field"><span>Stop loss (%)</span><input name="stop_loss_pct" type="number" min="0.5" step="0.5"></label>
-            <label class="field"><span>Max hold (seconds)</span><input name="max_hold_seconds" type="number" min="5" max="3600" step="1"></label>
-            <label class="field"><span>Moon bag (%)</span><input name="moon_bag_pct" type="number" min="0" max="90" step="1"></label>
-            <label class="field"><span>Daily trade cap</span><input name="daily_position_limit" type="number" min="1" max="100" step="1"></label>
-            <label class="field"><span>Daily drawdown (%)</span><input name="max_daily_drawdown_pct" type="number" min="1" max="50" step="1"></label>
-            <label class="field"><span>Migration trigger (%)</span><input name="pump_migration_progress_pct" type="number" min="1" max="99" step="1"></label>
-            <label class="field"><span>Minimum pool liquidity (USD)</span><input name="min_liquidity_usd" type="number" min="0" step="100"></label>
-            <label class="field"><span>Top-10 holder cap (%)</span><input name="max_top10_concentration_pct" type="number" min="1" max="100" step="1"></label>
-          </div>
-          <div class="switch-row">
-            <div><strong>Jito MEV shield</strong><small>Private atomic bundle submission with validator tip</small></div>
-            <label class="switch"><input id="mevToggle" type="checkbox" name="mev_shield"><span></span></label>
-          </div>
-          <button class="save-button" type="submit"><i data-lucide="save"></i> SAVE PARAMETERS</button>
-        </form>
-      </section>
-
-      <section class="fees-panel panel">
-        <div class="section-heading">
-          <div><span class="eyebrow">05 / TREASURY</span><h2>Transparent fee schedule</h2></div>
+          <div><span class="eyebrow">02 / SAFETY GATEKEEPER</span><h2>Required token checks</h2></div>
+          <span class="mode-pill">FAIL CLOSED</span>
         </div>
         <div class="fee-grid">
-          <div><strong>$1.00</strong><span>One-time activation</span></div>
-          <div><strong>0.1%</strong><span>Positive realized profit only</span></div>
-          <div><strong>$1.00</strong><span>Full withdrawal</span></div>
-          <div><strong>$1.00</strong><span>Stop & key rotation</span></div>
+          <div><strong>OFF</strong><span>Mint authority must be revoked</span></div>
+          <div><strong>OFF</strong><span>Freeze authority must be revoked</span></div>
+          <div><strong>80%+</strong><span>Liquidity locked or burned</span></div>
+          <div><strong>≤25%</strong><span>Top-10 wallet share, ≤5% developer</span></div>
         </div>
+        <div class="safe-note">Unverified creator ownership, LP protection, pool liquidity or Token-2022 extensions cause rejection. Pump.fun candidates must be migrated before the Raydium LP gate can pass.</div>
       </section>
     </main>
-    <footer><span>9N8 · SELF-CUSTODY RISK NOTICE</span><span>ON-CHAIN EXECUTION IS IRREVERSIBLE</span></footer>
+    <footer><span>9N8 · SELF-CUSTODY RISK NOTICE</span><span>PAPER FUNDS ARE NOT WITHDRAWABLE</span></footer>
   </div>
 
   <div class="modal-backdrop" id="actionModal" aria-hidden="true">
     <div class="modal">
       <button class="modal-close" id="modalClose" aria-label="Close">×</button>
       <div class="modal-kicker" id="modalKicker">CONFIRM ACTION</div>
-      <h2 id="modalTitle">Withdraw funds</h2>
+      <h2 id="modalTitle">Withdraw SOL</h2>
       <p id="modalDescription">This action submits an on-chain transaction.</p>
       <label class="field" id="destinationField"><span>External Solana payout address</span><input id="destinationAddress" autocomplete="off" spellcheck="false" placeholder="Paste your Solana address"></label>
       <label class="confirm-check"><input type="checkbox" id="confirmCheck"><span id="confirmText">I understand this transaction is irreversible.</span></label>
