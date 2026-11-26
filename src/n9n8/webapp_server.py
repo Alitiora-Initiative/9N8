@@ -242,6 +242,7 @@ def create_webapp(
             new_address, new_secret, payout, signature = await wallet.rotate_wallet(
                 telegram_id, destination
             )
+            await engine.reset_wallet_watcher(telegram_id)
             private_message = await bot.send_message(
                 telegram_id,
                 "NEW PAUSED 9N8 WALLET — SAVE THIS RECOVERY KEY\n\n"
