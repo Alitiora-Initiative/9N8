@@ -4,27 +4,38 @@ on:
     branches: [fix/9n8-wallet-stack-security-upgrade]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
+  actions: write
 
 jobs:
   web-wallet-stack:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Build, audit and lock wallet dependencies
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package.json
-      - name: Install full build dependencies (including platform-specific native bindings) and generate lockfile
+      - name: Install locked wallet dependencies (or generate the initial lockfile)
         working-directory: web
-        run: npm install --no-audit --no-fund
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
       - name: Build Mini App
         working-directory: web
         run: npm run build
-      - name: Audit installed dependency graph
+      - name: Audit complete dependency graph
         working-directory: web
         shell: bash
         run: |
@@ -37,17 +48,44 @@ jobs:
           const entries = Object.entries(report.vulnerabilities ?? {});
           for (const [name, item] of entries) {
             console.log(item.severity.toUpperCase(), name + "@" + item.range,
-              "fix=" + JSON.stringify(item.fixAvailable ?? false));
+              "fix=" + JSON.stringify(item.fixAvailable ?? false),
+              "direct=" + String(item.isDirect));
           }
           const summary = [
             "## Web dependency audit after wallet-stack upgrade",
             "",
             `Total: ${v.total ?? 0} · Critical: ${v.critical ?? 0} · High: ${v.high ?? 0} · Moderate: ${v.moderate ?? 0} · Low: ${v.low ?? 0}`,
             "",
-            ...entries.map(([name, item]) => `- **${item.severity.toUpperCase()}** \`${name}@${item.range}\` — fix: ${JSON.stringify(item.fixAvailable ?? false)}`)
+            "The full npm dependency graph is reported, including optional integrations. No automatic major-version overrides are applied by this workflow.",
+            "",
+            ...entries.map(([name, item]) => `- **${item.severity.toUpperCase()}** \`${name}@${item.range}\` — fix: ${JSON.stringify(item.fixAvailable ?? false)} · direct: ${item.isDirect}`)
           ];
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\n") + "\n");
           NODE
+      - name: Commit generated package lock and rerun against the locked tree
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          PR_BRANCH: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        working-directory: web
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if git diff --cached --quiet; then
+            echo "package-lock.json is already committed."
+            exit 0
+          fi
+          git commit -m "chore(web): lock wallet stack dependencies"
+          git push origin "HEAD:${PR_BRANCH}"
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/actions/workflows/wallet-stack-audit.yml/dispatches" \
+            -d "{\\"ref\\":\\"${PR_BRANCH}\\"}"
       - name: Upload dependency lockfile and audit report
         if: always()
         uses: actions/upload-artifact@v4
