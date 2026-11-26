@@ -57,6 +57,7 @@ class AutonomousEngine:
         self.telemetry = telemetry
         self._scanner_task: asyncio.Task | None = None
         self._position_tasks: dict[int, asyncio.Task] = {}
+        self._wallet_watch_tasks: dict[int, asyncio.Task] = {}
         self._stopping = False
         self._quote_lock = asyncio.Lock()
         self._last_quote_at = 0.0
@@ -80,6 +81,7 @@ class AutonomousEngine:
         await self.db.update_settings(telegram_id, {"enabled": True})
         balance = await self.wallet.balance(telegram_id)
         await self.db.start_daily_risk(telegram_id, utc_day(), balance)
+        await self.watch_wallet(telegram_id)
         await self._ensure_scanner()
         # Resume monitoring previously stored positions after a process restart.
         for position in await self.db.active_positions(telegram_id):
@@ -102,6 +104,55 @@ class AutonomousEngine:
             "9N8 paused. New entries are disabled; existing positions remain under exit monitoring.",
         )
 
+
+    async def watch_wallet(self, telegram_id: int) -> None:
+        """Start one Helius accountSubscribe listener to push SOL deposit alerts."""
+        address = await self.db.get_wallet_address(telegram_id)
+        if not address:
+            return
+        running = self._wallet_watch_tasks.get(telegram_id)
+        if running and not running.done():
+            return
+        self._wallet_watch_tasks[telegram_id] = asyncio.create_task(
+            self._monitor_wallet_deposits(telegram_id, address),
+            name=f"9n8-wallet-{telegram_id}",
+        )
+
+    async def _monitor_wallet_deposits(self, telegram_id: int, address: str) -> None:
+        previous = await self.helius.balance_lamports(address)
+        try:
+            async for value in self.helius.account_changes(address):
+                if self._stopping:
+                    return
+                current = int(value.get("lamports") or 0)
+                delta = current - previous
+                previous = current
+                if delta <= 0:
+                    continue
+                signature = None
+                await self.notify(
+                    telegram_id,
+                    f"SOL DEPOSIT DETECTED\n"
+                    f"Received: {from_lamports(delta)} SOL\n"
+                    f"Current wallet balance: {from_lamports(current)} SOL\n"
+                    f"Wallet: {address}\n"
+                    "This notification reflects an account-balance change observed by Helius.",
+                )
+                if self.telemetry:
+                    await self.telemetry(telegram_id, {
+                        "type": "deposit_detected",
+                        "asset": "SOL",
+                        "amount_lamports": delta,
+                        "balance_lamports": current,
+                        "wallet_address": address,
+                    })
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Wallet deposit watcher stopped for %s (%s)", telegram_id, type(exc).__name__)
+        finally:
+            self._wallet_watch_tasks.pop(telegram_id, None)
+
     async def _ensure_scanner(self) -> None:
         if self._scanner_task is None or self._scanner_task.done():
             self._stopping = False
@@ -119,9 +170,13 @@ class AutonomousEngine:
         for task in self._position_tasks.values():
             task.cancel()
             tasks.append(task)
+        for task in self._wallet_watch_tasks.values():
+            task.cancel()
+            tasks.append(task)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._position_tasks.clear()
+        self._wallet_watch_tasks.clear()
 
     async def _on_candidate(self, candidate: LaunchCandidate) -> None:
         if self._stopping:
