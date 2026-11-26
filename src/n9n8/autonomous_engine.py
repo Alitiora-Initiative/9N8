@@ -463,10 +463,8 @@ class AutonomousEngine:
         tx_meta = (tx_data or {}).get("meta") or {}
         network_fee = int(tx_meta.get("fee") or 5000)
         tip_network_fee = int(((tip_tx_data or {}).get("meta") or {}).get("fee") or 0)
-        receipt_status = (
-            "confirmed"
-            if tx_data and (not result.tip_signature or tip_tx_data) and not token_amount_provisional
-            else "unknown"
+        transaction_receipts_available = bool(
+            tx_data and (not result.tip_signature or tip_tx_data)
         )
         wallet_address = str(wallet_key.pubkey())
         token_amount = 0
@@ -506,6 +504,11 @@ class AutonomousEngine:
                 "9N8 is recording the route output provisionally and will keep checking the wallet. "
                 "Verify the fill on Solscan before submitting another trade.",
             )
+        receipt_status = (
+            "confirmed"
+            if transaction_receipts_available and not token_amount_provisional
+            else "unknown"
+        )
         if token_decimals is None:
             try:
                 supply = await self.helius.token_supply(candidate.mint)
