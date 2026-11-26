@@ -46,7 +46,7 @@ class JupiterJitoExecutor:
         "https://amsterdam.mainnet.block-engine.jito.wtf",
         "https://frankfurt.mainnet.block-engine.jito.wtf",
         "https://ny.mainnet.block-engine.jito.wtf",
-        "https://singapore.mainnet.block-engine.jito.wtf",
+        "https://tokyo.mainnet.block-engine.jito.wtf",
     )
 
     def __init__(self, settings: Settings, helius: HeliusClient):
