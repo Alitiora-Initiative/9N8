@@ -256,27 +256,32 @@ def create_webapp(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.websocket("/ws/telemetry")
-    async def websocket_telemetry(websocket: WebSocket, initData: str = ""):
+    async def websocket_telemetry(websocket: WebSocket):
+        # Receive initData in the first frame rather than the URL, so reverse
+        # proxies and access logs are less likely to record the signed payload.
+        await websocket.accept()
+        queue = None
         try:
-            parsed = verify_telegram_init_data(initData, settings.telegram_bot_token)
+            first = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            payload = json.loads(first)
+            init_data = str(payload.get("initData") or "")
+            parsed = verify_telegram_init_data(init_data, settings.telegram_bot_token)
             telegram_id = int(parsed["id"])
             await db.ensure_user(telegram_id)
-        except ValueError:
-            await websocket.close(code=4401)
-            return
-        await websocket.accept()
-        queue = await telemetry.subscribe(telegram_id)
-        try:
+            queue = await telemetry.subscribe(telegram_id)
             await websocket.send_json({"type": "connected", "telegram_id": telegram_id})
             while True:
                 event = await queue.get()
                 await websocket.send_json(event)
+        except (ValueError, json.JSONDecodeError, asyncio.TimeoutError):
+            await websocket.close(code=4401)
         except WebSocketDisconnect:
             pass
         except asyncio.CancelledError:
             raise
         finally:
-            await telemetry.unsubscribe(telegram_id, queue)
+            if queue is not None:
+                await telemetry.unsubscribe(telegram_id, queue)
 
     return app
 
