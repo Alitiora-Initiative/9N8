@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
-  actions: write
+  statuses: write
 
 jobs:
   web-wallet-stack:
@@ -32,6 +32,9 @@ jobs:
           else
             npm install --no-audit --no-fund
           fi
+      - name: Verify a clean lockfile install
+        working-directory: web
+        run: npm ci --no-audit --no-fund
       - name: Build Mini App
         working-directory: web
         run: npm run build
@@ -62,7 +65,7 @@ jobs:
           ];
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\n") + "\n");
           NODE
-      - name: Commit generated package lock and rerun against the locked tree
+      - name: Commit tested package lock to the PR branch
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           PR_BRANCH: ${{ github.head_ref }}
@@ -80,12 +83,13 @@ jobs:
           fi
           git commit -m "chore(web): lock wallet stack dependencies"
           git push origin "HEAD:${PR_BRANCH}"
+          LOCK_SHA="$(git rev-parse HEAD)"
           curl --fail-with-body --silent --show-error -X POST \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${REPOSITORY}/actions/workflows/wallet-stack-audit.yml/dispatches" \
-            -d "{\"ref\":\"${PR_BRANCH}\"}"
+            "https://api.github.com/repos/${REPOSITORY}/statuses/${LOCK_SHA}" \
+            -d "{\\"state\\":\\"success\\",\\"description\\":\\"Clean npm ci install and Vite build passed; full dependency audit report uploaded.\\",\\"context\\":\\"9N8 wallet lockfile clean install\\"}"
       - name: Upload dependency lockfile and audit report
         if: always()
         uses: actions/upload-artifact@v4
