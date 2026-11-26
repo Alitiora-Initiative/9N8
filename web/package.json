@@ -8,11 +8,11 @@
     "dev": "vite --host 0.0.0.0"
   },
   "dependencies": {
-    "@reown/appkit": "1.8.24",
-    "@reown/appkit-adapter-solana": "1.8.24",
-    "@reown/appkit-adapter-wagmi": "1.8.24",
-    "viem": "2.58.4",
-    "wagmi": "2.19.5",
+    "@reown/appkit": "2.0.0",
+    "@reown/appkit-adapter-solana": "2.0.0",
+    "@reown/appkit-adapter-wagmi": "2.0.0",
+    "viem": "2.58.6",
+    "wagmi": "3.7.11",
     "lightweight-charts": "5.3.0",
     "@solana/web3.js": "1.98.4"
   },
