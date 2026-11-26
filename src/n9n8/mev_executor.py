@@ -37,6 +37,7 @@ class SwapResult:
     minimum_output: int
     bundle_id: str | None
     landing_status: str
+    tip_signature: str | None = None
 
 
 class JupiterJitoExecutor:
@@ -268,7 +269,7 @@ class JupiterJitoExecutor:
                 {"encoding": "base64", "skipPreflight": False, "preflightCommitment": "confirmed", "maxRetries": 3},
             ])
             await self._confirm_signature(str(signature))
-            return SwapResult(str(signature), amount_raw, expected_out, min_out, None, "confirmed")
+            return SwapResult(str(signature), amount_raw, expected_out, min_out, None, "confirmed", None)
 
         tip_accounts = await self._official_tip_accounts()
         # Select from the official list using a cryptographically secure index.
@@ -296,9 +297,11 @@ class JupiterJitoExecutor:
                 "Do not submit a duplicate without checking wallet and bundle history."
             )
         signatures = await self._bundle_signatures(bundle_id)
-        if not signatures:
-            raise ExecutionError("Jito reports a landed bundle but returned no transaction signatures.")
-        return SwapResult(signatures[0], amount_raw, expected_out, min_out, bundle_id, "landed")
+        if len(signatures) < 2:
+            raise ExecutionError("Jito reports a landed bundle but did not return both swap and tip signatures.")
+        return SwapResult(
+            signatures[0], amount_raw, expected_out, min_out, bundle_id, "landed", signatures[1]
+        )
 
     async def _confirm_signature(self, signature: str, timeout: int = 60) -> None:
         deadline = asyncio.get_running_loop().time() + timeout
