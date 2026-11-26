@@ -452,23 +452,17 @@ class AutonomousEngine:
         if len(await self.db.active_positions(telegram_id)) >= daily_cap:
             return
         excluded_token_accounts: set[str] = set()
-        if candidate.launchpad == "pump.fun":
+        security_launchpad = candidate.launchpad.lower()
+        if candidate.launchpad.lower() == "pump.fun":
             curve = candidate.bonding_curve
-            if not curve or curve.complete:
+            # Live trades wait for Pump.fun migration. The pre-migration bonding
+            # curve is not treated as a locked Raydium liquidity pool.
+            if not curve or not curve.complete:
                 return
-            pump_mode = str(config.get("pump_mode", "fresh")).lower()
-            if pump_mode == "migration":
-                threshold = dec(config.get("pump_migration_progress_pct", "80"))
-                if curve.progress_pct < threshold:
-                    return
-            elif pump_mode == "fresh":
-                if candidate.created_at_slot is None:
-                    return
-                current_slot = int(await self.helius.rpc("getSlot", [{"commitment": "processed"}]))
-                if current_slot - int(candidate.created_at_slot) > 3:
-                    return
-            # Exclude Pump.fun's associated bonding-curve token vault from the
-            # top-holder concentration calculation; it is protocol inventory.
+            threshold = dec(config.get("pump_migration_progress_pct", "80"))
+            if curve.progress_pct < threshold:
+                return
+            security_launchpad = "raydium"
             mint_info = await self.helius.account_info(candidate.mint, "base64")
             if mint_info:
                 token_program = Pubkey.from_string(str(mint_info["owner"]))
@@ -482,11 +476,20 @@ class AutonomousEngine:
                     associated_program,
                 )
                 excluded_token_accounts.add(str(vault))
+        sol_price = await self.oracle.sol_usd()
+        min_liquidity_usd = max(
+            dec(config.get("min_liquidity_sol", "5")) * sol_price,
+            dec(config.get("min_liquidity_usd", "0")),
+        )
         risk = await self.security.inspect(
             candidate.mint,
-            launchpad=candidate.launchpad,
+            launchpad=security_launchpad,
             max_top10_pct=str(config.get("max_top10_concentration_pct", "25")),
-            min_liquidity_usd=str(config.get("min_liquidity_usd", "5000")),
+            min_liquidity_usd=str(min_liquidity_usd),
+            min_lp_locked_pct=str(config.get("min_lp_locked_pct", "80")),
+            max_dev_pct=str(config.get("max_dev_wallet_pct", "5")),
+            require_mint_authority_revoked=bool(config.get("require_mint_authority_revoked", True)),
+            require_freeze_authority_revoked=bool(config.get("require_freeze_authority_revoked", True)),
             excluded_token_accounts=excluded_token_accounts,
         )
         if not risk.passed:
