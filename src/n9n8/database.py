@@ -112,7 +112,10 @@ class Database:
                     exit_reason TEXT,
                     realized_lamports INTEGER NOT NULL DEFAULT 0,
                     buy_signature TEXT,
-                    sell_signature TEXT
+                    sell_signature TEXT,
+                    peak_value_lamports INTEGER NOT NULL DEFAULT 0,
+                    tp1_done INTEGER NOT NULL DEFAULT 0,
+                    tp2_done INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_positions_user_status ON positions(telegram_id, status);
                 CREATE TABLE IF NOT EXISTS fee_ledger (
@@ -203,6 +206,17 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_paper_trades_user_time
                     ON paper_trades(telegram_id, created_at DESC);
+            # Upgrade existing local databases without changing any live position rows.
+            position_columns = {
+                row[1] for row in await (await db.execute("PRAGMA table_info(positions)")).fetchall()
+            }
+            for column, definition in (
+                ("peak_value_lamports", "INTEGER NOT NULL DEFAULT 0"),
+                ("tp1_done", "INTEGER NOT NULL DEFAULT 0"),
+                ("tp2_done", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in position_columns:
+                    await db.execute(f"ALTER TABLE positions ADD COLUMN {column} {definition}")
             await db.commit()
 
 
@@ -398,15 +412,31 @@ class Database:
             rows = await cur.fetchall()
             return [dict(x) for x in rows]
 
+    async def update_position_metrics(
+        self, position_id: int, current_value_lamports: int, peak_value_lamports: int,
+        pnl_pct: str,
+    ) -> None:
+        async with self._lock, aiosqlite.connect(self.path) as db:
+            await db.execute(
+                """UPDATE positions SET peak_value_lamports=MAX(peak_value_lamports,?),
+                   last_value_lamports=?,last_pnl_pct=?,updated_at=?
+                   WHERE id=? AND status='open'""",
+                (int(peak_value_lamports),int(current_value_lamports),str(pnl_pct),utc_now(),int(position_id)),
+            )
+            await db.commit()
+
     async def close_position(
         self, position_id: int, remaining_raw: int, reason: str,
         realized_lamports: int, sell_signature: str, fully_closed: bool
     ) -> None:
         status = "closed" if fully_closed else "open"
+        tp1_update = 1 if reason in {"take_profit_1","take_profit_partial"} else None
+        tp2_update = 1 if reason == "take_profit_2" else None
         async with self._lock, aiosqlite.connect(self.path) as db:
             await db.execute(
                 """UPDATE positions SET token_amount_raw=?, moon_bag_raw=?, status=?,
                    exit_reason=?, realized_lamports=realized_lamports+?, sell_signature=?,
+                   tp1_done=COALESCE(?,tp1_done),tp2_done=COALESCE(?,tp2_done),
                    initial_cost_lamports=CASE
                        WHEN ?=1 THEN 0
                        WHEN token_amount_raw>0 THEN CAST(initial_cost_lamports * ? / token_amount_raw AS INTEGER)
@@ -414,7 +444,8 @@ class Database:
                    WHERE id=?""",
                 (
                     remaining_raw, remaining_raw, status, reason, realized_lamports,
-                    sell_signature, 1 if fully_closed else 0, remaining_raw, position_id,
+                    sell_signature,tp1_update,tp2_update,
+                    1 if fully_closed else 0, remaining_raw, position_id,
                 ),
             )
             await db.commit()
