@@ -209,29 +209,53 @@ class WalletManager:
         try:
             await self.confirm(signature)
         except WalletError as exc:
-            if "failed on-chain" in str(exc):
+            failed = "failed on-chain" in str(exc)
+            try:
+                await self.db.record_trade_receipt(
+                    telegram_id,
+                    "withdrawal",
+                    signature,
+                    "failed" if failed else "unknown",
+                    amount_lamports=amount,
+                    metadata={
+                        "destination": str(recipient),
+                        "network_fee_lamports": network_fee,
+                        "source": "telegram_percent_withdrawal",
+                        "confirmation_error": str(exc)[:300],
+                    },
+                )
+            except Exception:
+                logger.exception("Could not persist withdrawal outcome for signature %s", signature)
+            if failed:
                 raise WalletError(
                     f"Withdrawal failed on-chain. Signature: {signature}. No automatic retry was made."
                 ) from exc
             raise WalletError(
                 "Withdrawal was submitted but confirmation is still unknown. "
                 f"Check this signature before doing anything else: {signature}. "
-                "9N8 will not submit it again automatically."
+                "9N8 recorded the unknown outcome where possible and will not submit it again automatically."
             ) from exc
 
-        await self.db.record_trade_receipt(
-            telegram_id,
-            "withdrawal",
-            signature,
-            "confirmed",
-            amount_lamports=amount,
-            metadata={
-                "destination": str(recipient),
-                "network_fee_lamports": network_fee,
-                "source": "telegram_percent_withdrawal",
-            },
-        )
-        await self.db.set_payout_address(telegram_id, str(recipient))
+        try:
+            await self.db.record_trade_receipt(
+                telegram_id,
+                "withdrawal",
+                signature,
+                "confirmed",
+                amount_lamports=amount,
+                metadata={
+                    "destination": str(recipient),
+                    "network_fee_lamports": network_fee,
+                    "source": "telegram_percent_withdrawal",
+                },
+            )
+            await self.db.set_payout_address(telegram_id, str(recipient))
+        except Exception as exc:
+            raise WalletError(
+                "The withdrawal is confirmed on-chain, but the local receipt could not be saved. "
+                f"Check this signature: {signature}. Do not send another withdrawal. "
+                f"Receipt error: {type(exc).__name__}"
+            ) from exc
         return amount, network_fee, signature
 
     async def withdraw_all(self, telegram_id: int, destination: str) -> tuple[int, str]:
