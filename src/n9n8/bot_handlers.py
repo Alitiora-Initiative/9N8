@@ -1692,15 +1692,54 @@ async def cb_create_wallet(callback: CallbackQuery) -> None:
     svc = _svc()
     await callback.answer()
     try:
-        address, secret = await svc.wallet.create_wallet(callback.from_user.id)
+        await svc.wallet.create_wallet(callback.from_user.id)
         await svc.engine.watch_wallet(callback.from_user.id)
-        await callback.message.answer(
-            f"Wallet created. Solana deposit address:\n{address}\n\n"
-            "Your recovery key will arrive in a separate auto-deleting message."
+        address = await svc.db.get_wallet_address(callback.from_user.id)
+        if address:
+            await svc.db.security_event(callback.from_user.id, "wallet_created_onboarding", address)
+        await callback.message.edit_text(
+            await _onboarding_text(callback.from_user.id),
+            reply_markup=_onboarding_keyboard(),
         )
-        await _send_sensitive_key(callback.message, address, secret)
     except WalletError as exc:
         await callback.message.answer(str(exc))
+
+
+@router.callback_query(F.data == "wallet:reveal")
+async def cb_wallet_reveal(callback: CallbackQuery) -> None:
+    svc = _svc()
+    telegram_id = callback.from_user.id
+    lock = _wallet_reveal_locks.setdefault(telegram_id, asyncio.Lock())
+    async with lock:
+        address = await svc.db.get_wallet_address(telegram_id)
+        if not address:
+            await callback.answer("No Solana wallet is connected.", show_alert=True)
+            return
+        if await svc.db.wallet_key_was_revealed(telegram_id, address):
+            await callback.answer(
+                "This wallet's one-time key reveal has already been used. If the backup is lost, use the wallet-rotation flow.",
+                show_alert=True,
+            )
+            await callback.message.edit_text(
+                await _onboarding_text(telegram_id, key_revealed=True),
+                reply_markup=_onboarding_keyboard(key_revealed=True),
+            )
+            return
+        try:
+            secret = await svc.db.load_secret(telegram_id)
+            await svc.db.security_event(telegram_id, "wallet_key_revealed", address)
+            await callback.answer("Sending the one-time recovery key in a 60-second auto-deleting message.")
+            await _send_sensitive_key(callback.message, address, secret)
+            await callback.message.edit_text(
+                await _onboarding_text(telegram_id, key_revealed=True),
+                reply_markup=_onboarding_keyboard(key_revealed=True),
+            )
+        except Exception as exc:
+            logger.exception("One-time wallet reveal failed for Telegram account %s", telegram_id)
+            await callback.answer(
+                f"Private key could not be revealed ({type(exc).__name__}).",
+                show_alert=True,
+            )
 
 
 @router.callback_query(F.data == "wallet:import")
@@ -1721,7 +1760,15 @@ async def handle_import_wallet(message: Message, state: FSMContext) -> None:
             return
         address = await svc.wallet.import_wallet(message.from_user.id, (message.text or "").strip())
         await svc.engine.watch_wallet(message.from_user.id)
-        await message.answer(f"Wallet imported successfully.\nSolana address:\n{address}")
+        await message.answer(
+            "Solana wallet imported and encrypted at rest.\n"
+            f"Address: {address}\n"
+            "Reveal the stored key once from the onboarding screen and save it offline."
+        )
+        await message.answer(
+            await _onboarding_text(message.from_user.id),
+            reply_markup=_onboarding_keyboard(),
+        )
     except WalletError as exc:
         await message.answer(f"Wallet import failed: {exc}")
     finally:
@@ -2238,16 +2285,19 @@ async def cb_wipe_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         return
     try:
         await svc.engine.stop_user(callback.from_user.id)
-        address, secret, payout, signature = await svc.wallet.rotate_wallet(
+        address, _secret, payout, signature = await svc.wallet.rotate_wallet(
             callback.from_user.id, destination
         )
         await svc.engine.reset_wallet_watcher(callback.from_user.id)
-        await callback.message.answer(
+        await svc.db.security_event(callback.from_user.id, "wallet_created_onboarding", address)
+        await callback.message.edit_text(
+            "✅ WALLET ROTATED — NEW SOLANA WALLET PAUSED\n\n"
             f"Old wallet payout: {format_sol(payout)} SOL\n"
             f"Receipt: https://solscan.io/tx/{signature}\n"
-            f"New paused wallet address:\n{address}"
+            f"New wallet address:\n{address}\n\n"
+            "Reveal the new recovery key once below and store it offline before depositing.",
+            reply_markup=_onboarding_keyboard(),
         )
-        await _send_sensitive_key(callback.message, address, secret)
     except Exception as exc:
         await callback.message.answer(f"Wallet rotation was not completed: {exc}")
     finally:
