@@ -254,6 +254,12 @@ async def run(worker_only: bool = False) -> None:
     for user in await paper_store.users():
         telegram_id = int(user["telegram_id"])
         try:
+            # Always resume exit monitoring for real positions, even when the
+            # operator kill switch is OFF. This never re-arms new live entries.
+            user_row = await db.get_user(telegram_id)
+            if user_row and user_row.get("solana_address"):
+                await engine.watch_wallet(telegram_id)
+            await engine.resume_live_positions(telegram_id)
             paper_on = await paper_store.mode_enabled(telegram_id, "paper")
             live_on = await paper_store.mode_enabled(telegram_id, "live")
             if paper_on:

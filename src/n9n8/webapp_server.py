@@ -22,7 +22,8 @@ from solders.pubkey import Pubkey
 from .autonomous_engine import AutonomousEngine, utc_day
 from .config import Settings
 from .database import Database
-from .math_engine import format_sol, from_lamports
+from .math_engine import format_sol, from_lamports, usd_to_lamports
+from .paper_store import PaperStore
 from .oracle import PriceOracle
 from .telemetry import TelemetryHub
 from .wallet import WalletManager
@@ -116,6 +117,7 @@ def create_webapp(
     app.state.bot = bot
     app.state.telemetry = telemetry
     app.state.worker_queue = worker_queue
+    app.state.paper_store = None
     if WEBAPP_DIR.exists():
         app.mount("/assets", StaticFiles(directory=str(WEBAPP_DIR)), name="assets")
 
@@ -165,33 +167,221 @@ def create_webapp(
     async def health():
         return {"ok": True, "service": "9n8-solana-telegram", "mode": settings.trading_mode}
 
+    async def get_paper_store() -> PaperStore:
+        store = app.state.paper_store
+        if store is None:
+            store = PaperStore(db)
+            await store.initialize()
+            app.state.paper_store = store
+        return store
+
+    async def get_live_readiness(telegram_id: int) -> dict[str, Any]:
+        store = await get_paper_store()
+        user = await db.get_user(telegram_id)
+        result: dict[str, Any] = {
+            "operator_live_switch": bool(settings.live_trading_enabled),
+            "wallet_connected": bool(user and user.get("solana_address")),
+            "activation_confirmed": bool(user and user.get("activation_paid")),
+            "paper_days": await store.active_days(telegram_id),
+            "wallet_balance_sol": "0",
+            "wallet_balance_usd": "0",
+            "minimum_wallet_usd": "10",
+            "ready": False,
+            "blockers": [],
+        }
+        if not result["operator_live_switch"]:
+            result["blockers"].append("The operator has not enabled the global live switch.")
+        if not result["wallet_connected"]:
+            result["blockers"].append("Create or import a Solana wallet first.")
+        if not result["activation_confirmed"]:
+            result["blockers"].append("Complete the one-time activation check.")
+        if result["paper_days"] < 7:
+            result["blockers"].append(f"Complete paper practice on 7 different UTC days ({result['paper_days']}/7).")
+        if result["wallet_connected"]:
+            try:
+                balance = int(await wallet.balance(telegram_id))
+                price = await oracle.sol_usd()
+                value = from_lamports(balance) * price
+                result["wallet_balance_sol"] = format_sol(balance)
+                result["wallet_balance_usd"] = str(value.quantize(__import__("decimal").Decimal("0.01")))
+                if value < 10:
+                    result["blockers"].append("The wallet needs at least $10 of SOL.")
+            except Exception as exc:
+                result["blockers"].append("Wallet balance check failed: " + type(exc).__name__)
+        result["ready"] = not result["blockers"]
+        return result
+
     @app.get("/api/state")
     async def state(x_telegram_init_data: str | None = Header(default=None)):
         telegram_id = await authorize_header(x_telegram_init_data)
+        store = await get_paper_store()
         user = await db.get_user(telegram_id)
-        config = await db.get_settings(telegram_id)
-        balance_lamports = await wallet.balance(telegram_id)
+        live_config = await db.get_settings(telegram_id)
+        paper_config = await store.settings(telegram_id, "paper")
+        sol_price = None
+        price_source = "unavailable"
         try:
-            sol_usd = str(await oracle.sol_usd())
-            price_source = oracle.source
+            sol_price = str(await oracle.sol_usd())
+            price_source = getattr(oracle, "source", "oracle")
         except Exception:
-            sol_usd, price_source = None, "unavailable"
-        risk = await db.daily_risk_snapshot(telegram_id, utc_day())
-        positions = await db.active_positions(telegram_id)
+            pass
+        balance_lamports = 0
+        if user and user.get("solana_address"):
+            try:
+                balance_lamports = int(await wallet.balance(telegram_id))
+            except Exception:
+                balance_lamports = 0
+        paper_account = await store.account(telegram_id)
+        paper_positions = await store.positions(telegram_id)
+        live_positions = await db.active_positions(telegram_id)
+        paper_enabled = await store.mode_enabled(telegram_id, "paper")
+        live_enabled = await store.mode_enabled(telegram_id, "live")
         return {
-            "mode": settings.trading_mode,
-            "live_enabled": settings.live_trading_enabled,
-            "enabled": bool(config.get("enabled")),
+            "modes": {
+                "paper": {"enabled": paper_enabled, "label": "PAPER · VIRTUAL FUNDS"},
+                "live": {
+                    "enabled": live_enabled,
+                    "operator_enabled": bool(settings.live_trading_enabled),
+                    "label": "LIVE · REAL SOL",
+                },
+            },
             "activation_paid": bool(user and user.get("activation_paid")),
             "wallet_address": user.get("solana_address") if user else None,
-            "balance_sol": format_sol(balance_lamports),
-            "sol_usd": sol_usd,
+            "wallet_balance_sol": format_sol(balance_lamports),
+            "wallet_balance_usd": str(
+                (from_lamports(balance_lamports) * __import__("decimal").Decimal(sol_price)).quantize(__import__("decimal").Decimal("0.01"))
+            ) if sol_price else None,
+            "sol_usd": sol_price,
             "price_source": price_source,
-            "daily_realized_pnl_sol": str(from_lamports((risk or {}).get("realized_pnl_lamports", 0))),
-            "daily_trade_count": (risk or {}).get("trade_count", 0),
-            "settings": config,
-            "positions": positions,
+            "paper": {
+                "account": paper_account,
+                "practice_days": await store.active_days(telegram_id),
+                "positions": paper_positions,
+                "settings": paper_config,
+                "history": await store.history(telegram_id, 20),
+            },
+            "live": {
+                "readiness": await get_live_readiness(telegram_id),
+                "positions": live_positions,
+                "settings": live_config,
+                "daily_realized_pnl_sol": str(from_lamports(
+                    (await db.daily_risk_snapshot(telegram_id, utc_day()) or {}).get("realized_pnl_lamports", 0)
+                )),
+                "receipts": await db.list_trade_receipts(telegram_id, 20),
+            },
         }
+
+    @app.get("/api/paper/settings")
+    async def get_paper_settings(x_telegram_init_data: str | None = Header(default=None)):
+        telegram_id = await authorize_header(x_telegram_init_data)
+        return await (await get_paper_store()).settings(telegram_id, "paper")
+
+    @app.post("/api/paper/settings")
+    async def post_paper_settings(
+        patch: SettingsUpdate,
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
+        telegram_id = await authorize_header(x_telegram_init_data)
+        try:
+            from .bot_handlers import _validated_setting
+            allowed = {
+                "buy_amount_sol", "slippage_pct", "take_profit_pct", "take_profit_2_pct",
+                "take_profit_2_sell_pct", "trailing_stop_pct", "stop_loss_pct",
+                "max_hold_seconds", "jito_tip_lamports", "priority_fee_lamports",
+                "min_liquidity_sol", "min_lp_locked_pct",
+                "max_top10_concentration_pct", "max_dev_wallet_pct",
+            }
+            if not patch.values or set(patch.values) - allowed:
+                raise ValueError("Only paper trading fields may be changed here.")
+            values = {key: _validated_setting(key, str(value)) for key, value in patch.values.items()}
+            updated = await (await get_paper_store()).update_settings(telegram_id, values, "paper")
+            if engine is None:
+                await wake_worker(request, {"kind": "sync_user", "telegram_id": telegram_id},
+                                  f"paper-settings:{telegram_id}:{uuid.uuid4().hex}")
+            return updated
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/paper/start")
+    async def start_paper(
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
+        telegram_id = await authorize_header(x_telegram_init_data)
+        store = await get_paper_store()
+        try:
+            if engine is not None:
+                account = await engine.start_paper_user(telegram_id)
+            else:
+                sol_price = await oracle.sol_usd()
+                account = await store.create_account(telegram_id, usd_to_lamports("1000", sol_price))
+                await store.touch_day(telegram_id, utc_day())
+                await store.set_mode_enabled(telegram_id, "paper", True)
+                await db.security_event(telegram_id, "paper_start_requested", "Separate virtual practice mode requested from the Mini App.")
+                await wake_worker(request, {"kind": "sync_user", "telegram_id": telegram_id},
+                                  f"paper-start:{telegram_id}:{uuid.uuid4().hex}")
+            return {"ok": True, "paper_enabled": True, "account": account,
+                    "message": "Paper mode started. Only virtual SOL is used."}
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/paper/stop")
+    async def stop_paper(
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
+        telegram_id = await authorize_header(x_telegram_init_data)
+        store = await get_paper_store()
+        if engine is not None:
+            await engine.stop_paper_user(telegram_id)
+        else:
+            await store.set_mode_enabled(telegram_id, "paper", False)
+            await db.security_event(telegram_id, "paper_stop_requested", "New virtual entries paused from the Mini App.")
+            await wake_worker(request, {"kind": "sync_user", "telegram_id": telegram_id},
+                              f"paper-stop:{telegram_id}:{uuid.uuid4().hex}")
+        return {"ok": True, "paper_enabled": False}
+
+    @app.get("/api/live/readiness")
+    async def live_readiness_route(x_telegram_init_data: str | None = Header(default=None)):
+        telegram_id = await authorize_header(x_telegram_init_data)
+        return await get_live_readiness(telegram_id)
+
+    @app.post("/api/live/start")
+    async def start_live(
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
+        telegram_id = await authorize_header(x_telegram_init_data)
+        readiness = await get_live_readiness(telegram_id)
+        if not readiness["ready"]:
+            raise HTTPException(status_code=409, detail="LIVE MODE BLOCKED: " + " ".join(readiness["blockers"]))
+        try:
+            if engine is not None:
+                await engine.start_live_user(telegram_id)
+            else:
+                await db.update_settings(telegram_id, {"live_enabled": True, "enabled": True})
+                await db.security_event(telegram_id, "live_start_requested", "User explicitly requested Live mode after readiness passed.")
+                await wake_worker(request, {"kind": "sync_user", "telegram_id": telegram_id},
+                                  f"live-start:{telegram_id}:{uuid.uuid4().hex}")
+            return {"ok": True, "live_enabled": True, "message": "Live mode requested after readiness checks."}
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/live/stop")
+    async def stop_live(
+        request: Request,
+        x_telegram_init_data: str | None = Header(default=None),
+    ):
+        telegram_id = await authorize_header(x_telegram_init_data)
+        if engine is not None:
+            await engine.stop_live_user(telegram_id)
+        else:
+            await db.update_settings(telegram_id, {"live_enabled": False, "enabled": False})
+            await db.security_event(telegram_id, "live_stop_requested", "Live entries paused from the Mini App.")
+            await wake_worker(request, {"kind": "sync_user", "telegram_id": telegram_id},
+                              f"live-stop:{telegram_id}:{uuid.uuid4().hex}")
+        return {"ok": True, "live_enabled": False, "message": "New live entries paused. Existing exits remain monitored."}
 
     @app.get("/api/settings")
     async def get_settings(x_telegram_init_data: str | None = Header(default=None)):
