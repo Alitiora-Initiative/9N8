@@ -18,9 +18,9 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package.json
-      - name: Install exact declared dependency versions and generate lockfile
+      - name: Install required wallet dependencies without unused optional payment modules and generate lockfile
         working-directory: web
-        run: npm install --no-audit --no-fund
+        run: npm install --omit=optional --no-audit --no-fund
       - name: Build Mini App
         working-directory: web
         run: npm run build
