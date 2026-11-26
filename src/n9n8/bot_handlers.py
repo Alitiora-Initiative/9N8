@@ -1835,6 +1835,46 @@ async def cb_wipe_confirm(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
 
 
+@router.callback_query(F.data.startswith("paste:paper:"))
+async def cb_pasted_mint_paper(callback: CallbackQuery) -> None:
+    await callback.answer()
+    mint = callback.data.rsplit(":", 1)[-1]
+    await _show_paper_snipe_preview(callback.message, callback.from_user.id, mint)
+
+
+@router.callback_query(F.data.startswith("paste:live:"))
+async def cb_pasted_mint_live(callback: CallbackQuery) -> None:
+    await callback.answer()
+    mint = callback.data.rsplit(":", 1)[-1]
+    await _show_live_snipe_preview(callback.message, callback.from_user.id, mint)
+
+
+@router.message()
+async def detect_pasted_solana_mint(message: Message) -> None:
+    """Offer separate paper/live previews when a public token mint is pasted."""
+    if not _is_private(message) or not message.text:
+        return
+    raw = message.text.strip()
+    if raw.startswith("/") or " " in raw or not 32 <= len(raw) <= 44:
+        return
+    try:
+        mint = str(Pubkey.from_string(raw))
+    except Exception:
+        return
+    if mint != raw:
+        return
+    await message.answer(
+        "🎯 SOLANA TOKEN ADDRESS DETECTED\n\n"
+        f"Mint: {mint}\n\n"
+        "Choose what you want to do. Paper uses virtual funds. Live only shows a preview first and requires a second confirmation before any real SOL is spent.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🧪 Paper Preview", callback_data=f"paste:paper:{mint}")],
+            [InlineKeyboardButton(text="🔴 Live Preview", callback_data=f"paste:live:{mint}")],
+            [InlineKeyboardButton(text="Cancel", callback_data="home:show")],
+        ]),
+    )
+
+
 @router.callback_query(F.data.startswith("position:panic:"))
 async def cb_panic_sell(callback: CallbackQuery) -> None:
     svc = _svc()
