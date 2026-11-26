@@ -83,9 +83,9 @@ async def run(worker_only: bool = False) -> None:
         try:
             markup = None
             if message.startswith("ENTRY CONFIRMED"):
-                position_match = re.search(r"Position:\\s*#?(\\d+)", message)
-                mint_match = re.search(r"Mint:\\s*([1-9A-HJ-NP-Za-km-z]{32,44})", message)
-                signature_match = re.search(r"Signature:\\s*https://solscan\\.io/tx/([1-9A-Za-z]+)", message)
+                position_match = re.search(r"Position:\s*#?(\d+)", message)
+                mint_match = re.search(r"Mint:\s*([1-9A-HJ-NP-Za-km-z]{32,44})", message)
+                signature_match = re.search(r"Signature:\s*https://solscan\.io/tx/([1-9A-Za-z]+)", message)
                 if position_match and mint_match:
                     position_id = int(position_match.group(1))
                     mint = mint_match.group(1)
