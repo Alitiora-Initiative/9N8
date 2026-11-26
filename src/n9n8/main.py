@@ -88,6 +88,14 @@ async def run() -> None:
         with suppress(NotImplementedError):
             loop.add_signal_handler(sig, stop_event.set)
 
+    # Start SOL credit watchers for every persisted wallet, including paused
+    # users, then restore the positions/entry supervisors of enabled users.
+    for user in await db.all_users_with_wallets():
+        try:
+            await engine.watch_wallet(int(user["telegram_id"]))
+        except Exception as exc:
+            logger.error("Could not start wallet watcher for %s (%s)", user["telegram_id"], type(exc).__name__)
+
     # Restart previously enabled user's monitors only after the application
     # components are ready. Each user remains governed by their persisted config.
     for telegram_id in await db.enabled_users():
