@@ -19,6 +19,8 @@ from .launchpad_sniper import LaunchpadSniper
 from .mev_executor import JupiterJitoExecutor
 from .oracle import PriceOracle
 from .postgres_database import PostgresDatabase
+from .paper_store import PaperStore
+from .paper_engine import PaperTradingEngine
 from .security import TokenSecurity
 from .telemetry import TelemetryHub
 from .wallet import WalletManager
@@ -49,6 +51,8 @@ async def run(worker_only: bool = False) -> None:
     else:
         db = Database(settings.database_path, settings.encryption_key)
     await db.initialize()
+    paper_store = PaperStore(db)
+    await paper_store.initialize()
     worker_bridge = (
         VercelWorkerBridge(worker_api_url, worker_bridge_secret)
         if worker_api_url and worker_bridge_secret else None
@@ -87,6 +91,17 @@ async def run(worker_only: bool = False) -> None:
                 logger.exception("Could not persist telemetry event for Telegram account %s", telegram_id)
         await telemetry.publish(telegram_id, event)
 
+    paper_engine = PaperTradingEngine(
+        store=paper_store,
+        helius=helius,
+        oracle=oracle,
+        executor=executor,
+        security=security,
+        notify=notify,
+        telemetry=publish,
+        max_position_sol=settings.max_position_sol,
+        jupiter_api_key=settings.jupiter_api_key,
+    )
     engine = AutonomousEngine(
         settings=settings,
         db=db,
@@ -98,6 +113,7 @@ async def run(worker_only: bool = False) -> None:
         security=security,
         notify=notify,
         telemetry=publish,
+        paper_engine=paper_engine,
     )
     configure_handlers(AppServices(settings, db, wallet, oracle, engine))
 
@@ -127,10 +143,17 @@ async def run(worker_only: bool = False) -> None:
             logger.error("Could not start wallet watcher for %s (%s)", user["telegram_id"], type(exc).__name__)
 
     active_users: set[int] = set()
-    for telegram_id in await db.enabled_users():
+    for user in await paper_store.users():
+        telegram_id = int(user["telegram_id"])
         try:
-            await engine.start_user(int(telegram_id))
-            active_users.add(int(telegram_id))
+            paper_on = await paper_store.mode_enabled(telegram_id, "paper")
+            live_on = await paper_store.mode_enabled(telegram_id, "live")
+            if paper_on:
+                await engine.start_paper_user(telegram_id)
+                active_users.add(telegram_id)
+            if live_on:
+                await engine.start_live_user(telegram_id)
+                active_users.add(telegram_id)
         except Exception as exc:
             logger.error("Could not resume Telegram account %s (%s)", telegram_id, type(exc).__name__)
 
@@ -190,15 +213,23 @@ async def run(worker_only: bool = False) -> None:
             )
 
     async def reconcile_user(telegram_id: int) -> None:
+        await db.ensure_user(telegram_id)
         user = await db.get_user(telegram_id)
-        config = await db.get_settings(telegram_id)
-        if user and user.get("solana_address") and config.get("enabled"):
-            if telegram_id not in engine._enabled_users:
-                await engine.watch_wallet(telegram_id)
-                await engine.start_user(telegram_id)
-                active_users.add(telegram_id)
-        elif telegram_id in engine._enabled_users:
-            await engine.stop_user(telegram_id)
+        if user and user.get("solana_address"):
+            await engine.watch_wallet(telegram_id)
+        paper_on = await paper_store.mode_enabled(telegram_id, "paper")
+        live_on = await paper_store.mode_enabled(telegram_id, "live")
+        if paper_on:
+            await engine.start_paper_user(telegram_id)
+        else:
+            await engine.stop_paper_user(telegram_id)
+        if live_on:
+            await engine.start_live_user(telegram_id)
+        else:
+            await engine.stop_live_user(telegram_id)
+        if paper_on or live_on:
+            active_users.add(telegram_id)
+        else:
             active_users.discard(telegram_id)
 
     async def process_queued_jobs() -> None:
