@@ -536,6 +536,25 @@ class PostgresDatabase:
             result.append(item)
         return result
 
+    async def list_trade_receipts(self, telegram_id: int, limit: int = 30) -> list[dict[str, Any]]:
+        rows = await self._pool().fetch(
+            """SELECT id,event_type,signature,status,mint,position_id,
+                      amount_lamports,token_amount_raw,metadata,created_at,confirmed_at
+               FROM public.n9n8_trade_receipts
+               WHERE telegram_id=$1 ORDER BY id DESC LIMIT $2""",
+            int(telegram_id),max(1,min(int(limit),100)),
+        )
+        result=[]
+        for row in rows:
+            item=dict(row)
+            item["metadata"]=_json_value(item.get("metadata"))
+            for key in ("amount_lamports","token_amount_raw"):
+                if item.get(key) is not None: item[key]=str(item[key])
+            for key in ("created_at","confirmed_at"):
+                if item.get(key) is not None: item[key]=item[key].isoformat()
+            result.append(item)
+        return result
+
     async def record_trade_receipt(
         self, telegram_id: int, event_type: str, signature: str,
         status: str, mint: str | None = None, position_id: int | None = None,
