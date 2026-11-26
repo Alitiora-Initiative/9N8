@@ -27,6 +27,8 @@ class Settings:
     treasury: str
     encryption_key: bytes
     database_path: str
+    database_url: str
+    require_postgres: bool
     jupiter_base_url: str
     jupiter_api_key: str
     jito_base_url: str
@@ -79,6 +81,10 @@ class Settings:
         if mode not in {"paper", "live"}:
             raise RuntimeError("N9N8_TRADING_MODE must be paper or live.")
         live_enabled = _bool("LIVE_TRADING_ENABLED", False)
+        database_url = os.getenv("DATABASE_URL", "").strip()
+        require_postgres = _bool("N9N8_REQUIRE_POSTGRES", False)
+        if require_postgres and not database_url:
+            raise RuntimeError("DATABASE_URL is required for this deployed 9N8 runtime.")
         if mode == "live" and not live_enabled:
             raise RuntimeError("Live mode requires LIVE_TRADING_ENABLED=true as a second lock.")
         return cls(
@@ -89,6 +95,8 @@ class Settings:
             treasury=treasury,
             encryption_key=encryption_raw.encode("ascii"),
             database_path=os.getenv("N9N8_DATABASE_PATH", "data/9n8-solana.sqlite3"),
+            database_url=database_url,
+            require_postgres=require_postgres,
             jupiter_base_url=os.getenv("JUPITER_API_BASE_URL", "https://api.jup.ag/swap/v2").rstrip("/"),
             jupiter_api_key=os.getenv("JUPITER_API_KEY", "").strip(),
             jito_base_url=os.getenv("JITO_BLOCK_ENGINE_URL", "https://mainnet.block-engine.jito.wtf").rstrip("/"),
