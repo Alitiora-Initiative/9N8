@@ -303,6 +303,17 @@ class PostgresDatabase:
             int(telegram_id) if telegram_id is not None else None, event_type, detail[:1000],
         )
 
+    async def list_security_events(self, telegram_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        rows = await self._pool().fetch(
+            """SELECT event_type, detail, created_at
+               FROM public.n9n8_security_events
+               WHERE telegram_id=$1
+               ORDER BY id DESC
+               LIMIT $2""",
+            int(telegram_id), max(1, min(int(limit), 100)),
+        )
+        return [dict(row) for row in rows]
+
     async def set_payout_address(self, telegram_id: int, address: str) -> None:
         await self._pool().execute(
             """UPDATE public.n9n8_wallet_vault SET payout_address=$2, updated_at=now()
