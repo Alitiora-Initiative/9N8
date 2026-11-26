@@ -958,7 +958,7 @@ class AutonomousEngine:
         if current_balance <= 0:
             await self.db.close_position(position_id, 0, "balance_zero", 0, "", True)
             return
-        partial = reason in {"take_profit_1", "take_profit_2"}
+        partial = reason in {"take_profit_1", "take_profit_2", "manual_sell_50"}
         if reason == "take_profit_1":
             # First target: return half the position and keep the other half running.
             sell_amount, _retained = moon_bag_split(
@@ -968,6 +968,8 @@ class AutonomousEngine:
             # Second target: sell 25% of the remaining bag.
             sell_fraction = dec(config.get("take_profit_2_sell_pct", "25")) / Decimal(100)
             sell_amount = int((Decimal(current_balance) * sell_fraction).to_integral_value(rounding="ROUND_DOWN"))
+        elif reason == "manual_sell_50":
+            sell_amount = max(1, current_balance // 2)
         else:
             sell_amount = current_balance
         if sell_amount <= 0:
@@ -1162,5 +1164,22 @@ class AutonomousEngine:
             return
         await self._execute_exit(
             position_id, "manual_panic_sell", balance,
+            int(position["token_amount_raw"]), config,
+        )
+    async def sell_position_percent(self, telegram_id: int, position_id: int, percent: int) -> None:
+        if percent != 50:
+            raise ValueError("Only the explicit 50% partial-sell action is available here.")
+        position = await self.db.get_position(position_id, telegram_id)
+        if not position or position.get("status") != "open":
+            raise ValueError("Open live position not found.")
+        config = await self.db.get_settings(telegram_id)
+        address = await self.db.get_wallet_address(telegram_id)
+        if not address:
+            raise WalletError("No active wallet.")
+        actual_balance = await self.helius.token_balance_raw(address, str(position["mint"]))
+        if actual_balance <= 1:
+            raise ValueError("There is not enough token balance for a partial sell.")
+        await self._execute_exit(
+            position_id, "manual_sell_50", actual_balance,
             int(position["token_amount_raw"]), config,
         )
