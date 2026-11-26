@@ -178,7 +178,10 @@ def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton(text=f"Buy SOL: {config['buy_amount_sol']}", callback_data="settings:field:buy_amount_sol"),
-            InlineKeyboardButton(text=f"Slippage: {config['slippage_pct']}%", callback_data="settings:field:slippage_pct"),
+            InlineKeyboardButton(text=f"Buy Slippage: {config.get('buy_slippage_pct', config.get('slippage_pct','15'))}%", callback_data="settings:field:buy_slippage_pct"),
+        ],
+        [
+            InlineKeyboardButton(text=f"Sell Slippage: {config.get('sell_slippage_pct', config.get('slippage_pct','20'))}%", callback_data="settings:field:sell_slippage_pct"),
         ],
         [
             InlineKeyboardButton(text=f"Priority μLamports: {config['priority_fee_lamports']}", callback_data="settings:field:priority_fee_lamports"),
@@ -327,7 +330,8 @@ def _live_menu_keyboard(enabled: bool, ready: bool) -> InlineKeyboardMarkup:
 def _paper_settings_keyboard(config: dict) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=f"Buy {config.get('buy_amount_sol','0.05')} SOL", callback_data="paper:field:buy_amount_sol"),
-         InlineKeyboardButton(text=f"Slippage {config.get('slippage_pct','15')}%", callback_data="paper:field:slippage_pct")],
+         InlineKeyboardButton(text=f"Buy Slippage {config.get('buy_slippage_pct',config.get('slippage_pct','15'))}%", callback_data="paper:field:buy_slippage_pct")],
+        [InlineKeyboardButton(text=f"Sell Slippage {config.get('sell_slippage_pct',config.get('slippage_pct','20'))}%", callback_data="paper:field:sell_slippage_pct")],
         [InlineKeyboardButton(text=f"TP1 +{config.get('take_profit_pct','100')}%", callback_data="paper:field:take_profit_pct"),
          InlineKeyboardButton(text=f"TP2 +{config.get('take_profit_2_pct','300')}%", callback_data="paper:field:take_profit_2_pct")],
         [InlineKeyboardButton(text=f"TP2 sells {config.get('take_profit_2_sell_pct','25')}%", callback_data="paper:field:take_profit_2_sell_pct"),
@@ -1505,7 +1509,7 @@ async def cb_toggle_mev(callback: CallbackQuery) -> None:
 async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
     field = callback.data.split(":", 2)[2]
     allowed = {
-        "buy_amount_sol", "slippage_pct", "priority_fee_lamports",
+        "buy_amount_sol", "slippage_pct", "buy_slippage_pct", "sell_slippage_pct", "priority_fee_lamports",
         "jito_tip_lamports", "take_profit_pct", "stop_loss_pct",
         "max_hold_seconds", "moon_bag_pct", "daily_position_limit",
         "max_daily_drawdown_pct", "max_top10_concentration_pct",
@@ -1520,7 +1524,9 @@ async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(field=field)
     labels = {
         "buy_amount_sol": "Buy amount in SOL (for example 0.05)",
-        "slippage_pct": "Maximum slippage percentage (0.1 to 50)",
+        "slippage_pct": "Legacy slippage percentage (0.1 to 50)",
+        "buy_slippage_pct": "Maximum buy slippage percentage (0.1 to 50)",
+        "sell_slippage_pct": "Maximum sell slippage percentage (0.1 to 50)",
         "priority_fee_lamports": "Compute-unit price in micro-lamports (integer)",
         "jito_tip_lamports": "Jito tip in lamports (for example 1000000)",
         "take_profit_pct": "Take-profit percentage (for example 10)",
@@ -1549,6 +1555,8 @@ def _validated_setting(field: str, raw: str):
     ranges = {
         "buy_amount_sol": (Decimal("0.001"), Decimal("0.25")),
         "slippage_pct": (Decimal("0.1"), Decimal("50")),
+        "buy_slippage_pct": (Decimal("0.1"), Decimal("50")),
+        "sell_slippage_pct": (Decimal("0.1"), Decimal("50")),
         "priority_fee_lamports": (Decimal("0"), Decimal("100000000")),
         "jito_tip_lamports": (Decimal("0"), Decimal("100000000")),
         "take_profit_pct": (Decimal("0.5"), Decimal("500")),
