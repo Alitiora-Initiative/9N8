@@ -96,7 +96,7 @@ class Settings:
             trading_mode=mode,
             webapp_url=os.getenv("WEBAPP_URL", "").strip(),
             webapp_host=os.getenv("WEBAPP_HOST", "0.0.0.0").strip(),
-            webapp_port=int(os.getenv("WEBAPP_PORT", "8080")),
+            webapp_port=int(os.getenv("WEBAPP_PORT", os.getenv("PORT", "8080"))),
             pyth_api_key=os.getenv("PYTH_API_KEY", "").strip(),
             max_users=int(os.getenv("N9N8_MAX_USERS", "100")),
             max_position_sol=os.getenv("N9N8_MAX_POSITION_SOL", "0.25").strip(),
