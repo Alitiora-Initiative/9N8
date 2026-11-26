@@ -3,14 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import itertools
-import json
 import logging
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import Any
 
 import aiohttp
-from base58 import b58decode, b58encode
+from base58 import b58decode
 from solders.address_lookup_table_account import AddressLookupTable, AddressLookupTableAccount
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.hash import Hash
@@ -23,10 +21,9 @@ from solders.transaction import Transaction, VersionedTransaction
 
 from .config import Settings
 from .helius import HeliusClient
-from .math_engine import minimum_out, to_lamports
+from .math_engine import minimum_out
 
 logger = logging.getLogger(__name__)
-SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 class ExecutionError(RuntimeError):
@@ -44,17 +41,19 @@ class SwapResult:
 
 
 class JupiterJitoExecutor:
-    """Jupiter Swap API v2 custom-transaction route with optional Jito bundle.
+    """Jupiter Swap API v2 Router builder with optional atomic Jito submission."""
+    REGIONAL_ENDPOINTS = (
+        "https://amsterdam.mainnet.block-engine.jito.wtf",
+        "https://frankfurt.mainnet.block-engine.jito.wtf",
+        "https://ny.mainnet.block-engine.jito.wtf",
+        "https://singapore.mainnet.block-engine.jito.wtf",
+    )
 
-    The Router /build endpoint returns raw instructions. This class composes
-    them into a v0 transaction, adds an optional treasury profit transfer, and
-    submits the swap and Jito tip transactions as one atomic Jito bundle.
-    """
     def __init__(self, settings: Settings, helius: HeliusClient):
         self.settings, self.helius = settings, helius
         self._session: aiohttp.ClientSession | None = None
         self._ids = itertools.count(1)
-        self._tip_cache: list[str] = []
+        self._tip_accounts: list[str] = []
         self._tip_lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -66,31 +65,47 @@ class JupiterJitoExecutor:
             await self._session.close()
 
     def _headers(self) -> dict[str, str]:
-        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        result = {"Accept": "application/json"}
         if self.settings.jupiter_api_key:
-            headers["x-api-key"] = self.settings.jupiter_api_key
-        return headers
+            result["x-api-key"] = self.settings.jupiter_api_key
+        return result
 
     async def _jupiter_get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         await self.start()
         assert self._session
-        url = self.settings.jupiter_base_url + endpoint
         try:
-            async with self._session.get(url, params=params, headers=self._headers()) as response:
+            async with self._session.get(
+                self.settings.jupiter_base_url + endpoint,
+                params=params,
+                headers=self._headers(),
+            ) as response:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
-                    raise ExecutionError(f"Jupiter API rejected request ({response.status}): {str(data)[:220]}")
+                    raise ExecutionError(f"Jupiter HTTP {response.status}: {str(data)[:220]}")
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
             raise ExecutionError(f"Jupiter request failed: {type(exc).__name__}") from exc
         if not isinstance(data, dict):
             raise ExecutionError("Jupiter returned an unexpected response.")
+        if data.get("error"):
+            raise ExecutionError(f"Jupiter route error: {str(data['error'])[:180]}")
         return data
 
-    async def _jito_rpc(self, method: str, params: list[Any]) -> Any:
+    async def quote(self, input_mint: str, output_mint: str, amount_raw: int) -> dict[str, Any]:
+        if amount_raw <= 0:
+            raise ValueError("Quote amount must be positive.")
+        return await self._jupiter_get("/order", {
+            "inputMint": input_mint,
+            "outputMint": output_mint,
+            "amount": str(amount_raw),
+        })
+
+    async def _jito_rpc(
+        self, method: str, params: list[Any], base_url: str | None = None
+    ) -> Any:
         await self.start()
         assert self._session
         payload = {"jsonrpc": "2.0", "id": next(self._ids), "method": method, "params": params}
-        url = self.settings.jito_base_url + "/api/v1/bundles"
+        url = (base_url or self.settings.jito_base_url) + "/api/v1/bundles"
         try:
             async with self._session.post(url, json=payload) as response:
                 data = await response.json(content_type=None)
@@ -102,9 +117,9 @@ class JupiterJitoExecutor:
             raise ExecutionError(f"Jito {method} failed: {str(data['error'])[:200]}")
         return data.get("result")
 
-    async def _tip_accounts(self) -> list[Pubkey]:
+    async def _official_tip_accounts(self) -> list[Pubkey]:
         async with self._tip_lock:
-            if not self._tip_cache:
+            if not self._tip_accounts:
                 await self.start()
                 assert self._session
                 url = self.settings.jito_base_url + "/api/v1/getTipAccounts"
@@ -113,46 +128,63 @@ class JupiterJitoExecutor:
                 ) as response:
                     data = await response.json(content_type=None)
                     if response.status >= 400 or data.get("error"):
-                        raise ExecutionError("Could not retrieve official Jito tip accounts.")
-                    self._tip_cache = [str(x) for x in data.get("result", [])]
-                if not self._tip_cache:
+                        raise ExecutionError("Could not retrieve Jito tip accounts.")
+                self._tip_accounts = [str(x) for x in (data.get("result") or [])]
+                if not self._tip_accounts:
                     raise ExecutionError("Jito returned no tip accounts.")
-            return [Pubkey.from_string(x) for x in self._tip_cache]
+            return [Pubkey.from_string(x) for x in self._tip_accounts]
 
     async def _instructions(self, items: list[dict[str, Any]]) -> list[Instruction]:
-        output = []
+        result: list[Instruction] = []
         for item in items:
-            if not isinstance(item, dict):
-                continue
             try:
                 program = Pubkey.from_string(item["programId"])
                 data = b58decode(item["data"])
                 accounts = [
                     AccountMeta(
-                        Pubkey.from_string(meta["pubkey"]),
-                        bool(meta.get("isSigner", False)),
-                        bool(meta.get("isWritable", False)),
+                        Pubkey.from_string(x["pubkey"]),
+                        bool(x.get("isSigner", False)),
+                        bool(x.get("isWritable", False)),
                     )
-                    for meta in item.get("accounts", [])
+                    for x in item.get("accounts", [])
                 ]
             except Exception as exc:
-                raise ExecutionError("Jupiter returned an invalid instruction; transaction was not signed.") from exc
-            output.append(Instruction(program, data, accounts))
-        return output
+                raise ExecutionError("Jupiter returned an invalid instruction; refusing to sign.") from exc
+            result.append(Instruction(program, data, accounts))
+        return result
 
-    async def _lookup_tables(self, addresses: list[str]) -> list[AddressLookupTableAccount]:
+    async def _lookup_tables(self, tables_by_address: dict[str, Any]) -> list[AddressLookupTableAccount]:
         tables: list[AddressLookupTableAccount] = []
-        for address in addresses:
+        for address in tables_by_address:
             info = await self.helius.account_info(address, "base64")
             if not info:
-                raise ExecutionError(f"Address lookup table {address} is unavailable.")
+                raise ExecutionError(f"Address lookup table {address} could not be loaded.")
             try:
-                raw = base64.b64decode(info["data"][0], validate=True)
-                table = AddressLookupTable.deserialize(raw)
-                tables.append(AddressLookupTableAccount(Pubkey.from_string(address), list(table.addresses)))
+                import base64 as _base64
+                raw = _base64.b64decode(info["data"][0], validate=True)
+                decoded = AddressLookupTable.deserialize(raw)
+                tables.append(AddressLookupTableAccount(Pubkey.from_string(address), list(decoded.addresses)))
             except Exception as exc:
-                raise ExecutionError(f"Could not decode address lookup table {address}.") from exc
+                raise ExecutionError(f"Could not decode lookup table {address}.") from exc
         return tables
+
+    async def _submit_bundle(self, signed_transactions: list[str]) -> str:
+        endpoints = [self.settings.jito_base_url, *self.REGIONAL_ENDPOINTS]
+        last_error: Exception | None = None
+        for endpoint in dict.fromkeys(endpoints):
+            try:
+                result = await self._jito_rpc(
+                    "sendBundle", [signed_transactions, {"encoding": "base64"}], endpoint
+                )
+                if isinstance(result, str) and len(result) >= 16:
+                    return result
+                raise ExecutionError("Jito returned an invalid bundle identifier.")
+            except (ExecutionError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                last_error = exc
+                logger.warning("Jito submission failed at %s: %s", endpoint, type(exc).__name__)
+        raise ExecutionError(
+            f"All Jito regions failed ({type(last_error).__name__ if last_error else 'unknown'})."
+        )
 
     async def build_swap(
         self,
@@ -161,7 +193,7 @@ class JupiterJitoExecutor:
         output_mint: str,
         amount_raw: int,
         slippage_bps: int,
-        priority_fee_lamports: int,
+        priority_fee_micro_lamports: int,
         jito_tip_lamports: int = 0,
         treasury_fee_lamports: int = 0,
         use_jito: bool = True,
@@ -170,105 +202,96 @@ class JupiterJitoExecutor:
             raise ValueError("Swap amount must be positive.")
         if not 0 <= slippage_bps <= 5000:
             raise ValueError("Slippage must be between 0 and 50%.")
+        if priority_fee_micro_lamports < 0 or jito_tip_lamports < 0 or treasury_fee_lamports < 0:
+            raise ValueError("Fee amounts cannot be negative.")
         if self.settings.trading_mode == "live" and not self.settings.live_trading_enabled:
-            raise ExecutionError("Live trading is locked by environment configuration.")
-        try:
-            Pubkey.from_string(input_mint)
-            Pubkey.from_string(output_mint)
-        except Exception as exc:
-            raise ValueError("Invalid SPL mint address.") from exc
+            raise ExecutionError("Live trading is locked in the environment.")
+        if use_jito and jito_tip_lamports <= 0:
+            raise ExecutionError("MEV shield requires a positive Jito tip.")
         quote = await self._jupiter_get("/build", {
             "inputMint": input_mint,
             "outputMint": output_mint,
             "amount": str(amount_raw),
             "taker": str(wallet.pubkey()),
             "slippageBps": str(slippage_bps),
-            "computeUnitPriceMicroLamports": str(max(priority_fee_lamports, 0)),
+            "computeUnitPricePercentile": "veryHigh",
+            "forJitoBundle": "true" if use_jito else "false",
+            "maxBytes": "1180",
         })
-        if quote.get("error"):
-            raise ExecutionError(f"Jupiter could not build route: {str(quote['error'])[:200]}")
-        output_amount = int(quote.get("outAmount") or quote.get("otherAmountThreshold") or 0)
-        if output_amount <= 0:
-            raise ExecutionError("Jupiter did not return a positive expected output amount.")
-        min_out = int(quote.get("otherAmountThreshold") or minimum_out(output_amount, slippage_bps))
+        expected_out = int(quote.get("outAmount") or 0)
+        if expected_out <= 0:
+            raise ExecutionError("Jupiter returned no positive output quote.")
+        min_out = int(quote.get("otherAmountThreshold") or minimum_out(expected_out, slippage_bps))
         if min_out <= 0:
-            raise ExecutionError("Jupiter minimum output is zero; refusing to trade.")
+            raise ExecutionError("Jupiter minimum output is zero; refusing trade.")
+
         blockhash = Hash.from_string(await self.helius.recent_blockhash())
-        compute = await self._instructions(quote.get("computeBudgetInstructions", []))
-        setup = await self._instructions(quote.get("setupInstructions", []))
-        other = await self._instructions(quote.get("otherInstructions", []))
-        swap = await self._instructions([quote["swapInstruction"]]) if quote.get("swapInstruction") else []
-        cleanup = await self._instructions([quote["cleanupInstruction"]]) if quote.get("cleanupInstruction") else []
-        if not swap:
+        # The configured priority fee is expressed in micro-lamports per CU.
+        compute = [
+            set_compute_unit_limit(1_000_000),
+            set_compute_unit_price(priority_fee_micro_lamports),
+        ]
+        setup = await self._instructions(quote.get("setupInstructions") or [])
+        other = await self._instructions(quote.get("otherInstructions") or [])
+        swap_item = quote.get("swapInstruction")
+        if not swap_item:
             raise ExecutionError("Jupiter did not return a swap instruction.")
-        # The API's compute budget instructions are authoritative. If the response
-        # omits either compute instruction, add bounded defaults.
-        if not any(ix.program_id == Pubkey.from_string("ComputeBudget111111111111111111111111111111") for ix in compute):
-            compute = [set_compute_unit_limit(1_000_000), set_compute_unit_price(max(priority_fee_lamports, 0))] + compute
+        swap = await self._instructions([swap_item])
+        cleanup_item = quote.get("cleanupInstruction")
+        cleanup = await self._instructions([cleanup_item]) if cleanup_item else []
         instructions = compute + setup + other + swap + cleanup
         if treasury_fee_lamports:
-            if treasury_fee_lamports < 0:
-                raise ValueError("Treasury transfer cannot be negative.")
-            from .config import Settings
             instructions.append(transfer(TransferParams(
                 from_pubkey=wallet.pubkey(),
                 to_pubkey=Pubkey.from_string(self.settings.treasury),
                 lamports=treasury_fee_lamports,
             )))
-        alts = await self._lookup_tables(quote.get("addressesByLookupTableAddress", []))
+        alts = await self._lookup_tables(quote.get("addressesByLookupTableAddress") or {})
         try:
             message = MessageV0.try_compile(wallet.pubkey(), instructions, alts, blockhash)
             swap_tx = VersionedTransaction(message, [wallet])
         except Exception as exc:
-            raise ExecutionError(f"Could not compile/sign the Jupiter transaction: {type(exc).__name__}") from exc
+            raise ExecutionError(f"Transaction build/signing failed: {type(exc).__name__}") from exc
+        if len(bytes(swap_tx)) > 1232:
+            raise ExecutionError("Swap transaction exceeds Solana's 1232-byte packet limit.")
 
-        if not use_jito or jito_tip_lamports <= 0:
-            encoded = base64.b64encode(bytes(swap_tx)).decode("ascii")
+        if not use_jito:
             signature = await self.helius.rpc("sendTransaction", [
-                encoded,
+                base64.b64encode(bytes(swap_tx)).decode("ascii"),
                 {"encoding": "base64", "skipPreflight": False, "preflightCommitment": "confirmed", "maxRetries": 3},
             ])
             await self._confirm_signature(str(signature))
-            return SwapResult(str(signature), amount_raw, output_amount, min_out, None, "confirmed")
+            return SwapResult(str(signature), amount_raw, expected_out, min_out, None, "confirmed")
 
-        tips = await self._tip_accounts()
-        tip_destination = tips[int.from_bytes(__import__("os").urandom(2), "big") % len(tips)]
-        tip_message = Message.new_with_blockhash(
-            [transfer(TransferParams(
-                from_pubkey=wallet.pubkey(),
-                to_pubkey=tip_destination,
-                lamports=jito_tip_lamports,
-            ))],
-            wallet.pubkey(),
-            blockhash,
-        )
+        tip_accounts = await self._official_tip_accounts()
+        # Select from the official list using a cryptographically secure index.
+        import secrets
+        tip_destination = tip_accounts[secrets.randbelow(len(tip_accounts))]
+        tip_ix = transfer(TransferParams(
+            from_pubkey=wallet.pubkey(),
+            to_pubkey=tip_destination,
+            lamports=jito_tip_lamports,
+        ))
         tip_tx = Transaction.new_signed_with_payer(
-            [transfer(TransferParams(
-                from_pubkey=wallet.pubkey(),
-                to_pubkey=tip_destination,
-                lamports=jito_tip_lamports,
-            ))],
-            wallet.pubkey(),
-            [wallet],
-            blockhash,
+            [tip_ix], wallet.pubkey(), [wallet], blockhash,
         )
+        if len(bytes(tip_tx)) > 1232:
+            raise ExecutionError("Jito tip transaction exceeds Solana's packet limit.")
         signed = [
             base64.b64encode(bytes(swap_tx)).decode("ascii"),
             base64.b64encode(bytes(tip_tx)).decode("ascii"),
         ]
-        bundle_id = await self._jito_rpc("sendBundle", [signed, {"encoding": "base64"}])
-        if not isinstance(bundle_id, str) or len(bundle_id) < 16:
-            raise ExecutionError("Jito did not acknowledge the bundle with a valid bundle ID.")
+        bundle_id = await self._submit_bundle(signed)
         status = await self._wait_bundle(bundle_id)
         if status != "Landed":
             raise ExecutionError(
-                f"Jito bundle {bundle_id} was not confirmed as landed (status={status}). "
-                "Do not retry blindly; inspect the wallet and bundle status first."
+                f"Jito bundle was not confirmed as landed (status={status}, bundle={bundle_id}). "
+                "Do not submit a duplicate without checking wallet and bundle history."
             )
         signatures = await self._bundle_signatures(bundle_id)
         if not signatures:
-            raise ExecutionError("Jito says the bundle landed but did not return transaction signatures.")
-        return SwapResult(signatures[0], amount_raw, output_amount, min_out, bundle_id, "landed")
+            raise ExecutionError("Jito reports a landed bundle but returned no transaction signatures.")
+        return SwapResult(signatures[0], amount_raw, expected_out, min_out, bundle_id, "landed")
 
     async def _confirm_signature(self, signature: str, timeout: int = 60) -> None:
         deadline = asyncio.get_running_loop().time() + timeout
@@ -280,7 +303,7 @@ class JupiterJitoExecutor:
                 if status.get("confirmationStatus") in {"confirmed", "finalized"}:
                     return
             await asyncio.sleep(1)
-        raise ExecutionError("Swap submitted but confirmation timed out; do not submit a duplicate blindly.")
+        raise ExecutionError("Swap submitted but confirmation timed out; inspect before retrying.")
 
     async def _wait_bundle(self, bundle_id: str, timeout: int = 25) -> str:
         deadline = asyncio.get_running_loop().time() + timeout
@@ -296,9 +319,11 @@ class JupiterJitoExecutor:
         values = (result or {}).get("value") or []
         if values:
             item = values[0]
-            if item.get("err") and item["err"] not in ({"Ok": None}, None):
+            err = item.get("err")
+            if err and err not in ({"Ok": None}, None):
                 return "Failed"
-            if item.get("confirmation_status") in {"confirmed", "finalized"} or item.get("confirmationStatus") in {"confirmed", "finalized"}:
+            state = item.get("confirmation_status") or item.get("confirmationStatus")
+            if state in {"confirmed", "finalized"}:
                 return "Landed"
         return "Pending"
 
