@@ -328,6 +328,8 @@ def create_webapp(
                 f"job:{job['id']}",
             )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Withdrawal queued. The bot will send its result in Telegram."}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -374,6 +376,8 @@ def create_webapp(
                 f"job:{job['id']}",
             )
             return {"ok": True, "status": job["status"], "job_id": job["id"], "message": "Wallet rotation queued for the persistent worker."}
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
