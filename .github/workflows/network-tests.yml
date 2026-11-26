@@ -1,0 +1,22 @@
+name: 9N8 Telegram network selector tests
+on:
+  push:
+    branches: [main, feat/9n8-telegram-network-selector]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+
+jobs:
+  network-selector:
+    name: Telegram network selector and address validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Test network registry and address classification
+        run: deno test supabase/functions/telegram-bot-next/networks_test.ts
+      - name: Type-check Telegram Edge Function
+        run: deno check supabase/functions/telegram-bot-next/index.ts
