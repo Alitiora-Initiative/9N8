@@ -195,15 +195,29 @@ async function sendReportDocument(chatId: number, signedUrl: string, caption: st
     caption: Array.from(String(caption ?? "")).slice(0, 1024).join(""),
   });
 }
+const SOLANA_SNIPER_URL = "https://9n8-secure-connect.vercel.app/";
+
+function solanaPanelKeyboard(section = "dashboard"): Obj {
+  const labels: Record<string, string> = {
+    dashboard: "Open Solana Sniper", paper: "Open Paper Trading", live: "Open Live Controls",
+    positions: "Open Positions", settings: "Open Trading Settings", safety: "Open Safety Filters",
+  };
+  const safeSection = Object.prototype.hasOwnProperty.call(labels, section) ? section : "dashboard";
+  const url = SOLANA_SNIPER_URL + (safeSection === "dashboard" ? "" : "#" + safeSection);
+  return { inline_keyboard: [
+    [{ text: labels[safeSection], web_app: { url } }],
+    [{ text: "🏠 9N8 Main Menu", callback_data: "n8:services" }],
+  ] };
+}
+
 function mainKeyboard(): Obj {
   return { inline_keyboard: [
-    [{ text: "▶ Start / view live-market paper run", callback_data: "n8:paper_start_crypto" }],
-    [{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }],
-    [{ text: "Connect exchange · Binance / Bybit / OKX", web_app: { url: MINI_APP_URL } }],
-    [{ text: "Wallet watch / connect", web_app: { url: "https://9n8-secure-connect.vercel.app/connect?view=wallet" } }],
-    [{ text: "📚 Services & features", callback_data: "n8:services" }],
-    [{ text: "My exchange connections", callback_data: "n8:connections" }],
-    [{ text: "Live status / risk", callback_data: "n8:live_status" }],
+    [{ text: "🚀 OPEN SOLANA SNIPER CONTROL", web_app: { url: SOLANA_SNIPER_URL } }],
+    [{ text: "🧪 Paper Trading", callback_data: "n8:solana_paper" }, { text: "🔴 Live Controls", callback_data: "n8:solana_live" }],
+    [{ text: "📊 Positions", callback_data: "n8:solana_positions" }, { text: "⚙️ Trading Settings", callback_data: "n8:solana_settings" }],
+    [{ text: "🛡 Safety Filters", callback_data: "n8:solana_safety" }],
+    [{ text: "Connect Exchanges", web_app: { url: MINI_APP_URL } }, { text: "Wallet Watch", web_app: { url: SOLANA_SNIPER_URL + "#live" } }],
+    [{ text: "📚 Services", callback_data: "n8:services" }, { text: "📡 Live Status", callback_data: "n8:live_status" }],
   ] };
 }
 
