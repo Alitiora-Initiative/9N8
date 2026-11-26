@@ -82,11 +82,36 @@ The Daemon is a Vercel public-beta product and starts only on production deploym
 Requirements: Python 3.11+, a Telegram bot token, the one authorized Telegram numeric user ID, a Helius API key, a Solana treasury address, a stable Fernet encryption key, and durable database storage.
 
 1. Download this branch:
-   https://github.com/Alitiora-Initiative/9N8/tree/feature/solana-telegram-sniper
+   https://github.com/Alitiora-Initiative/9N8/tree/feature/solana-live-controls-completion
 2. Run `setup_windows.bat`.
 3. Open `.env` and fill in the required values below.
 4. Start the bot with `start_9n8.bat`.
 5. Send `/start` to your Telegram bot.
+
+For a manual install without the batch file:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+Copy-Item .env.example .env
+# Edit .env and set TELEGRAM_BOT_TOKEN, AUTHORIZED_USER_ID,
+# HELIUS_API_KEY, MASTER_TREASURY_ADDRESS, ENCRYPTION_MASTER_KEY.
+python -m src.n9n8.main
+```
+
+On macOS/Linux:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env and set the same required values.
+python -m src.n9n8.main
+```
 
 Required environment settings:
 
