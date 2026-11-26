@@ -273,6 +273,8 @@ class AutonomousEngine:
         self._position_tasks.clear()
         self._wallet_watch_tasks.clear()
         self._enabled_users.clear()
+        if self.paper_engine is not None:
+            await self.paper_engine.shutdown()
 
     async def _on_candidate(self, candidate: LaunchCandidate) -> None:
         if self._stopping or not self._enabled_users:
@@ -291,7 +293,12 @@ class AutonomousEngine:
                         if paper_source in {"both", source}:
                             await self.paper_engine.on_candidate(telegram_id, candidate)
 
-                    if not self.live_enabled or not await self.db.mode_enabled(telegram_id, "live"):
+                    live_mode_on = (
+                        await self.paper_engine.store.mode_enabled(telegram_id, "live")
+                        if self.paper_engine is not None
+                        else bool((await self.db.get_settings(telegram_id)).get("live_enabled", False))
+                    )
+                    if not self.live_enabled or not live_mode_on:
                         continue
                     user_row = await self.db.get_user(telegram_id)
                     if not user_row or not user_row.get("solana_address"):
