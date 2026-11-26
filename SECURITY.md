@@ -56,3 +56,11 @@
 - Worker jobs that may have submitted an on-chain transaction but lost confirmation are marked `unknown`, never blindly retried. The operator/user must inspect the transaction signature and wallet state before retrying.
 - Vercel Daemons use ephemeral containers. Never store private keys, receipts, queue state or position state on the daemon filesystem.
 - Live execution stays locked until post-confirmation net-PnL accounting, restart/reconciliation, key-backup recovery, worker failover, and small-value mainnet execution have been independently verified.
+
+
+## Queue wake-ups and job execution
+
+- Vercel Queues messages contain only a wake-up kind and a Neon row identifier. They never contain wallet secrets, private keys, destinations, token amounts or signed transactions.
+- Neon `n9n8_worker_jobs` is the authoritative job record. The Daemon claims rows with `FOR UPDATE SKIP LOCKED`, then records completion, failure or unknown status. Vercel Queue delivery is at-least-once; queue redelivery must never cause a second trade, withdrawal or rotation.
+- If Vercel OIDC is unavailable to the Daemon process, the worker must not poll anonymously or fall back to rapid Neon polling. Keep the Daemon stopped until a valid queue credential is configured and tested.
+- When no Telegram users are enabled, launch subscriptions stop and the worker makes no periodic Neon queries. Mini App WebSocket telemetry still reads Neon while a client is connected, so open dashboards use database compute.
