@@ -1,0 +1,132 @@
+name: 9N8 wallet stack security upgrade
+on:
+  push:
+    branches: [fix/9n8-wallet-stack-security-upgrade]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+  statuses: write
+
+jobs:
+  web-wallet-stack:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Build, audit and lock wallet dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package.json
+      - name: Install locked wallet dependencies (or generate the initial lockfile)
+        working-directory: web
+        shell: bash
+        run: |
+          npm install --no-audit --no-fund
+      - name: Verify a clean lockfile install
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Smoke test Solana HTTP JSON-RPC with resolved Jayson
+        working-directory: web
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { createServer } from "node:http";
+          import { Connection } from "@solana/web3.js";
+
+          const server = createServer((req, res) => {
+            let body = "";
+            req.setEncoding("utf8");
+            req.on("data", (chunk) => { body += chunk; });
+            req.on("end", () => {
+              const request = JSON.parse(body);
+              const result = request.method === "getVersion"
+                ? { "solana-core": "1.18.0", "feature-set": 123 }
+                : null;
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+            });
+          });
+
+          await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+          const address = server.address();
+          if (!address || typeof address === "string") throw new Error("Local JSON-RPC test server failed to bind");
+          try {
+            const connection = new Connection(`http://127.0.0.1:${address.port}`, "confirmed");
+            const version = await connection.getVersion();
+            assert.equal(version["solana-core"], "1.18.0");
+            console.log("Solana web3.js HTTP JSON-RPC compatibility smoke test passed.");
+          } finally {
+            await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+          }
+          NODE
+      - name: Build Mini App
+        working-directory: web
+        run: npm run build
+      - name: Audit complete dependency graph
+        working-directory: web
+        shell: bash
+        run: |
+          npm audit --json > npm-audit-report.json || true
+          node --input-type=commonjs <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("npm-audit-report.json", "utf8"));
+          const v = report.metadata?.vulnerabilities ?? {};
+          console.log("Web dependency audit:", JSON.stringify(v));
+          const entries = Object.entries(report.vulnerabilities ?? {});
+          for (const [name, item] of entries) {
+            console.log(item.severity.toUpperCase(), name + "@" + item.range,
+              "fix=" + JSON.stringify(item.fixAvailable ?? false),
+              "direct=" + String(item.isDirect));
+          }
+          const summary = [
+            "## Web dependency audit after wallet-stack upgrade",
+            "",
+            `Total: ${v.total ?? 0} · Critical: ${v.critical ?? 0} · High: ${v.high ?? 0} · Moderate: ${v.moderate ?? 0} · Low: ${v.low ?? 0}`,
+            "",
+            "The full npm dependency graph is reported, including optional integrations. No automatic major-version overrides are applied by this workflow.",
+            "",
+            ...entries.map(([name, item]) => `- **${item.severity.toUpperCase()}** \`${name}@${item.range}\` — fix: ${JSON.stringify(item.fixAvailable ?? false)} · direct: ${item.isDirect}`)
+          ];
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\n") + "\n");
+          NODE
+      - name: Commit tested package lock to the PR branch
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          PR_BRANCH: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        working-directory: web
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(web): lock wallet stack dependencies"
+            git push origin "HEAD:${PR_BRANCH}"
+          else
+            echo "package-lock.json is already up to date."
+          fi
+          LOCK_SHA="$(git rev-parse HEAD)"
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPOSITORY}/statuses/${LOCK_SHA}" \
+            -d '{"state":"success","description":"Clean npm ci install, Vite build and RPC smoke test passed; audit report uploaded.","context":"9N8 wallet lockfile clean install"}'
+      - name: Upload dependency lockfile and audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 9n8-wallet-stack-lock-and-audit
+          path: |
+            web/package-lock.json
+            web/npm-audit-report.json
+          if-no-files-found: warn
+          retention-days: 7
