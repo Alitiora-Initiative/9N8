@@ -8,6 +8,7 @@ import {
 import type { OkxRegion } from "./okx-live.ts";
 import {
   assessBinancePermissions,
+  detectBinanceMarkets,
   assessBybitPermissions,
   assessOkxPermissions,
   normalizeRequestedMarkets,
@@ -24,7 +25,7 @@ import {
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
 import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
-import { TRIAL_DRYTEST_URL, trialDrytestKeyboard, trialDrytestText } from "./drytest.ts";
+
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
 const REOWN_PROJECT_ID = (Deno.env.get("REOWN_PROJECT_ID") ?? "").trim();
@@ -237,7 +238,6 @@ function networkSelectorKeyboard(): Obj {
 function mainKeyboard(): Obj {
   return { inline_keyboard: [
     [{ text: "🚀 OPEN SOLANA SNIPER CONTROL", web_app: { url: SOLANA_SNIPER_URL } }],
-    [{ text: "🧪 Trial Drytest · Virtual Only", web_app: { url: TRIAL_DRYTEST_URL } }],
     [{ text: "🧪 Paper Trading", callback_data: "n8:solana_paper" }, { text: "🔴 Live Controls", callback_data: "n8:solana_live" }],
     [{ text: "📊 Positions", callback_data: "n8:solana_positions" }, { text: "⚙️ Trading Settings", callback_data: "n8:solana_settings" }],
     [{ text: "🛡 Safety Filters", callback_data: "n8:solana_safety" }],
@@ -332,40 +332,73 @@ async function binanceSignedGet(c: Credentials, path: string): Promise<any> {
   });
 }
 
-async function validateBinanceLive(c: Credentials, markets: ExchangeMarket[]) {
+async function validateBinanceLive(c: Credentials, requestedMarkets?: ExchangeMarket[]) {
+  // Read Binance API-key scopes and account-level product activation separately.
   const restrictions = await binanceSignedGet(c, "/sapi/v1/account/apiRestrictions");
-  const assessment = assessBinancePermissions(restrictions, markets);
+  const accountInfo = await binanceSignedGet(c, "/sapi/v1/account/info");
 
-  // Read the Spot account only when the user requested a Spot-family product.
-  // Futures-only API keys are not forced to carry Spot permissions.
-  let account: any = null;
-  if (markets.some((market) => ["spot", "margin", "stocks"].includes(market))) {
-    account = await binanceSignedGet(c, "/api/v3/account");
-    if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
-      throw new Error("exchange_credentials_rejected");
-    }
-    if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
+  // Empty selection is intentional: inspect every product the key and account allow.
+  // These are signed GET requests only; no order endpoint is called.
+  assessBinancePermissions(restrictions, []);
+  const detected = detectBinanceMarkets(restrictions, accountInfo);
+  const markets = requestedMarkets ?? detected.selectedMarkets;
+  const assessment = assessBinancePermissions(restrictions, markets);
+  const unavailable = markets.filter((market) => !detected.selectedMarkets.includes(market));
+  if (unavailable.length) {
+    throw new Error("binance_selected_product_not_enabled:" + unavailable.join(","));
   }
 
+  let spotAccount: any = null;
+  if (markets.some((market) => ["spot", "margin"].includes(market))) {
+    spotAccount = await binanceSignedGet(c, "/api/v3/account");
+    if (!Array.isArray(spotAccount?.balances)) throw new Error("binance_spot_account_read_failed");
+    // canWithdraw on /api/v3/account is an account capability, not an API-key scope.
+    // Key-level withdrawal and transfer flags were checked by apiRestrictions above.
+  }
+
+  const label = markets.length
+    ? "Binance LIVE · " + markets.map((market) => market.toUpperCase()).join(" + ")
+    : "Binance LIVE · READ-ONLY PERMISSION DISCOVERY";
   return {
-    label: "Binance LIVE · " + markets.map((market) => market.toUpperCase()).join(" + "),
+    label,
     permissions: {
-      read: true,
-      withdraw: false,
-      internalTransfer: false,
-      universalTransfer: false,
-      ...assessment,
-      spotAndMarginTrading: restrictions.enableSpotAndMarginTrading === true,
-      marginApiPermission: restrictions.enableMargin === true,
-      futuresApiPermission: restrictions.enableFutures === true,
-      optionsApiPermission: restrictions.enableVanillaOptions === true,
-      portfolioMarginTrading: restrictions.enablePortfolioMarginTrading === true,
-      ipRestricted: restrictions.ipRestrict === true,
-      stockProductsNote: markets.includes("stocks")
-        ? "Uses the same Spot & Margin & Stock Trading API-key permission. Product availability depends on your Binance region and eligible instruments."
-        : undefined,
+      read: restrictions.enableReading === true,
+      withdraw: restrictions.enableWithdrawals === true,
+      internalTransfer: restrictions.enableInternalTransfer === true,
+      universalTransfer: restrictions.permitsUniversalTransfer === true,
+      selectedMarkets: markets,
+      detectedMarkets: detected.selectedMarkets,
+      marketPermissions: {
+        ...detected.marketPermissions,
+        ...assessment.marketPermissions,
+      },
+      permissionSource: "Binance signed /sapi/v1/account/apiRestrictions + /sapi/v1/account/info",
+      keyPermissions: {
+        reading: restrictions.enableReading === true,
+        withdrawals: restrictions.enableWithdrawals === true,
+        internalTransfer: restrictions.enableInternalTransfer === true,
+        universalTransfer: restrictions.permitsUniversalTransfer === true,
+        spotAndMarginTrading: restrictions.enableSpotAndMarginTrading === true,
+        margin: restrictions.enableMargin === true,
+        futures: restrictions.enableFutures === true,
+        vanillaOptions: restrictions.enableVanillaOptions === true,
+        portfolioMarginTrading: restrictions.enablePortfolioMarginTrading === true,
+        fixApiTrade: restrictions.enableFixApiTrade === true,
+        fixReadOnly: restrictions.enableFixReadOnly === true,
+        ipRestricted: restrictions.ipRestrict === true,
+      },
+      accountProducts: detected.accountProducts,
+      futuresScopeNote: "USDⓈ-M and COIN-M share Binance's enableFutures API-key permission and isFutureEnabled account flag; these responses do not expose separate USDⓈ-M and COIN-M toggles.",
+      portfolioMarginStatus: restrictions.enablePortfolioMarginTrading === true &&
+        detected.accountProducts.portfolioMarginEnabled
+          ? "verified"
+          : restrictions.enablePortfolioMarginTrading === true
+          ? "binance_account_product_not_enabled"
+          : "api_key_permission_not_enabled",
+      stockProductsNote: "The Spot/Margin/Stock API-key flag is shared. 9N8 does not report legacy stock products as a verified market.",
+      liveOrdersEnabled: false,
     },
-    accountHint: account?.uid == null ? null : "Binance UID · " + mask(String(account.uid)),
+    accountHint: spotAccount?.uid == null ? null : "Binance UID · " + mask(String(spotAccount.uid)),
   };
 }
 
@@ -435,7 +468,7 @@ async function validateExchange(
   provider: Provider,
   environment: string,
   credentials: Credentials,
-  markets: ExchangeMarket[],
+  markets?: ExchangeMarket[],
 ) {
   if (!credentials.apiKey || !credentials.apiSecret) throw new Error("api_key_and_secret_required");
   if (credentials.apiKey.length > 512 || credentials.apiSecret.length > 1024) {
@@ -443,6 +476,7 @@ async function validateExchange(
   }
   if (environment !== "live") throw new Error("unsupported_provider_environment");
   if (provider === "binance") return await validateBinanceLive(credentials, markets);
+  if (!markets?.length) throw new Error("select_at_least_one_market");
   if (provider === "bybit") return await validateBybit(credentials, markets);
   if (provider === "okx") return await validateOKX(credentials, markets);
   throw new Error("unsupported_provider");
@@ -647,14 +681,16 @@ function connectHtml(): Response {
 "<!doctype html>",
 "<html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'><meta name='theme-color' content='#111827'>",
 "<title>9N8 Secure Connections</title><script src='https://telegram.org/js/telegram-web-app.js?67'></script>",
-"<style>:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0b1220;color:#edf2f7}*{box-sizing:border-box}body{margin:0;padding:18px;max-width:620px;margin:auto}h1{font-size:24px;margin:8px 0}p{color:#aab7ca;line-height:1.45}.card{background:#131e30;border:1px solid #26364d;border-radius:16px;padding:16px;margin:14px 0}label{display:block;font-size:13px;color:#afbdd0;margin:12px 0 6px}input,select{width:100%;padding:13px;border-radius:10px;border:1px solid #3a4b63;background:#0e1726;color:#fff;font-size:15px}button{width:100%;padding:14px;border:0;border-radius:10px;background:#2dbb80;color:#061a12;font-weight:700;font-size:15px;margin-top:15px}button:disabled{opacity:.55}small{color:#9aabc1}.warn{color:#f3c978}.status{min-height:24px;margin-top:10px;white-space:pre-wrap}.hidden{display:none}.pill{display:inline-block;background:#203b36;color:#8ce1bb;padding:5px 9px;border-radius:20px;font-size:12px}</style></head><body>",
+"<style>:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#0b1220;color:#edf2f7}*{box-sizing:border-box}body{margin:0;padding:18px;max-width:620px;margin:auto}h1{font-size:24px;margin:8px 0}p{color:#aab7ca;line-height:1.45}.card{background:#131e30;border:1px solid #26364d;border-radius:16px;padding:16px;margin:14px 0}label{display:block;font-size:13px;color:#afbdd0;margin:12px 0 6px}input,select{width:100%;padding:13px;border-radius:10px;border:1px solid #3a4b63;background:#0e1726;color:#fff;font-size:15px}input[type=checkbox]{width:auto;margin-right:8px}fieldset{border:1px solid #3a4b63;border-radius:10px;margin:14px 0;padding:8px 12px}fieldset label{margin:7px 0}button{width:100%;padding:14px;border:0;border-radius:10px;background:#2dbb80;color:#061a12;font-weight:700;font-size:15px;margin-top:15px}button:disabled{opacity:.55}small{color:#9aabc1}.warn{color:#f3c978}.status{min-height:24px;margin-top:10px;white-space:pre-wrap}.hidden{display:none}.pill{display:inline-block;background:#203b36;color:#8ce1bb;padding:5px 9px;border-radius:20px;font-size:12px}</style></head><body>",
 "<div class='pill'>9N8 · Secure connection</div><h1>Connect your accounts</h1>",
-"<p>Exchange credentials are sent directly over HTTPS to 9N8, verified against the selected demo/testnet account, and stored in encrypted server-side storage. Never enter credentials in Telegram chat.</p>",
-"<div class='card'><h2>Exchange connection</h2><p class='warn'>Demo/testnet only. This page cannot submit trades and does not request withdrawal access.</p>",
-"<form id='exchangeForm' autocomplete='off'><label for='provider'>Exchange</label><select id='provider' required><option value='okx'>OKX Demo Trading</option><option value='binance'>Binance Spot Testnet</option><option value='bybit'>Bybit Demo Trading</option></select>",
-"<label for='environment'>Environment</label><select id='environment' required><option value='demo'>Demo</option></select>",
-"<label for='apiKey'>API key</label><input id='apiKey' type='password' autocomplete='off' required maxlength='512'>",
-"<label for='apiSecret'>API secret</label><input id='apiSecret' type='password' autocomplete='off' required maxlength='1024'>",
+"<p>Production API credentials are sent over HTTPS to 9N8 and stored encrypted. This step reads API-key permissions and account product settings only; it does not place orders, transfer assets or withdraw funds. Never enter credentials in Telegram chat.</p>",
+"<div class='card'><h2>Exchange API connection</h2><p class='warn'>Production API permission discovery only. Use a key with Reading enabled and withdrawals / internal transfers disabled. This connection form never submits orders.</p>",
+"<form id='exchangeForm' autocomplete='off'><label for='provider'>Exchange</label><select id='provider' required><option value='binance'>Binance Production API</option><option value='bybit'>Bybit Production API</option><option value='okx'>OKX Production API</option></select>",
+"<label for='environment'>Environment</label><select id='environment' required><option value='live'>Production / Live API (read settings only)</option></select>",
+  "<div id='binanceAutoRow'><label><input id='autoDetectMarkets' type='checkbox' checked> Auto-detect all products enabled on this Binance API key and account</label><small>Reads Spot, Margin, USDⓈ-M Futures, COIN-M Futures, Options and Portfolio Margin flags.</small></div>",
+  "<fieldset id='marketFieldset'><legend>Products to verify (Bybit / OKX, or manual Binance selection)</legend><label><input type='checkbox' name='markets' value='spot' checked> Spot</label><label><input type='checkbox' name='markets' value='margin'> Margin</label><label><input type='checkbox' name='markets' value='futures_usdm'> USDⓈ-M Futures</label><label><input type='checkbox' name='markets' value='futures_coinm'> COIN-M Futures</label><label><input type='checkbox' name='markets' value='options'> Options</label></fieldset>",
+"<label for='apiKey'>Production API key</label><input id='apiKey' type='password' autocomplete='off' required maxlength='512'>",
+"<label for='apiSecret'>Production API secret</label><input id='apiSecret' type='password' autocomplete='off' required maxlength='1024'>",
 "<div id='passphraseRow'><label for='passphrase'>OKX API passphrase</label><input id='passphrase' type='password' autocomplete='off' maxlength='256'></div>",
 "<button id='exchangeButton' type='submit'>Verify and save connection</button><div id='exchangeStatus' class='status' role='status'></div></form></div>",
 "<div class='card'><h2>Wallet address watch</h2><p>Link a public address for future read-only portfolio monitoring. This does not connect to your wallet or authorize transactions. Never enter a recovery phrase or private key.</p>",
@@ -664,9 +700,10 @@ function connectHtml(): Response {
 "<button id='walletButton' type='submit'>Save watch-only address</button><div id='walletStatus' class='status' role='status'></div></form></div>",
 "<small>Closing this page clears the form. Connections belong only to the Telegram account that opened this page.</small>",
 "<script>(function(){const tg=window.Telegram&&window.Telegram.WebApp;const exchangeForm=document.getElementById('exchangeForm');const walletForm=document.getElementById('walletForm');const provider=document.getElementById('provider');const environment=document.getElementById('environment');const passphraseRow=document.getElementById('passphraseRow');const passphrase=document.getElementById('passphrase');const exchangeStatus=document.getElementById('exchangeStatus');const walletStatus=document.getElementById('walletStatus');if(tg){tg.ready();tg.expand()}",
-"function showProvider(){const v=provider.value;environment.innerHTML='';const o=document.createElement('option');o.value=v==='binance'?'testnet':'demo';o.textContent=v==='binance'?'Spot Testnet':'Demo Trading';environment.appendChild(o);passphraseRow.classList.toggle('hidden',v!=='okx');passphrase.required=v==='okx'}provider.addEventListener('change',showProvider);showProvider();",
+"const autoDetect=document.getElementById('autoDetectMarkets');const marketFieldset=document.getElementById('marketFieldset');const binanceAutoRow=document.getElementById('binanceAutoRow');",
+  "function showProvider(){const isBinance=provider.value==='binance';environment.innerHTML='';const o=document.createElement('option');o.value='live';o.textContent='Production / Live API (read settings only)';environment.appendChild(o);passphraseRow.classList.toggle('hidden',provider.value!=='okx');passphrase.required=provider.value==='okx';binanceAutoRow.classList.toggle('hidden',!isBinance);if(!isBinance)autoDetect.checked=false;marketFieldset.classList.toggle('hidden',isBinance&&autoDetect.checked)}provider.addEventListener('change',showProvider);autoDetect.addEventListener('change',showProvider);showProvider();",
 "async function post(data){if(!tg||!tg.initData)throw new Error('Open this page from the 9N8 Telegram private chat.');const r=await fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign({initData:tg.initData},data))});const j=await r.json().catch(()=>({}));if(!r.ok||j.ok!==true)throw new Error(j.message||'Request failed.');return j}",
-"exchangeForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('exchangeButton');button.disabled=true;exchangeStatus.textContent='Verifying credentials with the demo/testnet account…';const credentials={apiKey:document.getElementById('apiKey').value.trim(),apiSecret:document.getElementById('apiSecret').value.trim()};if(provider.value==='okx')credentials.passphrase=passphrase.value;try{const j=await post({action:'connect_exchange',provider:provider.value,environment:environment.value,credentials:credentials});exchangeStatus.textContent='Connected: '+j.label+'. The secret was saved securely and will not be displayed again.';exchangeForm.reset();showProvider()}catch(err){exchangeStatus.textContent=err.message||'Connection failed.'}finally{credentials.apiKey='';credentials.apiSecret='';credentials.passphrase='';document.getElementById('apiKey').value='';document.getElementById('apiSecret').value='';passphrase.value='';button.disabled=false}});",
+"exchangeForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('exchangeButton');button.disabled=true;exchangeStatus.textContent='Reading API-key and account product permissions…';const credentials={apiKey:document.getElementById('apiKey').value.trim(),apiSecret:document.getElementById('apiSecret').value.trim()};if(provider.value==='okx')credentials.passphrase=passphrase.value;const selected=Array.from(document.querySelectorAll('input[name=markets]:checked')).map(x=>x.value);const auto=provider.value==='binance'&&autoDetect.checked;if(!auto&&selected.length===0){exchangeStatus.textContent='Select at least one product to inspect.';button.disabled=false;return}try{const payload={action:'connect_exchange',provider:provider.value,environment:environment.value,credentials:credentials,autoDetectMarkets:auto};if(!auto)payload.requestedMarkets=selected;const j=await post(payload);const p=j.permissions||{};const detected=p.detectedMarkets||j.selectedMarkets||[];const k=p.keyPermissions||{};const a=p.accountProducts||{};const flag=v=>v===true?'ON':v===false?'OFF':'unknown';const mk=p.marketPermissions||{};const productSettings='\\nAPI-key flags: Read '+flag(k.reading)+', IP restriction '+flag(k.ipRestricted)+', Spot/Margin '+flag(k.spotAndMarginTrading)+', Margin '+flag(k.margin)+', Futures '+flag(k.futures)+', Options '+flag(k.vanillaOptions)+', Portfolio Margin '+flag(k.portfolioMarginTrading)+', Withdrawals '+flag(k.withdrawals)+', Internal Transfer '+flag(k.internalTransfer)+', Universal Transfer '+flag(k.universalTransfer)+', FIX Trade '+flag(k.fixApiTrade)+', FIX Read-only '+flag(k.fixReadOnly)+'.'+'\\nAccount products: Margin '+flag(a.marginEnabled)+', Futures '+flag(a.futuresEnabled)+', Options '+flag(a.optionsEnabled)+', Portfolio Margin '+flag(a.portfolioMarginEnabled)+'.'+'\\nDetected product checks: Spot '+String(mk.spot||'not detected')+', Margin '+String(mk.margin||'not detected')+', USD-M Futures '+String(mk.futures_usdm||'not detected')+', COIN-M Futures '+String(mk.futures_coinm||'not detected')+', Options '+String(mk.options||'not detected')+', Portfolio Margin '+String(p.portfolioMarginStatus||'not detected')+'.'+'\\n'+String(p.futuresScopeNote||'');exchangeStatus.textContent='Connected: '+j.label+'\\nDetected products: '+(detected.length?detected.join(', '):'No trading product scopes; read-only settings saved.')+(provider.value==='binance'?productSettings:'')+'\\nWithdrawal and transfer scopes are rejected. No order was placed.';exchangeForm.reset();autoDetect.checked=true;showProvider()}catch(err){exchangeStatus.textContent=err.message||'Connection failed.'}finally{credentials.apiKey='';credentials.apiSecret='';credentials.passphrase='';document.getElementById('apiKey').value='';document.getElementById('apiSecret').value='';passphrase.value='';button.disabled=false}});",
 "walletForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('walletButton');button.disabled=true;walletStatus.textContent='Saving public address…';const selected=document.getElementById('chain');const parts=selected.value.split(':');try{const j=await post({action:'watch_wallet',provider:document.getElementById('walletProvider').value,namespace:parts[0],chainId:parts.slice(1).join(':'),network:selected.selectedOptions[0].textContent,address:document.getElementById('address').value.trim()});walletStatus.textContent='Saved '+j.address+' as a watch-only address. No wallet access or signing was granted.';document.getElementById('address').value=''}catch(err){walletStatus.textContent=err.message||'Could not save address.'}finally{button.disabled=false}})})();</script></body></html>"
   ].join("\n");
   return new Response(html, {
@@ -743,27 +780,26 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     apiKey: clean(credentials?.apiKey, 512),
     apiSecret: clean(credentials?.apiSecret, 1024),
   };
-  const markets = Array.isArray(connection.permissions?.selectedMarkets)
-    ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
-    : ["spot" as ExchangeMarket];
-  const validation = await validateBinanceLive(exchangeCredentials, markets);
+  // Re-read all Binance product permissions on every refresh. Never assume the
+  // connection's original market list is still current after an API-key change.
+  const validation = await validateBinanceLive(exchangeCredentials);
+  const detectedMarkets = validation.permissions.detectedMarkets as ExchangeMarket[];
 
-  if (!markets.some((market) => ["spot", "margin", "stocks"].includes(market))) {
+  if (!detectedMarkets.some((market) => ["spot", "margin"].includes(market))) {
     return {
       connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
       balances: [],
       permissions: validation.permissions,
       updatedAt: new Date().toISOString(),
       liveOrdersEnabled: false,
-      note: "Your selected permissions are for derivatives/options. This balance panel currently displays Spot balances only.",
+      note: "Binance key permissions and account product settings were refreshed. This panel displays Spot balances only; detected Futures, Margin and Options access is listed separately.",
     };
   }
 
   const account = await binanceSignedGet(exchangeCredentials, "/api/v3/account");
-  if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
-    throw new Error("exchange_credentials_rejected");
+  if (!Array.isArray(account?.balances)) {
+    throw new Error("binance_spot_account_read_failed");
   }
-  if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
   const balances = account.balances
     .map((entry: any) => ({
       asset: String(entry.asset ?? ""),
@@ -1806,7 +1842,10 @@ async function handleMiniApp(body: any): Promise<Response> {
       const provider = String(body.provider) as Provider;
       const environment = String(body.environment);
       if (!["binance", "bybit", "okx"].includes(provider)) throw new Error("unsupported_provider");
-      const requestedMarkets = normalizeRequestedMarkets(body?.requestedMarkets);
+      const requestedMarkets = provider === "binance" &&
+        (body?.autoDetectMarkets === true || !Array.isArray(body?.requestedMarkets))
+        ? undefined
+        : normalizeRequestedMarkets(body?.requestedMarkets);
       const regionValue = clean(body?.credentials?.region, 16);
       const bybitRegionValue = clean(body?.credentials?.bybitRegion, 20);
       const credentials: Credentials = {
@@ -1827,7 +1866,7 @@ async function handleMiniApp(body: any): Promise<Response> {
         ok: true,
         label: validation.label,
         connectionId: id,
-        selectedMarkets: requestedMarkets,
+        selectedMarkets: validation.permissions.selectedMarkets ?? requestedMarkets ?? [],
         permissions: validation.permissions,
         accountHint: validation.accountHint ?? null,
         liveOrdersEnabled: false,
@@ -1925,6 +1964,8 @@ async function handleMiniApp(body: any): Promise<Response> {
       backend_not_configured: "The secure backend is not configured yet. No credentials were saved.",
       select_at_least_one_market: "Choose at least one market to connect.",
       exchange_market_not_supported: "One of the selected markets is not supported by this connection.",
+      binance_spot_account_read_failed: "Binance accepted the permission check but did not return the Spot account balances. Confirm the key has Reading access and IP restrictions allow 9N8.",
+      binance_selected_product_not_enabled: "One or more selected Binance products are not enabled on both the API key and the Binance account. Use automatic detection or enable the required product in Binance.",
       binance_spot_margin_stock_permission_required: "On Binance, turn on “Spot & Margin & Stock Trading” for this API key.",
       binance_margin_permission_required: "Your Binance key does not have Margin access enabled.",
       binance_futures_permission_required: "Your Binance key does not have Futures access enabled.",
@@ -1966,13 +2007,16 @@ async function handleMiniApp(body: any): Promise<Response> {
       swap_previous_request_unresolved: "A previous Jupiter quote or transaction is unresolved. Refresh its status before creating another swap.",
       verified_solana_wallet_required: "Connect and verify your Solana-mainnet wallet before using the Jupiter terminal."
     };
-    return response({ ok: false, message: messages[code] ?? "Could not complete the request. Check the provider and try again." }, 400);
+    const friendly = code.startsWith("binance_selected_product_not_enabled:")
+      ? messages.binance_selected_product_not_enabled
+      : messages[code] ?? "Could not complete the request. Check the provider and try again.";
+    return response({ ok: false, message: friendly }, 400);
   }
 }
 async function listConnections(userId: string): Promise<string> {
   const rows = await db("n8_exchange_connections?select=provider,environment,label,status&user_id=eq." +
     encodeURIComponent(userId) + "&status=neq.revoked&order=created_at.desc");
-  if (!Array.isArray(rows) || rows.length === 0) return "No exchange accounts connected yet. Use /connect to link Binance Spot or OKX Spot.";
+  if (!Array.isArray(rows) || rows.length === 0) return "No exchange accounts connected yet. Use /connect to inspect Binance API permissions across Spot, Margin, USDⓈ-M and COIN-M Futures, Options, or connect Bybit / OKX.";
   return "YOUR EXCHANGE CONNECTIONS\n\n" + rows.map((v: any) =>
     String(v.provider).toUpperCase() + " · " + v.environment + "\n" + String(v.label ?? "Account") + " · " + v.status
   ).join("\n\n");
@@ -2481,7 +2525,6 @@ async function setBotProfileAndCommands(): Promise<void> {
         { command: "safety", description: "Open anti-rug safety filters" },
         { command: "services", description: "See all 9N8 services" },
         { command: "simulator", description: "Open the exchange live-price simulator" },
-        { command: "drytest", description: "Open no-money trial drytest" },
         { command: "connect", description: "Connect Binance, Bybit or OKX" },
         { command: "connections", description: "See your connected accounts" },
         { command: "wallets", description: "See linked wallets" },
@@ -2519,7 +2562,6 @@ function serviceOverview(): string {
     "GET STARTED",
     "/sniper — open the Solana Sniper dashboard",
     "/solana_paper — open isolated virtual Solana trading",
-    "/drytest — open the no-money trial simulator",
     "/solana_live — open gated live-wallet controls",
     "/networks — show supported and unavailable chains",
     "/positions — open Paper and Live positions",
@@ -2613,7 +2655,6 @@ async function handleMessage(update: any) {
       "/approvals — pending trade proposals\n" +
       "/sniper — open complete Solana Sniper dashboard\n" +
       "/solana_paper — separate virtual Solana trading\n" +
-      "/drytest — public-market trial drytest (virtual only)\n" +
       "/solana_live — gated Solana live-wallet controls\n" +
        "/networks — show supported and unavailable chains\n" +
       "/positions — open Paper and Live positions\n" +
@@ -2713,8 +2754,10 @@ async function handleMessage(update: any) {
       solanaPanelKeyboard("paper"));
     return;
   }
-    if (command === "/drytest" || command === "/simulator") {
-    await send(chatId, trialDrytestText(), trialDrytestKeyboard());
+  if (command === "/simulator") {
+    await send(chatId, "LIVE-MARKET PAPER SIMULATOR\\n\\nReal Binance Spot candles, ticker and order-book data. Paper orders use virtual cash, visible depth VWAP and estimated fees; no real order is submitted.", {
+      inline_keyboard: [[{ text: "📈 Open 9N8 simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
+    });
     return;
   }
   if (command === "/approvals") {

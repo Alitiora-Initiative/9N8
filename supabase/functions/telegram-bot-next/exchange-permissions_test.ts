@@ -1,5 +1,6 @@
 import {
   assessBinancePermissions,
+  detectBinanceMarkets,
   assessBybitPermissions,
   assessOkxPermissions,
   normalizeRequestedMarkets,
@@ -199,4 +200,108 @@ Deno.test("OKX keeps stock products outside this exchange connector", () => {
   try { assessOkxPermissions({ perm: "trade", acctLv: "3" }, ["stocks"]); }
   catch (error) { rejected = error instanceof Error && error.message === "okx_stock_products_not_supported_by_this_connection"; }
   if (!rejected) throw new Error("Unsupported OKX stock products were accepted");
+});
+
+
+Deno.test("Binance auto-detects every enabled product, not Spot only", () => {
+  const detected = detectBinanceMarkets({
+    enableReading: true,
+    enableWithdrawals: false,
+    enableInternalTransfer: false,
+    permitsUniversalTransfer: false,
+    enableSpotAndMarginTrading: true,
+    enableMargin: true,
+    enableFutures: true,
+    enableVanillaOptions: true,
+    enablePortfolioMarginTrading: true,
+  }, {
+    isMarginEnabled: true,
+    isFutureEnabled: true,
+    isOptionsEnabled: true,
+    isPortfolioMarginRetailEnabled: true,
+  });
+  const expected = "spot,margin,futures_usdm,futures_coinm,options";
+  if (detected.selectedMarkets.join(",") !== expected) {
+    throw new Error("Expected all supported enabled Binance products, got " + detected.selectedMarkets.join(","));
+  }
+  if (detected.marketPermissions.stocks !== "not_connected_by_9n8_shared_spot_margin_permission_only") {
+    throw new Error("Stock products must not be inferred from the shared key flag");
+  }
+});
+
+Deno.test("Binance read-only API key is accepted for permission discovery without trading scopes", () => {
+  const detected = detectBinanceMarkets({
+    enableReading: true,
+    enableWithdrawals: false,
+    enableInternalTransfer: false,
+    permitsUniversalTransfer: false,
+    enableSpotAndMarginTrading: false,
+    enableMargin: false,
+    enableFutures: false,
+    enableVanillaOptions: false,
+    enablePortfolioMarginTrading: false,
+  }, {
+    isMarginEnabled: true,
+    isFutureEnabled: true,
+    isOptionsEnabled: true,
+    isPortfolioMarginRetailEnabled: true,
+  });
+  if (detected.selectedMarkets.length !== 0) {
+    throw new Error("Read-only key must not be misreported as trade-enabled");
+  }
+  if (detected.marketPermissions.spot !== "api_key_permission_not_enabled" ||
+      detected.marketPermissions.futures_usdm !== "api_key_permission_not_enabled" ||
+      detected.marketPermissions.options !== "api_key_permission_not_enabled") {
+    throw new Error("Missing key scopes were not reported accurately");
+  }
+});
+
+Deno.test("Binance auto-detection requires both key permission and account product activation", () => {
+  const detected = detectBinanceMarkets({
+    enableReading: true,
+    enableWithdrawals: false,
+    enableInternalTransfer: false,
+    permitsUniversalTransfer: false,
+    enableSpotAndMarginTrading: true,
+    enableMargin: true,
+    enableFutures: true,
+    enableVanillaOptions: true,
+  }, {
+    isMarginEnabled: false,
+    isFutureEnabled: true,
+    isOptionsEnabled: false,
+  });
+  if (detected.selectedMarkets.join(",") !== "spot,futures_usdm,futures_coinm") {
+    throw new Error("Disabled account products were incorrectly marked available");
+  }
+  if (detected.marketPermissions.margin !== "binance_account_product_not_enabled" ||
+      detected.marketPermissions.options !== "binance_account_product_not_enabled") {
+    throw new Error("Account-level disabled product was not identified");
+  }
+});
+
+Deno.test("Binance permission discovery still rejects withdrawal and transfer scopes", () => {
+  for (const patch of [
+    { enableWithdrawals: true },
+    { enableInternalTransfer: true },
+    { permitsUniversalTransfer: true },
+  ]) {
+    let rejected = false;
+    try {
+      assessBinancePermissions({
+        enableReading: true,
+        enableWithdrawals: false,
+        enableInternalTransfer: false,
+        permitsUniversalTransfer: false,
+        enableSpotAndMarginTrading: false,
+        enableMargin: false,
+        enableFutures: false,
+        enableVanillaOptions: false,
+        ...patch,
+      }, []);
+    } catch {
+      rejected = true;
+    }
+    if (!rejected) throw new Error("Permission discovery accepted a funds-movement scope");
+  }
 });

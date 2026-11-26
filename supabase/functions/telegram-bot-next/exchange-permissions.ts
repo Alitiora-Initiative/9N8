@@ -29,6 +29,66 @@ export type MarketPermissionResult = {
   permissionSource: string;
 };
 
+export type BinanceProductDetection = {
+  selectedMarkets: ExchangeMarket[];
+  marketPermissions: Record<string, string>;
+  accountProducts: {
+    marginEnabled: boolean;
+    futuresEnabled: boolean;
+    optionsEnabled: boolean;
+    portfolioMarginEnabled: boolean;
+  };
+};
+
+/**
+ * Detect product access from both the API-key permission response and account-level
+ * feature flags. This is an inspection result only; it never places an order.
+ */
+export function detectBinanceMarkets(
+  restrictions: Record<string, unknown>,
+  accountInfo: Record<string, unknown>,
+): BinanceProductDetection {
+  const hasSpotKey = restrictions.enableSpotAndMarginTrading === true;
+  const hasMarginKey = hasSpotKey && restrictions.enableMargin === true;
+  const hasFuturesKey = restrictions.enableFutures === true;
+  const hasOptionsKey = restrictions.enableVanillaOptions === true;
+
+  const accountProducts = {
+    marginEnabled: accountInfo.isMarginEnabled === true,
+    futuresEnabled: accountInfo.isFutureEnabled === true,
+    optionsEnabled: accountInfo.isOptionsEnabled === true,
+    portfolioMarginEnabled: accountInfo.isPortfolioMarginRetailEnabled === true,
+  };
+
+  const checks: Record<ExchangeMarket, { key: boolean; account: boolean }> = {
+    spot: { key: hasSpotKey, account: true },
+    margin: { key: hasMarginKey, account: accountProducts.marginEnabled },
+    stocks: { key: false, account: false },
+    futures_usdm: { key: hasFuturesKey, account: accountProducts.futuresEnabled },
+    futures_coinm: { key: hasFuturesKey, account: accountProducts.futuresEnabled },
+    options: { key: hasOptionsKey, account: accountProducts.optionsEnabled },
+  };
+
+  const selectedMarkets = EXCHANGE_MARKETS.filter((market) =>
+    market !== "stocks" && checks[market].key && checks[market].account
+  );
+  const marketPermissions: Record<string, string> = {};
+  for (const market of EXCHANGE_MARKETS) {
+    if (market === "stocks") {
+      marketPermissions[market] = "not_connected_by_9n8_shared_spot_margin_permission_only";
+      continue;
+    }
+    const check = checks[market];
+    marketPermissions[market] = check.key && check.account
+      ? "verified"
+      : !check.key
+      ? "api_key_permission_not_enabled"
+      : "binance_account_product_not_enabled";
+  }
+
+  return { selectedMarkets, marketPermissions, accountProducts };
+}
+
 export function assessBinancePermissions(
   restrictions: Record<string, unknown>,
   markets: ExchangeMarket[],
