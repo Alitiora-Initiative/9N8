@@ -406,6 +406,7 @@ class Database:
         # SQLite secure_delete plus WAL checkpoint/VACUUM is best-effort database hygiene,
         # not a promise of forensic erasure on SSD, cloud snapshots, or filesystem backups.
         async with aiosqlite.connect(self.path) as db:
-            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            checkpoint = await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            await checkpoint.fetchall()
+            await checkpoint.close()
             await db.execute("VACUUM")
-            await db.commit()
