@@ -886,11 +886,12 @@ async function liveBybitAccount(user: any, userId: string): Promise<Obj> {
     p_telegram_user_id: Number(user.id),
     p_connection_id: connection.id,
   });
+  const regionValue = String(stored?.bybitRegion ?? "global");
   const credentials: Credentials = {
     apiKey: clean(stored?.apiKey, 512),
     apiSecret: clean(stored?.apiSecret, 1024),
-    bybitRegion: (["global", "eea", "uae", "turkey", "kazakhstan", "georgia", "indonesia", "hongkong", "japan"].includes(String(stored?.bybitRegion ?? "global"))
-      ? String(stored.bybitRegion) : "global") as BybitRegion,
+    bybitRegion: (["global", "eea", "uae", "turkey", "kazakhstan", "georgia", "indonesia", "hongkong", "japan"].includes(regionValue)
+      ? regionValue : "global") as BybitRegion,
   };
   const markets = Array.isArray(connection.permissions?.selectedMarkets)
     ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
