@@ -212,6 +212,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         return
     svc = _svc()
     await state.clear()
+    existing = await svc.db.get_user(message.from_user.id)
+    if not existing and await svc.db.user_count() >= svc.settings.max_users:
+        await message.answer("9N8 is currently at its onboarding capacity. Please contact the operator.")
+        return
     await svc.db.ensure_user(message.from_user.id)
     await message.answer(
         await _dashboard_text(message.from_user.id),
