@@ -46,6 +46,7 @@ PAPER_DEFAULT_SETTINGS: dict[str, Any] = {
     "launchpad": "both",
     "buy_amount_sol": "0.05",
     "slippage_pct": "15",
+    "sell_slippage_pct": "20",
     "priority_fee_lamports": 10000,
     "jito_tip_lamports": 2000000,
     "take_profit_pct": "100",
