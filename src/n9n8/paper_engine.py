@@ -38,6 +38,7 @@ class PaperTradingEngine:
         self.max_position_sol = dec(max_position_sol)
         self.jupiter_api_key = jupiter_api_key
         self._tasks: dict[int, asyncio.Task] = {}
+        self._session_tasks: dict[int, asyncio.Task] = {}
         self._quote_lock = asyncio.Lock()
         self._last_quote_at = 0.0
         self._stopping = False
@@ -48,12 +49,28 @@ class PaperTradingEngine:
         account = await self.store.create_account(telegram_id, bankroll)
         await self.store.set_mode_enabled(telegram_id, "paper", True)
         await self.store.touch_day(telegram_id, datetime.now(timezone.utc).date().isoformat())
+        session = self._session_tasks.get(int(telegram_id))
+        if session is None or session.done():
+            self._session_tasks[int(telegram_id)] = asyncio.create_task(
+                self._practice_day_heartbeat(int(telegram_id)),
+                name=f"9n8-paper-practice-days-{telegram_id}",
+            )
         await self._resume_positions(telegram_id)
         return account
 
+    async def _practice_day_heartbeat(self, telegram_id: int) -> None:
+        while not self._stopping and await self.store.mode_enabled(telegram_id, "paper"):
+            await self.store.touch_day(telegram_id, datetime.now(timezone.utc).date().isoformat())
+            await asyncio.sleep(60)
+
     async def stop_user(self, telegram_id: int) -> None:
-        # Stop new paper entries. Existing virtual positions remain monitored.
+        # Stop new paper entries and stop accruing additional practice days.
+        # Existing virtual positions remain monitored.
         await self.store.set_mode_enabled(telegram_id, "paper", False)
+        task = self._session_tasks.pop(int(telegram_id), None)
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def _resume_positions(self, telegram_id: int) -> None:
         for position in await self.store.positions(telegram_id):
@@ -68,12 +85,13 @@ class PaperTradingEngine:
 
     async def shutdown(self) -> None:
         self._stopping = True
-        tasks = list(self._tasks.values())
+        tasks = list(self._tasks.values()) + list(self._session_tasks.values())
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
+        self._session_tasks.clear()
 
     async def _quote(self, input_mint: str, output_mint: str, amount_raw: int) -> dict[str, Any]:
         if amount_raw <= 0:
@@ -104,7 +122,7 @@ class PaperTradingEngine:
         config = await self.store.settings(telegram_id, "paper")
         selected = str(config.get("launchpad", "both")).lower()
         source = candidate.launchpad.lower()
-        if selected not in {"both", source}:
+        if selected != "both" and selected != source and not (selected == "raydium" and source.startswith("raydium")):
             return
         if await self.store.has_open_mint(telegram_id, candidate.mint):
             return
