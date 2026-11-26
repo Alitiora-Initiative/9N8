@@ -322,15 +322,22 @@ async function validateBinanceLive(c: Credentials, markets: ExchangeMarket[]) {
   };
 }
 
-async function bybitSignedGet(c: Credentials, path: string): Promise<any> {
+async function bybitSignedGet(
+  c: Credentials,
+  path: string,
+  params: Record<string, string> = {},
+): Promise<any> {
   const timestamp = String(Date.now());
   const recvWindow = "5000";
-  const queryString = "";
+  const queryString = new URLSearchParams(
+    Object.entries(params).sort(([a], [b]) => a.localeCompare(b)),
+  ).toString();
   const signature = hex(await mac(
     enc.encode(c.apiSecret),
     timestamp + c.apiKey + recvWindow + queryString,
   ));
-  return await jsonGet("https://api.bybit.com" + path, {
+  const url = "https://api.bybit.com" + path + (queryString ? "?" + queryString : "");
+  return await jsonGet(url, {
     "X-BAPI-API-KEY": c.apiKey,
     "X-BAPI-SIGN": signature,
     "X-BAPI-SIGN-TYPE": "2",
@@ -674,16 +681,27 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     apiKey: clean(credentials?.apiKey, 512),
     apiSecret: clean(credentials?.apiSecret, 1024),
   };
-  await validateBinanceLive(exchangeCredentials);
-  const account = await binanceSignedRequest<any>(
-    exchangeCredentials,
-    "GET",
-    "/api/v3/account",
-    { omitZeroBalances: "true" },
-  );
+  const markets = Array.isArray(connection.permissions?.selectedMarkets)
+    ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
+    : ["spot" as ExchangeMarket];
+  const validation = await validateBinanceLive(exchangeCredentials, markets);
+
+  if (!markets.some((market) => ["spot", "margin", "stocks"].includes(market))) {
+    return {
+      connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
+      balances: [],
+      permissions: validation.permissions,
+      updatedAt: new Date().toISOString(),
+      liveOrdersEnabled: false,
+      note: "Your selected permissions are for derivatives/options. This balance panel currently displays Spot balances only.",
+    };
+  }
+
+  const account = await binanceSignedGet(exchangeCredentials, "/api/v3/account");
   if (!Array.isArray(account?.balances) || account?.canTrade !== true) {
     throw new Error("exchange_credentials_rejected");
   }
+  if (account?.canWithdraw === true) throw new Error("withdraw_permission_detected");
   const balances = account.balances
     .map((entry: any) => ({
       asset: String(entry.asset ?? ""),
@@ -700,8 +718,6 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     connectionId: connection.id,
     quoteAsset: "USDT",
     availableQuote: quote.free,
-    // USDT is the exchange's quote unit for this release; it is valued at its USD peg
-    // for risk gating and the exact USDT quantity is preserved alongside this USD proxy.
     availableQuoteUsdValuation: "USDT nominal USD peg at 1.00",
     balances,
     accountCanTrade: true,
@@ -730,8 +746,11 @@ async function liveBinanceAccount(user: any, userId: string): Promise<Obj> {
     connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
     balances,
     quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, availableUsdApprox: quote.free },
+    permissions: validation.permissions,
     accountCanTrade: true,
     updatedAt: observedAt,
+    liveOrdersEnabled: false,
+    note: "Spot balances only. Your other selected permissions are listed separately; no order was placed.",
   };
 }
 async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
@@ -746,27 +765,59 @@ async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
     p_connection_id: connection.id,
   });
   const regionValue = String(stored?.region ?? "global");
-  const credentials = {
+  const credentials: Credentials = {
     apiKey: clean(stored?.apiKey, 512),
     apiSecret: clean(stored?.apiSecret, 1024),
     passphrase: clean(stored?.passphrase, 256),
     region: (["global", "us", "eea"].includes(regionValue) ? regionValue : "global") as OkxRegion,
   };
-  const validation = await validateOkxSpotRead(credentials);
-  const quote = validation.quoteBalance;
+  const markets = Array.isArray(connection.permissions?.selectedMarkets)
+    ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
+    : ["spot" as ExchangeMarket];
+  const validation = await validateOKX(credentials, markets);
+  const origin = OKX_API_ORIGINS[credentials.region ?? "global"];
+  const timestampResponse = await fetch(origin + "/api/v5/public/time", { cache: "no-store" });
+  const timePayload = await timestampResponse.json().catch(() => ({}));
+  const milliseconds = Number(timePayload?.data?.[0]?.ts);
+  if (!timestampResponse.ok || String(timePayload?.code ?? "") !== "0" || !Number.isFinite(milliseconds)) {
+    throw new Error("exchange_temporarily_unavailable");
+  }
+  const timestamp = new Date(milliseconds).toISOString();
+  const path = "/api/v5/account/balance";
+  const signature = b64(await mac(
+    enc.encode(credentials.apiSecret),
+    timestamp + "GET" + path,
+  ));
+  const balancePayload = await jsonGet(origin + path, {
+    "OK-ACCESS-KEY": credentials.apiKey,
+    "OK-ACCESS-SIGN": signature,
+    "OK-ACCESS-TIMESTAMP": timestamp,
+    "OK-ACCESS-PASSPHRASE": credentials.passphrase ?? "",
+    accept: "application/json",
+  });
+  if (String(balancePayload?.code ?? "") !== "0" || !balancePayload?.data?.[0]) {
+    throw new Error("exchange_credentials_rejected");
+  }
+  const account = balancePayload.data[0];
+  const details = Array.isArray(account.details) ? account.details : [];
+  const balances = details.map((entry: any) => ({
+    asset: String(entry.ccy ?? ""),
+    free: Number(entry.availBal ?? 0),
+    locked: Math.max(0, Number(entry.eq ?? 0) - Number(entry.availBal ?? 0)),
+  })).filter((entry: any) => Number.isFinite(entry.free) && Number.isFinite(entry.locked) &&
+    entry.free + entry.locked > 0).slice(0, 100);
+  const quote = balances.find((entry: any) => entry.asset === "USDT") ?? { free: 0, locked: 0 };
   const observedAt = new Date().toISOString();
   const evidence = {
-    source: "okx_signed_spot_account",
+    source: "okx_signed_account_balance",
     connectionId: connection.id,
-    region: validation.region,
+    region: credentials.region,
     quoteAsset: "USDT",
     availableQuote: quote.free,
     availableQuoteUsdValuation: "USDT nominal USD peg at 1.00",
-    balances: validation.balances,
-    accountLevel: validation.permissions.accountLevel,
-    spotTradeScope: "not_verified",
-    withdrawalScope: "not_verified",
-    transferScope: "not_verified",
+    balances,
+    accountLevel: account.acctLv ?? null,
+    permissions: validation.permissions,
     observedAt,
   };
   await db("n8_live_balance_checks", "POST", {
@@ -778,7 +829,7 @@ async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
     available_quote: quote.free,
     available_quote_usd: quote.free,
     observed_at: observedAt,
-    source: "okx_signed_spot_account",
+    source: "okx_signed_account_balance",
     evidence_hash: await sha256Hex(canonicalJson(evidence)),
     evidence,
   }, "return=minimal");
@@ -787,16 +838,72 @@ async function liveOkxAccount(user: any, userId: string): Promise<Obj> {
     quote_asset: "USDT",
     available_quote: quote.free,
     observed_at: observedAt,
-    permission_scopes: "read validated; trade/withdraw/transfer not verified",
+    permission_scopes: "checked from signed account config",
   });
   return {
     connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
-    balances: validation.balances,
-    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, equity: quote.equity, availableUsdApprox: quote.free },
+    balances,
+    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, equity: Number(account.totalEq ?? 0), availableUsdApprox: quote.free },
     permissions: validation.permissions,
-    accountEquityUsdApprox: validation.accountEquityUsd,
+    accountEquityUsdApprox: Number(account.totalEq ?? 0),
     updatedAt: observedAt,
     liveOrdersEnabled: false,
+    note: "Account balances only. OKX product availability still depends on your account mode and supported instruments; no order was placed.",
+  };
+}
+
+async function liveBybitAccount(user: any, userId: string): Promise<Obj> {
+  const rows = await db(
+    "n8_exchange_connections?select=id,label,account_hint,permissions,last_validated_at&user_id=eq." +
+      encodeURIComponent(userId) + "&provider=eq.bybit&environment=eq.live&status=eq.active&order=created_at.desc&limit=1"
+  );
+  const connection = Array.isArray(rows) ? rows[0] : null;
+  if (!connection?.id) throw new Error("bybit_live_connection_missing");
+  const stored = await db("rpc/n8_get_exchange_credentials", "POST", {
+    p_telegram_user_id: Number(user.id),
+    p_connection_id: connection.id,
+  });
+  const credentials: Credentials = {
+    apiKey: clean(stored?.apiKey, 512),
+    apiSecret: clean(stored?.apiSecret, 1024),
+  };
+  const markets = Array.isArray(connection.permissions?.selectedMarkets)
+    ? normalizeRequestedMarkets(connection.permissions.selectedMarkets)
+    : ["spot" as ExchangeMarket];
+  const validation = await validateBybit(credentials, markets);
+  const payload = await bybitSignedGet(credentials, "/v5/account/wallet-balance", { accountType: "UNIFIED" });
+  if (Number(payload?.retCode) !== 0 || !payload?.result?.list?.[0]) {
+    throw new Error("bybit_unified_account_balance_unavailable");
+  }
+  const account = payload.result.list[0];
+  const coins = Array.isArray(account.coin) ? account.coin : [];
+  const balances = coins.map((entry: any) => {
+    const total = Number(entry.walletBalance ?? 0);
+    const free = Number(entry.availableToWithdraw ?? entry.transferBalance ?? entry.walletBalance ?? 0);
+    return {
+      asset: String(entry.coin ?? ""),
+      free,
+      locked: Math.max(0, total - free),
+    };
+  }).filter((entry: any) => Number.isFinite(entry.free) && Number.isFinite(entry.locked) &&
+    entry.free + entry.locked > 0).slice(0, 100);
+  const quote = balances.find((entry: any) => entry.asset === "USDT") ?? { free: 0, locked: 0 };
+  const observedAt = new Date().toISOString();
+  await audit(userId, null, "bybit_balance_refreshed", "ok", {
+    connection_id: connection.id,
+    quote_asset: "USDT",
+    available_quote: quote.free,
+    observed_at: observedAt,
+  });
+  return {
+    connection: { id: connection.id, label: connection.label, accountHint: connection.account_hint },
+    balances,
+    quoteBalance: { asset: "USDT", free: quote.free, locked: quote.locked, availableUsdApprox: quote.free },
+    accountEquityUsdApprox: Number(account.totalEquity ?? 0),
+    permissions: validation.permissions,
+    updatedAt: observedAt,
+    liveOrdersEnabled: false,
+    note: "Bybit Unified Account balances only. Margin mode must be enabled in Bybit where required; no order was placed.",
   };
 }
 
@@ -1620,6 +1727,7 @@ async function handleMiniApp(body: any): Promise<Response> {
       "live_pause",
       "binance_account",
       "okx_account",
+      "bybit_account",
       "wallet_revoke",
       "jupiter_swap_status",
       "jupiter_trigger_history",
@@ -1684,8 +1792,12 @@ async function handleMiniApp(body: any): Promise<Response> {
     }
     if (body.action === "binance_account") {
       return response({ ok: true, ...(await liveBinanceAccount(user, row.id)) });
-    }    if (body.action === "okx_account") {
+    }
+    if (body.action === "okx_account") {
       return response({ ok: true, ...(await liveOkxAccount(user, row.id)) });
+    }
+    if (body.action === "bybit_account") {
+      return response({ ok: true, ...(await liveBybitAccount(user, row.id)) });
     }
     if (body.action === "wallet_challenge") return await createWalletChallenge(user, body);
     if (body.action === "wallet_verify") return await verifyAndSaveWallet(user, body);
@@ -1720,7 +1832,7 @@ async function handleMiniApp(body: any): Promise<Response> {
           public_address: mask(String(w.public_address)),
         })) : [],
         liveTradingEnabled: false,
-        message: "Binance Spot and OKX Spot accounts can be linked for account access. OKX read access is validated separately from trade and withdrawal scopes. Real orders remain locked until each connector passes release checks and each exact order has owner approval. A verified wallet still requires a separate owner-controlled trade permission.",
+        message: "Binance, Bybit and OKX API connections can be checked for the markets selected by each user. Account links do not place orders. Real exchange trading remains locked until each connector is separately certified and each exact order has owner approval.",
       });
     }
     if (body.action === "live_status") {
