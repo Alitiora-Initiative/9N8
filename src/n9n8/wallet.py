@@ -49,6 +49,19 @@ class WalletManager:
         await self.db.security_event(telegram_id, "wallet_created", "New Solana wallet generated.")
         return str(keypair.pubkey()), secret
 
+
+    async def import_wallet(self, telegram_id: int, secret_b58: str) -> str:
+        try:
+            keypair = Keypair.from_bytes(b58decode(secret_b58.strip()))
+        except Exception as exc:
+            raise WalletError("The supplied base58 private key is invalid.") from exc
+        await self.db.ensure_user(telegram_id)
+        if await self.db.get_wallet_address(telegram_id):
+            raise WalletError("A wallet is already associated with this Telegram account.")
+        await self.db.save_wallet(telegram_id, str(keypair.pubkey()), secret_b58.strip())
+        await self.db.security_event(telegram_id, "wallet_imported", "A user-provided Solana key was imported.")
+        return str(keypair.pubkey())
+
     async def keypair_for(self, telegram_id: int) -> Keypair:
         encoded = await self.db.load_secret(telegram_id)
         try:
@@ -219,25 +232,66 @@ class WalletManager:
         ))
         return await self._send(telegram_id, instructions)
 
-    async def rotate_wallet(self, telegram_id: int) -> tuple[str, str]:
-        """Retire the old encrypted key and create a fresh inactive wallet.
+    async def rotate_wallet(self, telegram_id: int, payout_address: str) -> tuple[str, str, int, str]:
+        """Pay wipe fee and return the complete old-wallet SOL balance in one tx, then rotate.
 
-        This does not assert forensic erasure from storage media or backups.
-        The caller must stop the user's engine and settle the old wallet first.
+        Caller must stop the user engine and ensure open positions are closed.
         """
-        old_address = await self.db.get_wallet_address(telegram_id)
-        if old_address:
-            old_balance = await self.balance(telegram_id)
-            fee = usd_to_lamports("1.00", await self.oracle.sol_usd(force=True))
-            if old_balance > 0:
-                if old_balance < fee + 10_000:
-                    raise WalletError("Old wallet does not have enough SOL to cover the $1 wipe fee.")
-                # Pay only the termination fee; user must withdraw remaining funds beforehand.
-                await self.transfer_usd_fee(
-                    telegram_id, "1.00", "wipe", f"wipe:{telegram_id}:{old_address}"
-                )
+        if await self.db.active_positions(telegram_id):
+            raise WalletError("Close all positions before deleting and rotating this wallet.")
+        try:
+            recipient = Pubkey.from_string(payout_address)
+        except Exception as exc:
+            raise WalletError("Payout address is not a valid Solana public key.") from exc
+        keypair = await self.keypair_for(telegram_id)
+        source = keypair.pubkey()
+        balance = await self.helius.balance_lamports(str(source))
+        fee_lamports = usd_to_lamports("1.00", await self.oracle.sol_usd(force=True))
+        if balance <= fee_lamports + 5000:
+            raise WalletError("Old wallet cannot cover the $1 wipe fee and network fee.")
+        blockhash = await self._latest_hash()
+        fee_ix = transfer(TransferParams(
+            from_pubkey=source, to_pubkey=self.treasury, lamports=fee_lamports
+        ))
+        provisional_payout = balance - fee_lamports - 5000
+        payout_ix = transfer(TransferParams(
+            from_pubkey=source, to_pubkey=recipient, lamports=provisional_payout
+        ))
+        provisional_message = Message.new_with_blockhash(
+            [fee_ix, payout_ix], source, blockhash
+        )
+        fee_quote = await self.helius.rpc(
+            "getFeeForMessage",
+            [base64.b64encode(bytes(provisional_message)).decode("ascii"), {"commitment": "confirmed"}],
+        )
+        network_fee = int((fee_quote or {}).get("value") or 5000)
+        payout_lamports = balance - fee_lamports - network_fee
+        if payout_lamports <= 0:
+            raise WalletError("No positive payout remains after the wipe and network fees.")
+        payout_ix = transfer(TransferParams(
+            from_pubkey=source, to_pubkey=recipient, lamports=payout_lamports
+        ))
+        tx = Transaction.new_signed_with_payer(
+            [fee_ix, payout_ix], source, [keypair], blockhash
+        )
+        signature = await self.helius.rpc("sendTransaction", [
+            base64.b64encode(bytes(tx)).decode("ascii"),
+            {
+                "encoding": "base64", "skipPreflight": False,
+                "preflightCommitment": "confirmed", "maxRetries": 3,
+            },
+        ])
+        await self.confirm(str(signature))
+        old_address = str(source)
+        await self.db.record_fee(
+            telegram_id, "wipe", fee_lamports, str(signature),
+            f"wipe:{telegram_id}:{old_address}",
+        )
         await self.db.delete_wallet_secret(telegram_id)
         new_address, new_secret = await self.create_wallet(telegram_id)
         await self.db.update_settings(telegram_id, {"enabled": False})
-        await self.db.security_event(telegram_id, "wallet_rotated", "Old wallet retired; new wallet created paused.")
-        return new_address, new_secret
+        await self.db.security_event(
+            telegram_id, "wallet_rotated",
+            f"Old wallet {old_address} retired after payout; new wallet created paused.",
+        )
+        return new_address, new_secret, payout_lamports, str(signature)
