@@ -242,6 +242,45 @@ async def _show_command_panel(
         pass
 
 
+
+async def _render_quick_snipe_panel(
+    message: Message, telegram_id: int, text: str, keyboard: InlineKeyboardMarkup,
+) -> None:
+    panel_id = _dashboard_message_ids.get(telegram_id)
+    if panel_id == message.message_id:
+        try:
+            await message.edit_text(
+                text,
+                reply_markup=keyboard,
+                disable_web_page_preview=True,
+            )
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+            logger.warning(
+                "Could not edit the current quick-snipe panel for Telegram account %s (%s)",
+                telegram_id,
+                type(exc).__name__,
+            )
+    sent = await message.answer(
+        text,
+        reply_markup=keyboard,
+        disable_web_page_preview=True,
+    )
+    _dashboard_message_ids[telegram_id] = sent.message_id
+    if (
+        message.chat.type == "private"
+        and message.from_user is not None
+        and message.from_user.id == telegram_id
+        and (message.text or "").startswith("/")
+    ):
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+
 def _mode_keyboard(mode: str, enabled: bool) -> InlineKeyboardMarkup:
     if mode == "paper":
         rows = [
@@ -743,28 +782,54 @@ async def _show_paper_snipe_preview(message: Message, telegram_id: int, mint_tex
     svc = _svc()
     paper = svc.engine.paper_engine
     if paper is None:
-        await message.answer("The paper practice engine is not configured.")
+        await _render_quick_snipe_panel(
+            message, telegram_id,
+            "PAPER TRADING IS NOT CONFIGURED.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
+        )
         return
     if not await paper.store.mode_enabled(telegram_id, "paper"):
-        await message.answer("Start virtual Paper Trading first with /paper_on. No real SOL will be spent.")
+        await _render_quick_snipe_panel(
+            message, telegram_id,
+            "PAPER TRADING IS PAUSED. Start the virtual practice account before previewing a paper buy.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="▶ Start Paper Trading", callback_data="paper:start")],
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
+        )
         return
     try:
         mint = str(Pubkey.from_string(mint_text.strip()))
         preview = await paper.preview_mint(telegram_id, mint, amount_sol)
     except Exception as exc:
-        await message.answer(f"Could not scan this mint: {type(exc).__name__}: {str(exc)[:180]}")
+        await _render_quick_snipe_panel(
+            message, telegram_id,
+            f"Could not scan this Solana mint: {type(exc).__name__}: {str(exc)[:180]}",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show")],
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
+        )
         return
     if not preview.get("passed"):
         reasons = "\n".join("• " + str(item) for item in preview.get("reasons", [])[:6])
-        await message.answer(
+        await _render_quick_snipe_panel(
+            message, telegram_id,
             "🛡️ PAPER SNIPE REJECTED\n"
             f"Mint: {mint}\n{reasons}\n\n"
-            "No practice buy was recorded."
+            "No practice buy was recorded.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛡️ Safety Filters", callback_data="safety:show")],
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
         )
         return
     _pending_paper_snipes[telegram_id] = {"mint": mint, "preview": preview}
     risk = preview.get("risk", {})
-    await message.answer(
+    await _render_quick_snipe_panel(
+        message, telegram_id,
         "🎯 MANUAL PAPER SNIPE PREVIEW\n\n"
         f"Mint: {mint}\n"
         f"Virtual buy: {preview['buy_amount_sol']} SOL\n"
@@ -776,7 +841,7 @@ async def _show_paper_snipe_preview(message: Message, telegram_id: int, mint_tex
         f"Liquidity: {risk.get('liquidity_usd','unknown')} USD\n"
         f"LP locked/burned: {risk.get('lp_locked_pct','unknown')}%\n\n"
         "The safety check and price quote are repeated when you confirm. This is virtual money only.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="0.05 SOL",callback_data="paper:snipe:amount:0.05"),
              InlineKeyboardButton(text="0.10 SOL",callback_data="paper:snipe:amount:0.10")],
             [InlineKeyboardButton(text="0.25 SOL",callback_data="paper:snipe:amount:0.25"),
@@ -785,7 +850,6 @@ async def _show_paper_snipe_preview(message: Message, telegram_id: int, mint_tex
              InlineKeyboardButton(text="Cancel",callback_data="paper:snipe:cancel")],
         ]),
     )
-
 
 @router.message(Command("paper"))
 async def cmd_paper(message: Message) -> None:
@@ -1316,14 +1380,20 @@ async def _show_live_snipe_preview(
     try:
         preview = await svc.engine.preview_live_snipe(telegram_id, mint_text, amount_sol)
     except Exception as exc:
-        await message.answer(
+        await _render_quick_snipe_panel(
+            message, telegram_id,
             "🔴 LIVE SNIPE BLOCKED\n"
             f"{type(exc).__name__}: {str(exc)[:450]}\n\n"
-            "No transaction was signed or submitted."
+            "No transaction was signed or submitted.",
+            InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🛡️ Live Safety Filters", callback_data="safety:live")],
+                [InlineKeyboardButton(text="🏠 Dashboard", callback_data="home:show")],
+            ]),
         )
         return
     _pending_live_snipes[telegram_id] = preview
-    await message.answer(
+    await _render_quick_snipe_panel(
+        message, telegram_id,
         "🎯 MANUAL LIVE SNIPE PREVIEW\n\n"
         f"Mint: {preview['mint']}\n"
         f"Real SOL spend: {preview['buy_amount_sol']} SOL\n"
@@ -1338,7 +1408,7 @@ async def _show_live_snipe_preview(
         f"Developer share: {preview['developer_concentration_pct']}%\n"
         f"Pool liquidity (USD): {preview['liquidity_usd']}\n\n"
         "THIS USES REAL SOL. Review every number. The bot rechecks the quote, balance and safety immediately after you confirm.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="0.05 SOL", callback_data="live:snipe:amount:0.05"),
              InlineKeyboardButton(text="0.10 SOL", callback_data="live:snipe:amount:0.10")],
             [InlineKeyboardButton(text="0.25 SOL", callback_data="live:snipe:amount:0.25"),
@@ -1348,7 +1418,6 @@ async def _show_live_snipe_preview(
             [InlineKeyboardButton(text="Cancel", callback_data="live:snipe:cancel")],
         ]),
     )
-
 
 @router.callback_query(F.data.startswith("live:snipe:amount:"))
 async def cb_live_snipe_amount(callback: CallbackQuery) -> None:
