@@ -1,0 +1,60 @@
+name: 9N8 wallet stack security upgrade
+on:
+  push:
+    branches: [fix/9n8-wallet-stack-security-upgrade]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+
+jobs:
+  web-wallet-stack:
+    name: Build, audit and lock wallet dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package.json
+      - name: Install exact declared dependency versions and generate lockfile
+        working-directory: web
+        run: npm install --no-audit --no-fund
+      - name: Build Mini App
+        working-directory: web
+        run: npm run build
+      - name: Audit installed dependency graph
+        working-directory: web
+        shell: bash
+        run: |
+          npm audit --json > npm-audit-report.json || true
+          node --input-type=commonjs <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("npm-audit-report.json", "utf8"));
+          const v = report.metadata?.vulnerabilities ?? {};
+          console.log("Web dependency audit:", JSON.stringify(v));
+          const entries = Object.entries(report.vulnerabilities ?? {});
+          for (const [name, item] of entries) {
+            console.log(item.severity.toUpperCase(), name + "@" + item.range,
+              "fix=" + JSON.stringify(item.fixAvailable ?? false));
+          }
+          const summary = [
+            "## Web dependency audit after wallet-stack upgrade",
+            "",
+            `Total: ${v.total ?? 0} · Critical: ${v.critical ?? 0} · High: ${v.high ?? 0} · Moderate: ${v.moderate ?? 0} · Low: ${v.low ?? 0}`,
+            "",
+            ...entries.map(([name, item]) => `- **${item.severity.toUpperCase()}** \`${name}@${item.range}\` — fix: ${JSON.stringify(item.fixAvailable ?? false)}`)
+          ];
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\n") + "\n");
+          NODE
+      - name: Upload dependency lockfile and audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 9n8-wallet-stack-lock-and-audit
+          path: |
+            web/package-lock.json
+            web/npm-audit-report.json
+          if-no-files-found: warn
+          retention-days: 7
