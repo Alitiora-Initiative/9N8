@@ -103,6 +103,8 @@ async def run(worker_only: bool = False) -> None:
             BotCommand(command="live_on", description="Request live mode"),
             BotCommand(command="live_off", description="Stop new live entries"),
             BotCommand(command="snipe", description="Preview a real-wallet buy"),
+            BotCommand(command="live_snipe", description="Alias for live snipe preview"),
+            BotCommand(command="settings", description="Open trading settings"),
             BotCommand(command="live_positions", description="View real positions"),
             BotCommand(command="live_history", description="View on-chain receipts"),
             BotCommand(command="live_settings", description="Edit live risk rules"),
