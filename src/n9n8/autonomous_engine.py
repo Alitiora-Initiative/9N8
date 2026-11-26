@@ -62,6 +62,7 @@ class AutonomousEngine:
         self._quote_lock = asyncio.Lock()
         self._last_quote_at = 0.0
         self._candidate_lock = asyncio.Semaphore(4)
+        self._paper_notified: set[tuple[int, str]] = set()
 
     @property
     def live_enabled(self) -> bool:
@@ -138,17 +139,27 @@ class AutonomousEngine:
                 if selected != "both" and selected != source:
                     continue
                 if not self.live_enabled:
-                    await self.notify(
-                        telegram_id,
-                        f"LAUNCH DETECTED · {candidate.launchpad}\n"
-                        f"Mint: {candidate.mint}\nSlot: {candidate.slot or 'unknown'}\n"
-                        "PAPER MODE: detected only. No order or simulated fill was created.",
-                    )
+                    key = (telegram_id, candidate.mint)
+                    if key not in self._paper_notified:
+                        self._paper_notified.add(key)
+                        if len(self._paper_notified) > 10000:
+                            self._paper_notified.clear()
+                            self._paper_notified.add(key)
+                        await self.notify(
+                            telegram_id,
+                            f"LAUNCH DETECTED · {candidate.launchpad}\\n"
+                            f"Mint: {candidate.mint}\\nSlot: {candidate.slot or 'unknown'}\\n"
+                            "PAPER MODE: detected only. No order or simulated fill was created.",
+                        )
                     if self.telemetry:
                         await self.telemetry(telegram_id, {
                             "type": "launch_detected", "launchpad": candidate.launchpad,
                             "mint": candidate.mint, "signature": candidate.signature,
                             "slot": candidate.slot, "mode": "paper",
+                            "curve_progress_pct": str(candidate.bonding_curve.progress_pct)
+                                if candidate.bonding_curve else None,
+                            "curve_complete": candidate.bonding_curve.complete
+                                if candidate.bonding_curve else None,
                         })
                     continue
                 try:
@@ -333,7 +344,16 @@ class AutonomousEngine:
                     await asyncio.sleep(1)
                     continue
                 basis_lamports = int(position["initial_cost_lamports"])
-                profit = net_profit_pct(from_lamports(min_out), from_lamports(basis_lamports))
+                estimated_exit_cost = (
+                    int(config.get("priority_fee_lamports", 10000))
+                    + (int(config.get("jito_tip_lamports", 1_000_000)) if config.get("mev_shield", True) else 0)
+                    + 5000
+                )
+                current_value_lamports = max(0, min_out - estimated_exit_cost)
+                profit = net_profit_pct(
+                    from_lamports(current_value_lamports),
+                    from_lamports(basis_lamports),
+                )
                 opened = datetime.fromisoformat(str(position["opened_at"]))
                 if opened.tzinfo is None:
                     opened = opened.replace(tzinfo=timezone.utc)
@@ -362,7 +382,7 @@ class AutonomousEngine:
                     await self.telemetry(telegram_id, {
                         "type": "position_update", "position_id": position_id,
                         "mint": mint, "pnl_pct": str(profit.quantize(Decimal("0.01"))),
-                        "current_value_sol": str(from_lamports(min_out)),
+                        "current_value_sol": str(from_lamports(current_value_lamports)),
                         "elapsed_seconds": int(elapsed),
                         "max_hold_seconds": int(config.get("max_hold_seconds", 60)),
                     })
