@@ -104,6 +104,13 @@ class Database:
             """)
             await db.commit()
 
+
+    async def user_count(self) -> int:
+        async with aiosqlite.connect(self.path) as db:
+            cur = await db.execute("SELECT COUNT(*) FROM users")
+            row = await cur.fetchone()
+            return int(row[0] if row else 0)
+
     async def ensure_user(self, telegram_id: int) -> None:
         now = utc_now()
         async with self._lock, aiosqlite.connect(self.path) as db:
