@@ -87,7 +87,7 @@ class AutonomousEngine:
         if self.paper_engine is None:
             raise ExecutionError("Paper trading engine is not configured.")
         await self.paper_engine.stop_user(telegram_id)
-        if not await self.db.mode_enabled(telegram_id, "live"):
+        if self.paper_engine is None or not await self.paper_engine.store.mode_enabled(telegram_id, "live"):
             self._enabled_users.discard(int(telegram_id))
         await self.db.security_event(telegram_id, "paper_engine_stopped", "New virtual entries disabled; virtual positions remain monitored.")
         await self._stop_scanner_if_idle()
