@@ -447,6 +447,11 @@ class AutonomousEngine:
                     raise
                 except Exception as exc:
                     logger.exception("Candidate evaluation failed for Telegram account %s", telegram_id)
+                    await self.db.security_event(
+                        telegram_id,
+                        "token_rejected",
+                        f"{candidate.mint} | evaluation error: {type(exc).__name__}: {str(exc)[:700]}",
+                    )
                     await self.notify(
                         telegram_id,
                         f"9N8 skipped {candidate.mint[:8]}…: {type(exc).__name__}: {str(exc)[:180]}",
@@ -633,6 +638,11 @@ class AutonomousEngine:
             excluded_token_accounts=excluded_token_accounts,
         )
         if not risk.passed:
+            rejection_detail = (
+                f"{candidate.mint} | source={candidate.launchpad} | "
+                + "; ".join(risk.reasons[:8])
+            )
+            await self.db.security_event(telegram_id, "token_rejected", rejection_detail)
             await self.notify(
                 telegram_id,
                 f"SECURITY FILTER REJECTED {candidate.mint[:8]}…\n"
