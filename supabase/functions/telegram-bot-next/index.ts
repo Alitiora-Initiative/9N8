@@ -1855,19 +1855,34 @@ async function handleMiniApp(body: any): Promise<Response> {
       telegram_auth_expired: "This page expired. Reopen the secure form from 9N8.",
       private_chat_required: "Personal connections can only be created from a private Telegram chat.",
       backend_not_configured: "The secure backend is not configured yet. No credentials were saved.",
+      select_at_least_one_market: "Choose at least one market to connect.",
+      exchange_market_not_supported: "One of the selected markets is not supported by this connection.",
+      binance_spot_margin_stock_permission_required: "On Binance, turn on “Spot & Margin & Stock Trading” for this API key.",
+      binance_margin_permission_required: "Your Binance key does not have Margin access enabled.",
+      binance_futures_permission_required: "Your Binance key does not have Futures access enabled.",
+      binance_options_permission_required: "Your Binance key does not have Options access enabled.",
+      bybit_api_key_is_read_only: "This Bybit key is read-only. Create a key with the trading permissions you selected.",
+      bybit_spot_trade_permission_required: "Enable Spot Trading permission on this Bybit API key.",
+      bybit_derivatives_trade_permission_required: "Enable Contract or Derivatives Trading permission on this Bybit API key.",
+      bybit_options_trade_permission_required: "Enable Options Trading permission on this Bybit API key.",
+      bybit_stock_products_not_supported_by_this_connection: "Stock-linked products are not available through this Bybit connection.",
+      bybit_unified_account_balance_unavailable: "Bybit could not return Unified Account balances. Check that your account uses Unified Trading and try again.",
+      okx_read_permission_required: "Enable Read permission on your OKX API key.",
+      okx_trade_permission_required: "Enable Trade permission on your OKX API key for the markets you selected.",
+      okx_stock_products_not_supported_by_this_connection: "Stock-linked products are not available through this OKX connection.",
       binance_read_permission_required: "Enable Read permission for this Binance API key.",
-      binance_spot_permission_required: "Enable Spot Trading permission only. Futures, margin and options are not supported here.",
+      binance_spot_permission_required: "On Binance, turn on “Spot & Margin & Stock Trading” for this API key when you select Spot, Margin or eligible stock-linked products.",
       binance_transfer_permission_detected: "Disable internal transfers and universal transfers on the Binance API key.",
-      binance_non_spot_permission_detected: "This key has margin, futures or options permission. Create a Spot-only key.",
-      binance_live_connection_missing: "Connect your Binance Spot Live account first.",
-      okx_live_connection_missing: "Connect your OKX Spot Live account first.",
+      binance_non_spot_permission_detected: "The selected product permissions do not match this key. Review your market choices and exchange API settings.",
+      binance_live_connection_missing: "Connect your Binance account first.",
+      okx_live_connection_missing: "Connect your OKX account first.",
       okx_api_key_secret_and_passphrase_required: "Enter your OKX API key, secret and API passphrase.",
       okx_passphrase_required: "Enter the API passphrase configured when you created this OKX API key.",
       withdraw_permission_detected: "This API key has withdrawal permission. Revoke it and create a new key with withdrawals disabled.",
       wallet_transfer_or_withdraw_scope_detected: "This Bybit key has Wallet transfer/withdrawal permissions. Create a key without Wallet permissions.",
       exchange_credentials_rejected: "The exchange rejected the credentials or the key belongs to a different environment.",
       exchange_temporarily_unavailable: "The exchange is temporarily unavailable. Try again shortly.",
-      unsupported_provider_environment: "Choose Binance Spot or OKX Spot Live. Demo, testnet, margin and derivatives connectors are not accepted in this release.",
+      unsupported_provider_environment: "Choose a supported live Binance, Bybit or OKX account.",
       wallet_address_or_network_invalid: "The public address format does not match the selected network.",
       credential_storage_failed: "Credentials were checked but could not be saved. No connection was created.",
       user_registration_failed: "Could not register your Telegram account. Try again.",
@@ -2502,7 +2517,7 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/connect") {
-    await send(chatId, "Open this private secure form to connect Binance Spot or OKX Spot, or link a self-custody wallet. Use restricted API keys with withdrawals and transfers disabled. Never send API credentials, private keys or seed phrases in Telegram chat.", {
+    await send(chatId, "Open this private secure form to connect Binance, Bybit or OKX. Choose the markets you want to use. Keep Withdraw and account transfers disabled. Never send API credentials, private keys or seed phrases in Telegram chat.", {
       inline_keyboard: [[{ text: "Open secure connections", web_app: { url: MINI_APP_URL } }]],
     });
     return;
