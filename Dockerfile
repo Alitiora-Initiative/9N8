@@ -9,5 +9,8 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 COPY src ./src
+COPY webapp ./webapp
+RUN mkdir -p /app/data
 
-CMD ["python", "-m", "src.bot"]
+EXPOSE 8080
+CMD ["python", "-m", "src.n9n8.main"]

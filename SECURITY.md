@@ -1,45 +1,47 @@
 # 9N8 security model
 
-## Personal-only access
+## User and wallet boundaries
 
-- 9N8 is designed for one owner and one personal OKX account.
-- All Telegram commands except `/id` require a private chat and the configured `TELEGRAM_OWNER_ID`.
-- Other Telegram users are denied. The project does not onboard other people's exchange accounts.
-- The bot does not request or store exchange credentials in Telegram chat.
+- Each Telegram account receives its own Solana wallet record.
+- Private keys are encrypted before storage in SQLite using the configured Fernet key.
+- Wallet recovery keys are sent once in a private Telegram message and the bot attempts to delete that message after 60 seconds. Deletion cannot remove screenshots, notification previews, message backups or copies.
+- Never import a wallet holding long-term savings. Use a dedicated hot wallet with only the amount you are prepared to lose.
+- The current release supports Solana wallets only. EVM deposits and cross-chain bridging are not enabled; never send EVM assets to a Solana address.
 
-## OKX API boundaries
+## Trading and execution boundaries
 
-Implemented OKX operations:
-- Public spot market ticker, instruments and candles.
-- Private account configuration and balance reads.
-- Private open spot orders.
-- Spot cash market/limit order placement, only after an owner confirmation button.
-- Spot order cancellation, only after an owner confirmation button.
+- Paper mode is the default and reports detected launches without simulating fills.
+- Live mode is locked unless both `N9N8_TRADING_MODE=live` and `LIVE_TRADING_ENABLED=true` are set by the operator.
+- Live mode is experimental and has not been independently audited or certified for unattended funds.
+- The engine uses Helius program-log subscriptions, Jupiter Swap API v2 routing and optional Jito bundles.
+- Jito submission acknowledgement is not proof of landing. The app checks bundle status before recording a trade as confirmed.
+- Jito can reduce public-mempool exposure but does not guarantee block inclusion, a price, positive PnL or complete protection from MEV.
+- Token security filters are fail-closed for unavailable mint/holder data and the configured Raydium LP lock check. They cannot prove a token is safe or that liquidity will remain.
+- Pump.fun direct bonding-curve transaction construction, Raydium direct AMM instruction construction, and developer-buy min/max filtering are not complete.
+- Quote polling follows Jupiter rate limits; the bot does not promise 250 ms quote updates or sub-slot exits.
+- A take-profit target is a trigger condition, not a guaranteed execution price or profit.
 
-Not implemented:
-- Withdrawals, internal asset transfers, deposits, wallets, sub-account management.
-- Futures, swaps, margin, borrowing, leverage, options or copy trading.
-- Unattended autonomous order submission.
-- Exchange-side attached stop-loss/take-profit algos.
+## Financial controls
 
-Use Read and Trade permissions only if you need trading. Keep **Withdraw** disabled; the bot checks the returned permission list and refuses to stage new orders if Withdraw is present. OKX documents that Trade permission can include funding transfers as well as orders/cancellations. This application contains no transfer endpoints, but the API key itself may have capabilities beyond this app. Use a dedicated key and bind it to your IP where possible. OKX notes that unbound Trade/Withdraw keys can expire after 14 days of inactivity; check the current policy for your account.
+- Monetary calculations use Python `Decimal` and integer lamports.
+- Buy sizing reserves configured trade amount, priority fee estimate, Jito tip, ATA rent reserve and gas buffer.
+- Daily trade cap and daily realized drawdown circuit breaker are enforced by the engine.
+- Profit fee is computed from a conservative minimum-output estimate before the exit transaction. Exact finalized net-profit reconciliation remains a required hardening step.
+- Withdraw and wallet rotation ask for a confirmed Solana destination and submit the platform fee plus payout transaction.
+- A timeout after transaction submission is ambiguous: inspect the signature and wallet balance before retrying an operation.
+- Network fees, Jito tips, price impact, token taxes/extensions and failed attempts may reduce the final balance.
 
-## Demo-first and execution confirmation
+## Mini App authentication
 
-- `OKX_TRADING_MODE=demo` is the default.
-- Demo requests add `x-simulated-trading: 1`.
-- Live order submission is blocked unless both `OKX_TRADING_MODE=live` and `OKX_LIVE_TRADING_ENABLED=true` are configured locally.
-- Every order requires an owner confirmation button, expires after 90 seconds, and includes the configured max notional cap.
-- Signals never submit orders.
-- Limit/market order acceptance is not a fill guarantee.
+- FastAPI verifies Telegram WebApp `initData` using HMAC-SHA256 and rejects expired sessions.
+- REST requests send the signed payload in the `X-Telegram-Init-Data` header.
+- WebSocket connections send signed `initData` in the connection query string.
+- Serve the Mini App only over HTTPS and keep the bot token private.
 
-## Secret handling
+## Secret handling and deployment
 
-- Store `TELEGRAM_BOT_TOKEN`, `OKX_API_KEY`, `OKX_API_SECRET` and `OKX_API_PASSPHRASE` only in a local, untracked `.env` file.
-- Never commit `.env`, paste credentials into Telegram, GitHub Issues, chat, logs or screenshots.
-- The OKX REST signature is computed in memory; credentials are never included in request URLs or user-facing messages.
-- If credentials are exposed, revoke the OKX API key in the OKX security/API page and create a replacement.
-
-## Deployment
-
-The zero-monthly-cost path is local Windows polling. The laptop and internet connection must remain available. A remote always-on server would introduce hosting and secret-management requirements; do not configure one without reviewing its cost and access controls.
+- Store `TELEGRAM_BOT_TOKEN`, `HELIUS_API_KEY`, `MASTER_TREASURY_ADDRESS` and `ENCRYPTION_MASTER_KEY` only in private runtime environment variables.
+- GitHub Actions Secrets are not automatically available to a Windows process or to a hosted web service. Map secrets explicitly into the runtime that actually starts the bot.
+- Never log Helius credentials, Fernet keys, private keys, signed transactions or Telegram initData.
+- Back up the SQLite volume and encryption key separately, securely. Loss of the encryption key makes existing encrypted private keys unrecoverable.
+- Do not enable live mode until tests, mainnet transaction construction, Jito bundle landing, withdrawal recovery and security review are complete.

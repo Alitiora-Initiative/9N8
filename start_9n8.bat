@@ -7,5 +7,5 @@ if not exist .venv\Scripts\activate.bat (
   exit /b 1
 )
 call .venv\Scripts\activate.bat
-python -m src.bot
+python -m src.n9n8.main
 pause
