@@ -192,3 +192,19 @@ The `feature/telegram-network-switcher-and-dashboard` branch adds a Telegram net
 - `/start` and `/chains` reuse the current control-panel message while the bot process remains alive. The message identifier is in process memory; after a worker restart, the next command creates a fresh panel.
 
 This update changes Telegram presentation and routing safeguards only. It does not deploy the worker, enable live trading, add EVM execution, or certify unattended trading. Paper and Live remain separate, and live trading stays subject to both operator and per-account controls.
+
+## Expanded Telegram sniper controls
+
+The same feature branch also extends the Telegram control surface and risk audit trail:
+
+- First `/start` creates a dedicated Solana wallet and shows its address, current RPC balance response, and Helius latency. The encrypted key is hidden until a one-time reveal action; reveal state is recorded against the wallet address. The key delivery message is auto-deleting after 60 seconds, which cannot prevent screenshots or notification copies.
+- Wallet rotation returns to the onboarding screen so the new key is revealed explicitly; it is not pushed automatically.
+- The dashboard now summarizes the actual Solana scanner state, separate Paper and Live status, wallet balance, marked PnL, and live settings. It deliberately does not fabricate pool-count or win-rate statistics.
+- Live settings expose separate buy and sell slippage values, buy amount, Jito tip, priority fee, TP1, trailing stop, hard stop, maximum hold, liquidity minimum, LP lock minimum, holder concentration, developer concentration, and daily risk limits.
+- Mint and freeze authority checks stay mandatory and cannot be toggled off. The safety menu exposes editable numeric thresholds and documents fail-closed behavior for unverifiable checks.
+- Position actions support 50% and 100% exits, live chart links, refresh, and a separately confirmed sequential panic-sell-all action. Exits for a given position are serialized to reduce races between manual actions and the watchdog.
+- Automatic TP1/TP2, trailing-stop, hard-stop and panic-exit notifications include a position reference and actionable chart/explorer/remaining-bag controls where a balance remains.
+- Safety rejections are written to the security event ledger and shown in Live Trade History.
+- Base, Ethereum and BNB Chain continue to appear in the selector but remain non-executable. No EVM wallet is generated, no EVM balance is shown, and no EVM swap can be initiated in this branch.
+
+These updates are Telegram controls around the existing Solana services; they do not constitute an independent security audit or certify unattended mainnet trading. The operator-wide live switch and per-account readiness gates remain in place.
