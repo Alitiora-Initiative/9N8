@@ -6,6 +6,7 @@ const passphraseFields = $("okxPassphraseFields");
 const passphraseInput = $("okxPassphrase");
 const bybitRegionFields = $("bybitRegionFields");
 const bybitRegionInput = $("bybitRegion");
+bybitRegionInput.addEventListener("change", syncExchangeFields);
 const saveButton = $("saveExchange");
 const exchangeStatus = $("exchangeStatus");
 const balanceButton = $("loadBinanceBalance");
@@ -33,6 +34,7 @@ function syncExchangeFields() {
   const isBinance = provider === "binance";
   passphraseFields.classList.toggle("hidden", !isOkx);
   bybitRegionFields.classList.toggle("hidden", provider !== "bybit");
+  $("bybitRegionNote").classList.toggle("hidden", provider !== "bybit" || bybitRegionInput.value !== "eea");
   passphraseInput.required = isOkx;
 
   const stocks = $("stocksMarketOption");
