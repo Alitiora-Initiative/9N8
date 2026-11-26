@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 const providerSelect = $("provider");
 const passphraseFields = $("okxPassphraseFields");
 const passphraseInput = $("okxPassphrase");
+const bybitRegionFields = $("bybitRegionFields");
+const bybitRegionInput = $("bybitRegion");
 const saveButton = $("saveExchange");
 const exchangeStatus = $("exchangeStatus");
 const balanceButton = $("loadBinanceBalance");
@@ -30,6 +32,7 @@ function syncExchangeFields() {
   const isOkx = provider === "okx";
   const isBinance = provider === "binance";
   passphraseFields.classList.toggle("hidden", !isOkx);
+  bybitRegionFields.classList.toggle("hidden", provider !== "bybit");
   passphraseInput.required = isOkx;
 
   const stocks = $("stocksMarketOption");
@@ -47,7 +50,7 @@ function syncExchangeFields() {
     saveButton.textContent = "Check OKX permissions and save";
     exchangeStatus.textContent = "Enter the API key, secret and the passphrase you created with the key. Choose your OKX account region.";
   } else {
-    marketHint.textContent = "Bybit uses one API key for Spot and derivatives. Spot, Futures and Options are checked against the permissions returned by Bybit. Margin availability also depends on your Unified Account settings.";
+    marketHint.textContent = "Bybit uses one API key for Spot and derivatives. Choose the region where your account was opened. Spot, Futures and Options are checked against Bybit’s returned permissions. Margin availability also depends on your Unified Account settings.";
     saveButton.textContent = "Check Bybit permissions and save";
     exchangeStatus.textContent = "Bybit needs an API key and secret. Do not enable Wallet, Account Transfer or Withdraw permissions.";
   }
@@ -84,6 +87,9 @@ $("exchangeForm").addEventListener("submit", async (event) => {
   if (provider === "okx") {
     credentials.passphrase = passphraseInput.value;
     credentials.region = $("okxRegion").value;
+  }
+  if (provider === "bybit") {
+    credentials.bybitRegion = bybitRegionInput.value;
   }
 
   saveButton.disabled = true;
