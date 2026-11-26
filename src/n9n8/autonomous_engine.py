@@ -67,6 +67,8 @@ class AutonomousEngine:
         self._candidate_lock = asyncio.Semaphore(4)
         self._paper_notified: set[tuple[int, str]] = set()
         self._enabled_users: set[int] = set()
+        self._paper_users: set[int] = set()
+        self._live_users: set[int] = set()
 
     @property
     def live_enabled(self) -> bool:
@@ -78,6 +80,7 @@ class AutonomousEngine:
         if self.paper_engine is None:
             raise ExecutionError("Paper trading engine is not configured.")
         account = await self.paper_engine.start_user(telegram_id)
+        self._paper_users.add(int(telegram_id))
         self._enabled_users.add(int(telegram_id))
         await self._ensure_scanner()
         await self.db.security_event(telegram_id, "paper_engine_started", "Independent virtual account started; no wallet signer is used.")
@@ -87,7 +90,8 @@ class AutonomousEngine:
         if self.paper_engine is None:
             raise ExecutionError("Paper trading engine is not configured.")
         await self.paper_engine.stop_user(telegram_id)
-        if self.paper_engine is None or not await self.paper_engine.store.mode_enabled(telegram_id, "live"):
+        self._paper_users.discard(int(telegram_id))
+        if int(telegram_id) not in self._live_users:
             self._enabled_users.discard(int(telegram_id))
         await self.db.security_event(telegram_id, "paper_engine_stopped", "New virtual entries disabled; virtual positions remain monitored.")
         await self._stop_scanner_if_idle()
@@ -142,6 +146,7 @@ class AutonomousEngine:
             "live_enabled": True,
             "enabled": True,
         })
+        self._live_users.add(int(telegram_id))
         self._enabled_users.add(int(telegram_id))
         balance = await self.wallet.balance(telegram_id)
         await self.db.start_daily_risk(telegram_id, utc_day(), balance)
@@ -161,7 +166,8 @@ class AutonomousEngine:
 
     async def stop_live_user(self, telegram_id: int) -> None:
         await self.db.update_settings(telegram_id, {"live_enabled": False, "enabled": False})
-        if self.paper_engine is None or not await self.paper_engine.store.mode_enabled(telegram_id, "paper"):
+        self._live_users.discard(int(telegram_id))
+        if int(telegram_id) not in self._paper_users:
             self._enabled_users.discard(int(telegram_id))
         await self.db.security_event(
             telegram_id, "live_engine_stopped",
