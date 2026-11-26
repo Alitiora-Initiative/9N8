@@ -63,6 +63,12 @@ The current lockfile scan flags these important dependency families:
 
 The CI audit is currently report-only and does not block a working build. Next remediation should be a reviewed Reown + wallet adapter dependency update or replacement, then regenerate the lockfile, test Phantom/Solflare/WalletConnect and EVM wallet paths, and rescan. Do not use npm audit fix --force as an unreviewed one-command fix.
 
+
+### Vercel frontend environment hygiene
+
+The Vercel project `9n8-secure-connect` is configured as a static Vite project rooted at `web/`. The inspected web source files do not reference the Vercel environment-variable names. Nevertheless, the frontend project's production environment still contains backend-only secrets and settings, including `DATABASE_URL`, `N9N8_WORKER_BRIDGE_SECRET`, PostgreSQL credentials, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_SECRET_KEY`, and `SUPABASE_JWT_SECRET`, as well as backend mode flags. These are not required by the static Vite source and should be removed from the frontend project's environment settings after confirming no hidden deployment integration depends on them. Keep them only on the dedicated backend project. Do not treat their presence in Vercel's encrypted environment store as proof that they are exposed in the browser bundle; the checked-in Vite app does not access these variables.
+
+The connected Vercel management tool can inspect/edit but does not expose an environment-variable deletion action, so I did not blank or alter these production values. Remove them in Vercel → Project Settings → Environment Variables for `9n8-secure-connect`. Retain only public client configuration actually required by the web app.
 ### Supabase database advisors
 
 The live Supabase advisors currently report:
