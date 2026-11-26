@@ -157,41 +157,6 @@ def _mode_keyboard(mode: str, enabled: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _paper_settings_keyboard(config: dict) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"Buy {config.get('buy_amount_sol','0.05')} SOL", callback_data="paper:field:buy_amount_sol"),
-            InlineKeyboardButton(text=f"Slippage {config.get('slippage_pct','15')}%", callback_data="paper:field:slippage_pct"),
-        ],
-        [
-            InlineKeyboardButton(text=f"TP1 +{config.get('take_profit_pct','100')}%", callback_data="paper:field:take_profit_pct"),
-            InlineKeyboardButton(text=f"TP2 +{config.get('take_profit_2_pct','300')}%", callback_data="paper:field:take_profit_2_pct"),
-        ],
-        [
-            InlineKeyboardButton(text=f"TP2 Sell {config.get('take_profit_2_sell_pct','25')}%", callback_data="paper:field:take_profit_2_sell_pct"),
-            InlineKeyboardButton(text=f"Trail {config.get('trailing_stop_pct','20')}%", callback_data="paper:field:trailing_stop_pct"),
-        ],
-        [
-            InlineKeyboardButton(text=f"Hard Stop {config.get('stop_loss_pct','30')}%", callback_data="paper:field:stop_loss_pct"),
-            InlineKeyboardButton(text=f"Hold {int(config.get('max_hold_seconds',14400))//3600}h", callback_data="paper:field:max_hold_seconds"),
-        ],
-        [
-            InlineKeyboardButton(text=f"Jito Estimate {format_sol(int(config.get('jito_tip_lamports',2000000)))} SOL", callback_data="paper:field:jito_tip_lamports"),
-            InlineKeyboardButton(text=f"Min Liquidity {config.get('min_liquidity_sol','5')} SOL", callback_data="paper:field:min_liquidity_sol"),
-        ],
-        [
-            InlineKeyboardButton(text=f"LP Locked {config.get('min_lp_locked_pct','80')}%", callback_data="paper:field:min_lp_locked_pct"),
-            InlineKeyboardButton(text=f"Top 10 ≤ {config.get('max_top10_concentration_pct','25')}%", callback_data="paper:field:max_top10_concentration_pct"),
-        ],
-        [InlineKeyboardButton(text=f"Max Developer {config.get('max_dev_wallet_pct','5')}%", callback_data="paper:field:max_dev_wallet_pct")],
-        [
-            InlineKeyboardButton(text="Launchpad: Both" if config.get("launchpad","both")=="both" else f"Launchpad: {config.get('launchpad')}", callback_data="paper:launchpad"),
-            InlineKeyboardButton(text="MEV Shield: " + ("ON" if config.get("mev_shield",True) else "OFF"), callback_data="paper:mev"),
-        ],
-        [InlineKeyboardButton(text="Back to Paper Menu", callback_data="paper:menu")],
-    ])
-
-
 def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
     launchpad = str(config.get("launchpad", "both"))
     pump_mode = str(config.get("pump_mode", "fresh"))
@@ -618,13 +583,6 @@ async def cmd_live_on(message: Message) -> None:
     await message.answer(await _live_menu_text(message.from_user.id),reply_markup=_live_menu_keyboard(enabled,readiness["ready"]))
 
 
-@router.message(Command("live_off"))
-async def cmd_live_off(message: Message) -> None:
-    if not _is_private(message):
-        return
-    svc = _svc()
-    await svc.engine.stop_live_user(message.from_user.id)
-    await message.answer("Live entries are OFF. Existing confirmed live positions remain under exit monitoring.")
 
 
 @router.callback_query(F.data == "live:menu")
@@ -1098,23 +1056,38 @@ async def handle_snipe_mint(message: Message, state: FSMContext) -> None:
 async def cmd_safety(message: Message) -> None:
     if not _is_private(message):
         return
-    svc = _svc()
-    config = await svc.engine.paper_engine.store.settings(message.from_user.id,"paper")
     await message.answer(
-        "🛡️ ANTI-RUG GATEKEEPER\n\n"
-        "Always-required checks (cannot be switched off):\n"
-        "✅ Mint authority revoked · ✅ Freeze authority revoked\n"
-        "✅ Creator wallet concentration verified · ✅ Token-2022 extension gate\n"
-        "✅ Top-10 wallet concentration · ✅ Pool liquidity · ✅ LP lock/burn\n\n"
-        f"Minimum liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
-        f"Minimum LP locked/burned: {config.get('min_lp_locked_pct','80')}%\n"
-        f"Maximum top-10 wallet share: {config.get('max_top10_concentration_pct','25')}%\n"
-        f"Maximum developer wallet share: {config.get('max_dev_wallet_pct','5')}%\n\n"
-        "A token is rejected when any required security result cannot be verified.",
+        "🛡️ ANTI-RUG SAFETY FILTERS\n\n"
+        "These checks protect both paper and live entries. Critical checks stay ON and cannot be disabled.\n\n"
+        "🔒 Mint authority revoked: REQUIRED\n"
+        "🔒 Freeze authority revoked: REQUIRED\n"
+        "🔒 Creator and top-holder concentration: CHECKED\n"
+        "🔒 Token extensions and transfer restrictions: CHECKED\n"
+        "🔒 Pool liquidity and LP lock/burn: REQUIRED\n\n"
+        "You can adjust thresholds separately for the paper account and live wallet. A missing or unverifiable result blocks the entry.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Edit Safety Thresholds",callback_data="paper:settings")],
-            [InlineKeyboardButton(text="Back",callback_data="home:show")],
+            [InlineKeyboardButton(text="Paper Safety Thresholds", callback_data="paper:settings")],
+            [InlineKeyboardButton(text="Live Safety Thresholds", callback_data="safety:live")],
+            [InlineKeyboardButton(text="Back", callback_data="home:show")],
         ]),
+    )
+
+
+@router.callback_query(F.data == "safety:live")
+async def cb_live_safety(callback: CallbackQuery) -> None:
+    svc = _svc()
+    await callback.answer()
+    config = await svc.db.get_settings(callback.from_user.id)
+    await callback.message.edit_text(
+        "🔒 LIVE SAFETY FILTERS · REAL WALLET\n\n"
+        "Mint authority revocation: REQUIRED · LOCKED ON\n"
+        "Freeze authority revocation: REQUIRED · LOCKED ON\n"
+        f"Minimum pool liquidity: {config.get('min_liquidity_sol','5')} SOL\n"
+        f"Minimum LP locked/burned: {config.get('min_lp_locked_pct','80')}%\n"
+        f"Maximum top-10 share: {config.get('max_top10_concentration_pct','25')}%\n"
+        f"Maximum developer share: {config.get('max_dev_wallet_pct','5')}%\n\n"
+        "Critical authority checks cannot be disabled. Change the numeric thresholds below; an unverified safety result still blocks every live buy.",
+        reply_markup=_settings_keyboard(config),
     )
 
 
@@ -1123,6 +1096,42 @@ async def cmd_history(message: Message) -> None:
     if not _is_private(message):
         return
     await message.answer(await _history_text(message.from_user.id,"both"))
+
+
+@router.message(Command("paper_history"))
+async def cmd_paper_history(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await message.answer(await _history_text(message.from_user.id, "paper"))
+
+
+@router.message(Command("live_history"))
+async def cmd_live_history(message: Message) -> None:
+    if not _is_private(message):
+        return
+    await message.answer(await _history_text(message.from_user.id, "live"))
+
+
+@router.message(Command("live_settings"))
+async def cmd_live_settings(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    config = await svc.db.get_settings(message.from_user.id)
+    await message.answer(
+        "LIVE SETTINGS · REAL WALLET\nChanges apply only to future live entries.\n",
+        reply_markup=_settings_keyboard(config),
+    )
+
+
+@router.message(Command("stop"))
+@router.message(Command("live_off"))
+async def cmd_live_off(message: Message) -> None:
+    if not _is_private(message):
+        return
+    svc = _svc()
+    await svc.engine.stop_live_user(message.from_user.id)
+    await message.answer("Live entries are OFF. Paper mode is unchanged. Existing real positions remain monitored.")
 
 
 @router.callback_query(F.data == "history:show")
@@ -1173,12 +1182,19 @@ async def cmd_help(message: Message) -> None:
         "/live — show live readiness and safety locks\n"
         "/live_on — request live activation after all checks pass\n"
         "/live_off — stop new live entries\n"
-        "/snipe MINT — scan a token for a manual paper buy\n"
-        "/positions — show paper and live positions separately\n"
+        "/snipe MINT — preview a real-wallet live snipe (requires confirmation)\n"
+        "/live_snipe MINT — alias for /snipe\n"
+        "/paper_snipe MINT — virtual paper-only preview\n"
+        "/positions — choose paper or live positions\n"
+        "/paper_positions — show virtual positions\n"
+        "/live_positions — show real-wallet positions\n"
         "/settings — choose paper or live settings\n"
+        "/live_settings — edit real-wallet execution settings\n"
         "/safety — show anti-rug requirements\n"
-        "/history — show paper trade history\n"
-        "/withdraw — start a real-wallet withdrawal\n"
+        "/paper_history — show simulated trades\n"
+        "/live_history — show on-chain receipts\n"
+        "/withdraw — transfer a selected amount of real SOL\n"
+        "/stop — stop new live entries (paper stays unchanged)\n"
         "/status — dashboard and mode status\n"
         "/help — this guide\n\n"
         "Paper mode uses virtual SOL only. Live mode can use real SOL and remains locked "
@@ -1353,6 +1369,7 @@ async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
         "max_hold_seconds", "moon_bag_pct", "daily_position_limit",
         "max_daily_drawdown_pct", "max_top10_concentration_pct",
         "pump_migration_progress_pct", "min_liquidity_usd",
+        "min_liquidity_sol", "min_lp_locked_pct", "max_dev_wallet_pct",
     }
     if field not in allowed:
         await callback.answer("Unknown setting", show_alert=True)
@@ -1374,6 +1391,9 @@ async def cb_setting_field(callback: CallbackQuery, state: FSMContext) -> None:
         "max_top10_concentration_pct": "Maximum top-10 holder concentration percentage",
         "pump_migration_progress_pct": "Pump.fun curve progress trigger percentage (1 to 99)",
         "min_liquidity_usd": "Minimum indexed pool liquidity in USD",
+        "min_liquidity_sol": "Minimum pool liquidity in SOL",
+        "min_lp_locked_pct": "Minimum liquidity percentage that must be locked or burned",
+        "max_dev_wallet_pct": "Maximum developer wallet share percentage",
     }
     await callback.message.answer(labels[field] + "\nSend the new numeric value.")
 
