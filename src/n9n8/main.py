@@ -41,6 +41,10 @@ async def run(worker_only: bool = False) -> None:
     else:
         db = Database(settings.database_path, settings.encryption_key)
     await db.initialize()
+    if hasattr(db, "mark_stale_jobs_unknown"):
+        stale_jobs = await db.mark_stale_jobs_unknown()
+        if stale_jobs:
+            logger.error("Marked %s interrupted worker jobs unknown; they will not be auto-retried.", stale_jobs)
 
     helius = HeliusClient(
         settings.solana_rpc_url,
