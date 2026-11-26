@@ -857,15 +857,26 @@ async def cmd_help(message: Message) -> None:
     if not _is_private(message):
         return
     await message.answer(
-        "9N8 COMMANDS\n"
-        "/start — dashboard\n"
-        "/status — wallet and engine status\n"
-        "/help — this help\n\n"
-        "Use the dashboard buttons to create/import a wallet, deposit SOL, set sniper "
-        "parameters, execute or pause the bot, withdraw, or rotate the wallet.\n\n"
-        "The live Solana executor is disabled unless N9N8_TRADING_MODE=live and "
-        "LIVE_TRADING_ENABLED=true are set by the operator. Keep paper mode enabled "
-        "until you have tested the complete flow."
+        "9N8 COMMANDS · PAPER AND LIVE ARE SEPARATE\n\n"
+        "/start — main dashboard\n"
+        "/paper — virtual practice account\n"
+        "/paper_on — start paper entries\n"
+        "/paper_off — pause paper entries\n"
+        "/paper_settings — edit paper rules\n"
+        "/live — show live readiness and safety locks\n"
+        "/live_on — request live activation after all checks pass\n"
+        "/live_off — stop new live entries\n"
+        "/snipe MINT — scan a token for a manual paper buy\n"
+        "/positions — show paper and live positions separately\n"
+        "/settings — choose paper or live settings\n"
+        "/safety — show anti-rug requirements\n"
+        "/history — show paper trade history\n"
+        "/withdraw — start a real-wallet withdrawal\n"
+        "/status — dashboard and mode status\n"
+        "/help — this guide\n\n"
+        "Paper mode uses virtual SOL only. Live mode can use real SOL and remains locked "
+        "unless the operator enables LIVE_TRADING_ENABLED and the wallet, activation, "
+        "seven paper days and $10 balance requirements pass."
     )
 
 
@@ -1150,40 +1161,24 @@ async def cb_fees(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "engine:execute")
 async def cb_execute(callback: CallbackQuery) -> None:
-    svc = _svc()
     await callback.answer()
-    user = await svc.db.get_user(callback.from_user.id)
-    if not user or not user.get("solana_address"):
-        await callback.message.answer("Create or import your Solana wallet first.")
-        return
-    if svc.settings.trading_mode == "live" and not user.get("activation_paid"):
-        try:
-            price = await svc.oracle.sol_usd(force=True)
-            lamports = usd_to_lamports("1.00", price)
-            await callback.message.answer(
-                "LIVE ACTIVATION FEE\n\n"
-                f"One-time fee: 1.00 USD ≈ {format_sol(lamports)} SOL\n"
-                f"Price source: {svc.oracle.source}\n"
-                "Press Confirm only if you authorize the transfer to the configured Master Treasury.",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                    InlineKeyboardButton(text="Confirm $1 Activation", callback_data="activation:confirm"),
-                    InlineKeyboardButton(text="Cancel", callback_data="home:show"),
-                ]]),
-            )
-        except Exception as exc:
-            await callback.message.answer(f"Activation is locked: {exc}")
-        return
-    try:
-        mode = await svc.engine.start_user(callback.from_user.id)
-        await callback.message.answer(f"9N8 started.\nMode: {mode}")
-    except Exception as exc:
-        await callback.message.answer(f"Could not start 9N8: {exc}")
+    svc = _svc()
+    readiness = await svc.engine.live_readiness(callback.from_user.id)
+    enabled = await svc.engine.paper_engine.store.mode_enabled(callback.from_user.id, "live")
+    await callback.message.answer(
+        await _live_menu_text(callback.from_user.id),
+        reply_markup=_live_menu_keyboard(enabled, readiness["ready"]),
+    )
 
 
 @router.callback_query(F.data == "activation:confirm")
 async def cb_activation_confirm(callback: CallbackQuery) -> None:
     svc = _svc()
-    await callback.answer()
+    await callback.answer("Confirming the activation payment…")
+    user = await svc.db.get_user(callback.from_user.id)
+    if user and user.get("activation_paid"):
+        await callback.message.answer("Activation is already paid. Check /live for readiness.")
+        return
     try:
         amount, signature = await svc.wallet.transfer_usd_fee(
             callback.from_user.id,
@@ -1192,21 +1187,24 @@ async def cb_activation_confirm(callback: CallbackQuery) -> None:
             f"activation:{callback.from_user.id}",
         )
         await svc.db.set_activation_paid(callback.from_user.id, True)
-        mode = await svc.engine.start_user(callback.from_user.id)
+        readiness = await svc.engine.live_readiness(callback.from_user.id)
         await callback.message.answer(
             f"Activation paid: {format_sol(amount)} SOL\n"
-            f"Receipt: https://solscan.io/tx/{signature}\n"
-            f"Engine: {mode}"
+            f"Receipt: https://solscan.io/tx/{signature}\n\n"
+            "This payment does not start live trading. Review your remaining requirements with /live.\n"
+            + "\n".join("• " + str(item) for item in readiness["blockers"]),
+            reply_markup=_live_menu_keyboard(False, readiness["ready"]),
         )
     except Exception as exc:
-        await callback.message.answer(f"Activation was not completed: {exc}")
+        await callback.message.answer(f"Activation was not completed: {type(exc).__name__}: {str(exc)[:220]}")
 
 
 @router.callback_query(F.data == "engine:stop")
 async def cb_stop(callback: CallbackQuery) -> None:
     svc = _svc()
     await callback.answer()
-    await svc.engine.stop_user(callback.from_user.id)
+    await svc.engine.stop_live_user(callback.from_user.id)
+    await callback.message.answer("Live entries paused. Paper mode has not been changed.")
 
 
 @router.callback_query(F.data == "wallet:exit")
