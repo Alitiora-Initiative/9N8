@@ -559,6 +559,8 @@ class AutonomousEngine:
         self, telegram_id: int, candidate: LaunchCandidate, config: dict,
         buy_amount_override_sol: str | None = None,
     ) -> None:
+        if not self.live_enabled or not bool(config.get("live_enabled", config.get("enabled", False))):
+            return
         user = await self.db.get_user(telegram_id)
         if not user or not user.get("activation_paid"):
             return
@@ -668,6 +670,12 @@ class AutonomousEngine:
             )
             return
 
+        # Re-read the operator/user switches immediately before building the
+        # signed transaction. The scanner and manual Telegram paths share this gate.
+        latest_config = await self.db.get_settings(telegram_id)
+        if not self.live_enabled or not bool(latest_config.get("live_enabled", latest_config.get("enabled", False))):
+            raise ExecutionError("Live mode was switched off before the buy could be signed.")
+        config = latest_config
         wallet_key = await self.wallet.keypair_for(telegram_id)
         slippage_bps = int(dec(config.get("slippage_pct", "5")) * Decimal(100))
         result = await self.executor.build_swap(
@@ -802,7 +810,9 @@ class AutonomousEngine:
         await self.notify(
             telegram_id,
             f"ENTRY CONFIRMED · {candidate.launchpad}\n"
-            f"Mint: {candidate.mint}\nSpend: {from_lamports(trade_lamports)} SOL\n"
+            f"Mint: {candidate.mint}\n"
+            f"Position: #{position_id}\n"
+            f"Spend: {from_lamports(trade_lamports)} SOL\n"
             f"Tokens: {token_amount} raw units\nEntry: {entry_price:.12f} USD\n"
             f"Signature: https://solscan.io/tx/{result.signature}\n"
             f"MEV: {'Jito bundle landed' if result.bundle_id else 'RPC confirmed'}",
