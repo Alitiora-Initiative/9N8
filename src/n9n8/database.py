@@ -597,7 +597,8 @@ class Database:
                 "SELECT 1 FROM paper_positions WHERE telegram_id=? AND mint=? AND status='open' LIMIT 1",
                 (telegram_id, mint),
             )
-        return cur.fetchone() is not None
+            row = await cur.fetchone()
+        return row is not None
 
     async def create_paper_position(
         self, telegram_id: int, mint: str, launchpad: str, token_amount_raw: int,
@@ -623,7 +624,7 @@ class Database:
             cur = await db.execute(
                 """INSERT INTO paper_positions
                    (telegram_id,mint,launchpad,token_amount_raw,initial_cost_lamports,entry_price_usd,status,opened_at,peak_value_lamports,buy_reference,updated_at)
-                   VALUES(?,?,?,?,?,?,'open',?,?,?,?,?)""",
+                   VALUES(?,?,?,?,?,?,'open',?,?,?,?)""",
                 (telegram_id,mint,launchpad,token_amount_raw,pool_cost,entry_price_usd,now,0,reference_signature,now),
             )
             position_id = int(cur.lastrowid)
@@ -710,7 +711,7 @@ class Database:
             await db.execute(
                 """INSERT INTO paper_trades
                    (telegram_id,position_id,side,mint,launchpad,token_amount_raw,sol_amount_lamports,fee_lamports,price_usd,reason,reference_signature,quote_json,created_at)
-                   VALUES(?,?,'sell',?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES(?,?,'sell',?,?,?,?,?,?,?,?,?,?)""",
                 (telegram_id,position_id,pos["mint"],pos["launchpad"],token_amount_raw,gross_proceeds_lamports,fee_lamports,pos["entry_price_usd"],reason,reference_signature,json.dumps(quote,separators=(",",":")),now),
             )
             await db.commit()
