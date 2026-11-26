@@ -70,6 +70,7 @@ _pending_live_snipes: dict[int, dict] = {}
 _withdraw_locks: dict[int, asyncio.Lock] = {}
 _dashboard_message_ids: dict[int, int] = {}
 _wallet_reveal_locks: dict[int, asyncio.Lock] = {}
+_pending_evm_addresses: dict[int, str] = {}
 
 
 def configure_handlers(value: AppServices) -> None:
@@ -2327,28 +2328,72 @@ async def cb_pasted_mint_live(callback: CallbackQuery) -> None:
 
 
 @router.message()
-async def detect_pasted_solana_mint(message: Message) -> None:
-    """Offer separate paper/live previews when a public token mint is pasted."""
+async def detect_pasted_token_address(message: Message) -> None:
+    """Offer safe Paper/Live previews for Solana and identify EVM addresses without trading."""
     if not _is_private(message) or not message.text:
         return
     raw = message.text.strip()
-    if raw.startswith("/") or " " in raw or not 32 <= len(raw) <= 44:
+    if raw.startswith("/") or " " in raw:
+        return
+
+    if re.fullmatch(r"0x[a-fA-F0-9]{40}", raw):
+        _pending_evm_addresses[message.from_user.id] = raw
+        await message.answer(
+            "🔷 EVM CONTRACT ADDRESS DETECTED\n\n"
+            f"Contract: {raw}\n\n"
+            "Which network was this contract deployed on? Base, Ethereum and BNB Chain are currently status-only in 9N8. Choosing one will show its connection state; no RPC scan, quote or transaction will run.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="🔵 Base", callback_data="evm:select:base"),
+                    InlineKeyboardButton(text="🔷 Ethereum", callback_data="evm:select:ethereum"),
+                ],
+                [InlineKeyboardButton(text="🟡 BNB Chain", callback_data="evm:select:bnb")],
+                [InlineKeyboardButton(text="🌐 Network Selector", callback_data="network:show")],
+                [InlineKeyboardButton(text="❌ Cancel", callback_data="home:show")],
+            ]),
+        )
+        return
+
+    if not 32 <= len(raw) <= 44:
         return
     try:
         mint = str(Pubkey.from_string(raw))
     except Exception:
         return
-    if mint != raw:
+    if mint != raw or mint == "So11111111111111111111111111111111111111112":
         return
     await message.answer(
         "🎯 SOLANA TOKEN ADDRESS DETECTED\n\n"
         f"Mint: {mint}\n\n"
-        "Choose what you want to do. Paper uses virtual funds. Live only shows a preview first and requires a second confirmation before any real SOL is spent.",
+        "Choose what you want to do. Paper uses virtual funds. Live only shows a safety and quote preview first, and a separate confirmation is required before any real SOL is spent.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🧪 Paper Preview", callback_data=f"paste:paper:{mint}")],
             [InlineKeyboardButton(text="🔴 Live Preview", callback_data=f"paste:live:{mint}")],
-            [InlineKeyboardButton(text="Cancel", callback_data="home:show")],
+            [InlineKeyboardButton(text="❌ Cancel", callback_data="home:show")],
         ]),
+    )
+
+
+@router.callback_query(F.data.startswith("evm:select:"))
+async def cb_evm_chain_select(callback: CallbackQuery) -> None:
+    code = callback.data.rsplit(":", 1)[-1].strip().lower()
+    address = _pending_evm_addresses.pop(callback.from_user.id, None)
+    network = get_network(code)
+    if not network or network.execution_enabled or not address:
+        await callback.answer("This EVM target is unavailable or the preview expired.", show_alert=True)
+        return
+    await callback.answer(f"{network.name} is not connected to a trading engine.", show_alert=True)
+    await callback.message.edit_text(
+        f"⛔ {network.name.upper()} IS NOT CONNECTED\n\n"
+        f"Contract: {address}\n"
+        f"DEX targets: {network.dex_targets}\n\n"
+        f"{network.execution_note}\n\n"
+        "No token inspection, wallet lookup, quote, approval or transaction was attempted. Solana remains the only active execution network.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Network Selector", callback_data="network:show")],
+            [InlineKeyboardButton(text="🏠 Main Dashboard", callback_data="home:show")],
+        ]),
+        disable_web_page_preview=True,
     )
 
 
