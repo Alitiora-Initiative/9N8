@@ -1,0 +1,11 @@
+"$schema" = "https://openapi.vercel.sh/vercel.json"
+
+[functions."index.py"]
+maxDuration = 60
+includeFiles = "webapp/**"
+
+[daemons.sniper]
+root = "."
+entrypoint = "worker/Dockerfile"
+command = ["python", "-m", "src.n9n8.worker"]
+instances.iad1 = 1
