@@ -22,6 +22,21 @@ def _timestamp(value: Any) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+class PaperQuoteOnlyClient:
+    """Minimal market-data adapter: quotes only, with no signer or submit method."""
+
+    def __init__(self, quote_method: Any):
+        if not callable(quote_method):
+            raise TypeError("Paper quote client requires a callable quote method.")
+        self._quote_method = quote_method
+
+    async def quote(self, input_mint: str, output_mint: str, amount_raw: int) -> dict[str, Any]:
+        result = await self._quote_method(input_mint, output_mint, amount_raw)
+        if not isinstance(result, dict):
+            raise RuntimeError("Quote provider returned an invalid paper quote.")
+        return result
+
+
 class PaperTradingEngine:
     """Real-market paper trading. It can request quotes, but cannot sign or submit swaps."""
 
@@ -31,7 +46,8 @@ class PaperTradingEngine:
         self.store = store
         self.helius = helius
         self.oracle = oracle
-        self.executor = executor
+        # Retain only the quote method. Paper code cannot access build_swap/send paths.
+        self.quote_client = PaperQuoteOnlyClient(executor.quote)
         self.security = security
         self.notify = notify
         self.telemetry = telemetry
@@ -102,7 +118,7 @@ class PaperTradingEngine:
             wait = interval - (time.monotonic() - self._last_quote_at)
             if wait > 0:
                 await asyncio.sleep(wait)
-            quote = await self.executor.quote(input_mint, output_mint, amount_raw)
+            quote = await self.quote_client.quote(input_mint, output_mint, amount_raw)
             self._last_quote_at = time.monotonic()
         if not isinstance(quote, dict) or int(quote.get("outAmount") or 0) <= 0:
             raise RuntimeError("Jupiter did not return a usable quote.")
