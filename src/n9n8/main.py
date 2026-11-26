@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import signal
 from contextlib import suppress
 
 import uvicorn
 from aiogram import Bot, Dispatcher
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
 
 from .autonomous_engine import AutonomousEngine
@@ -79,7 +81,26 @@ async def run(worker_only: bool = False) -> None:
 
     async def notify(telegram_id: int, message: str) -> None:
         try:
-            await bot.send_message(telegram_id, message, disable_web_page_preview=True)
+            markup = None
+            if message.startswith("ENTRY CONFIRMED"):
+                position_match = re.search(r"Position:\\s*#?(\\d+)", message)
+                mint_match = re.search(r"Mint:\\s*([1-9A-HJ-NP-Za-km-z]{32,44})", message)
+                signature_match = re.search(r"Signature:\\s*https://solscan\\.io/tx/([1-9A-Za-z]+)", message)
+                if position_match and mint_match:
+                    position_id = int(position_match.group(1))
+                    mint = mint_match.group(1)
+                    rows = [
+                        [InlineKeyboardButton(text="📈 Live Chart", url="https://dexscreener.com/solana/" + mint)],
+                    ]
+                    if signature_match:
+                        rows[0].append(InlineKeyboardButton(text="🔍 Solscan Tx", url="https://solscan.io/tx/" + signature_match.group(1)))
+                    rows.extend([
+                        [InlineKeyboardButton(text="💰 Sell 50%", callback_data=f"position:sell50:{position_id}"),
+                         InlineKeyboardButton(text="🚨 Panic Sell 100%", callback_data=f"position:panic:{position_id}")],
+                        [InlineKeyboardButton(text="📊 Live Positions", callback_data="positions:live")],
+                    ])
+                    markup = InlineKeyboardMarkup(inline_keyboard=rows)
+            await bot.send_message(telegram_id, message, reply_markup=markup, disable_web_page_preview=True)
         except Exception as exc:
             logger.warning("Could not send Telegram notification to %s (%s)", telegram_id, type(exc).__name__)
 
