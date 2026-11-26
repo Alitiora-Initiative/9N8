@@ -29,7 +29,10 @@ class Settings:
     database_path: str
     database_url: str
     require_postgres: bool
-    jupiter_base_url: str
+    vercel_queue_region: str
+    vercel_queue_topic: str
+    vercel_queue_consumer: str
+    jupiter_base_url
     jupiter_api_key: str
     jito_base_url: str
     live_trading_enabled: bool
@@ -97,6 +100,9 @@ class Settings:
             database_path=os.getenv("N9N8_DATABASE_PATH", "data/9n8-solana.sqlite3"),
             database_url=database_url,
             require_postgres=require_postgres,
+            vercel_queue_region=os.getenv("VERCEL_QUEUE_REGION", "iad1").strip().lower(),
+            vercel_queue_topic=os.getenv("VERCEL_QUEUE_TOPIC", "9n8-worker").strip(),
+            vercel_queue_consumer=os.getenv("VERCEL_QUEUE_CONSUMER", "n9n8-daemon").strip(),
             jupiter_base_url=os.getenv("JUPITER_API_BASE_URL", "https://api.jup.ag/swap/v2").rstrip("/"),
             jupiter_api_key=os.getenv("JUPITER_API_KEY", "").strip(),
             jito_base_url=os.getenv("JITO_BLOCK_ENGINE_URL", "https://mainnet.block-engine.jito.wtf").rstrip("/"),
