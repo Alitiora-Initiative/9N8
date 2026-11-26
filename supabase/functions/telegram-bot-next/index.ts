@@ -192,7 +192,7 @@ function mainKeyboard(): Obj {
   return { inline_keyboard: [
     [{ text: "▶ Start / view live-market paper run", callback_data: "n8:paper_start_crypto" }],
     [{ text: "📈 Open live-market simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }],
-    [{ text: "Connect exchange · Binance / OKX", web_app: { url: MINI_APP_URL } }],
+    [{ text: "Connect exchange · Binance / Bybit / OKX", web_app: { url: MINI_APP_URL } }],
     [{ text: "Wallet watch / connect", web_app: { url: "https://9n8-secure-connect.vercel.app/connect?view=wallet" } }],
     [{ text: "📚 Services & features", callback_data: "n8:services" }],
     [{ text: "My exchange connections", callback_data: "n8:connections" }],
@@ -2377,76 +2377,65 @@ async function startCryptoPaper(userId: string, chatId: number): Promise<{ ok: b
 }
 
 async function setBotProfileAndCommands(): Promise<void> {
-  // Keep Telegram's pre-Start description, profile bio and command menu aligned
-  // with the actual deployed feature set. Metadata failure must never block /start.
+  // Keep the bot's public description and command list easy to understand.
   try {
     await telegram("setMyDescription", {
-      description: "9N8 combines a real-market crypto paper simulator, Binance and OKX Spot account connections, self-custody wallet linking, trade approvals and risk controls. Paper fills are virtual; real order execution is separately gated."
+      description: "Welcome to 9N8. Follow markets, practise with virtual money, and connect Binance, Bybit or OKX. Choose Spot, Margin, Futures or Options access. Connecting an account does not place a trade. Real exchange orders remain locked."
     });
     await telegram("setMyShortDescription", {
-      short_description: "Binance / OKX account connections, multi-wallet links, live market charts and paper trading."
+      short_description: "Practise with virtual money and connect Binance, Bybit or OKX markets."
     });
     await telegram("setMyCommands", {
       commands: [
-        { command: "start", description: "Start 9N8 and show services" },
-        { command: "services", description: "List features and limits" },
-        { command: "paper", description: "Show virtual equity, positions and simulated fills" },
-        { command: "simulator", description: "Open live Binance charts and paper simulator" },
-        { command: "connect", description: "Connect Binance, OKX or wallet" },
-        { command: "connections", description: "View exchange connections" },
-        { command: "wallets", description: "View linked wallets" },
-        { command: "live", description: "Show live-trading lock" },
-        { command: "risk", description: "View risk limits" },
-        { command: "approvals", description: "View pending approvals" },
-        { command: "pause", description: "Pause strategies" },
-        { command: "stop", description: "Emergency stop" },
-        { command: "help", description: "Show all commands" }
+        { command: "start", description: "Start 9N8" },
+        { command: "services", description: "See what 9N8 can do" },
+        { command: "paper", description: "See your virtual practice account" },
+        { command: "simulator", description: "Open live-price practice charts" },
+        { command: "connect", description: "Connect Binance, Bybit or OKX" },
+        { command: "connections", description: "See your connected accounts" },
+        { command: "wallets", description: "See linked wallets" },
+        { command: "live", description: "See what is enabled for live use" },
+        { command: "risk", description: "See your safety limits" },
+        { command: "approvals", description: "See requests waiting for approval" },
+        { command: "pause", description: "Pause new activity" },
+        { command: "stop", description: "Stop the bot" },
+        { command: "help", description: "Get help" }
       ]
     });
   } catch {
-    // Telegram metadata is secondary; never block trading controls or /start.
+    // Telegram metadata is secondary; never block the /start response.
   }
 }
 
 function serviceOverview(): string {
   return [
-    "WHAT 9N8 PROVIDES",
+    "WELCOME TO 9N8",
+    "One place to follow markets, practise with virtual money and manage your connected accounts.",
     "",
-    "📡 MARKET INTELLIGENCE",
-    "Live public market observations, price and volume context, token/symbol lookups and strategy scans. The deployed paper pilot currently reads real Binance public spot candles for its supported USDT pairs.",
+    "📊 FOLLOW THE MARKET",
+    "See live prices, charts and market activity. The practice simulator uses real Binance market prices.",
     "",
-    "🧪 PAPER TRADING",
-    "Use a $1,000 virtual account against real Binance Spot candles, ticker and order-book depth. Paper entries and exits use visible ask/bid VWAP, a configurable fee estimate, and spread/slippage gates. No exchange order is sent.",
+    "🧪 PRACTISE WITHOUT RISKING REAL MONEY",
+    "Start with $1,000 in virtual money. Try the strategy and see how your practice results change. These are practice trades, not real orders.",
     "",
-    "📈 STRATEGY & SIGNALS",
-    "The current crypto paper strategy uses EMA 9 / EMA 21 crossover with RSI 14 confirmation on closed one-minute candles. Signals are observations, not guaranteed predictions.",
+    "🔗 CONNECT YOUR EXCHANGE",
+    "Connect Binance, Bybit or OKX. Choose the access you want to check: Spot, Margin, Futures or Options. Binance also has one combined Spot & Margin & Stock Trading permission for eligible products.",
+    "Each exchange has its own permission rules. 9N8 checks the key, shows what was verified, and saves it securely. Keep Withdraw and account transfers turned off.",
     "",
-    "🔗 EXCHANGE & WALLET CONNECTIONS",
-    "Connect a Binance Spot Live API key with Read + Spot Trading permissions only; withdrawals, internal transfers, futures, margin and options must be disabled. Link EVM or Solana wallets for ownership verification or watch public addresses.",
-    "",
-    "🛡️ APPROVALS & RISK CONTROLS",
-    "Review linked accounts, risk limits, pending proposals, pause controls and the emergency stop. Private connections are attached to the Telegram account that opened the bot.",
-    "",
-    "🚦 LIVE-TRADING READINESS",
-    "9N8 includes a readiness assessment and a hard live-execution lock. Connecting Binance or verifying a wallet does not by itself authorize real-money orders.",
-    "",
-    "CURRENT LIMITS — PLEASE READ",
-    "• Binance Spot Live account credentials can be connected and stored encrypted, but real-money order submission remains locked until the live connector is certified and the exact order is approved.",
-    "• WalletConnect currently verifies wallet ownership only. No swap, token approval or background wallet trade-signing is enabled.",
-    "• Stocks, forex, perps, unattended copy trading, launch sniping and DCA are not active in the deployed paper pilot.",
-    "• Trojan is a feature reference, not a connected execution provider. 9N8 must use its own documented market-data and swap/exchange integrations.",
+    "🛡️ YOU STAY IN CONTROL",
+    "Connecting an exchange does not place an order. Real-money exchange trading is still locked. Wallet links are separate and do not give 9N8 permission to move your funds.",
     "",
     "GET STARTED",
-    "/paper — view virtual equity, positions and simulated fills",
-    "/simulator — open live Binance charts and paper trading",
-    "/connect — connect Binance Spot Live or wallet",
-    "/connections — review exchange connections",
-    "/wallets — review verified wallets and watch addresses",
-    "/risk — view your configured risk limits",
-    "/live — view live-trading readiness and lock status",
-    "/pause — pause strategies and block new entries",
-    "/stop — activate the emergency stop",
-    "/help — view all commands"
+    "/paper — see your virtual balance and practice trades",
+    "/simulator — open the live-price practice charts",
+    "/connect — connect Binance, Bybit or OKX",
+    "/connections — see your connected accounts",
+    "/wallets — see linked wallets",
+    "/risk — see your safety limits",
+    "/live — check live-trading status",
+    "/pause — pause new activity",
+    "/stop — stop the bot",
+    "/help — get help",
   ].join("\n");
 }
 
@@ -2475,14 +2464,14 @@ async function handleMessage(update: any) {
     await audit(row.id, chatId, "private_start");
     const started = await startCryptoPaper(row.id, chatId);
     const sessionLine = started.ok
-      ? "PAPER SESSION: STARTED\n$1,000 virtual starting balance · Binance public spot candles · simulated fills only."
-      : "PAPER SESSION: NOT STARTED\n" + started.message;
+      ? "YOUR PRACTICE ACCOUNT IS READY\n$1,000 virtual money · real Binance market prices · no real orders."
+      : "YOUR PRACTICE ACCOUNT DID NOT START\n" + started.message;
     await send(chatId,
-      "⚡ WELCOME TO 9N8\n" +
-      "Trading intelligence, paper testing and account controls in one private Telegram workspace.\n\n" +
+      "👋 WELCOME TO 9N8\n" +
+      "Watch the market, practise with virtual money and connect your own exchange account.\n\n" +
       serviceOverview() +
       "\n\n" + sessionLine +
-      "\n\nUse the buttons below to open your control panel. Send /services any time to review these features.",
+      "\n\nUse the buttons below to get started. Send /services any time to see this guide again.",
       mainKeyboard());
     return;
   }
@@ -2496,7 +2485,7 @@ async function handleMessage(update: any) {
       "/services — what 9N8 does and current feature status\n" +
       "/start — open private control panel\n" +
       "/status — inspect account and system state\n" +
-      "/connect — connect Binance Spot Live or wallet\n" +
+      "/connect — connect Binance, Bybit, OKX or a wallet\n" +
       "/connections — list your exchange connections\n" +
       "/wallets — list your verified wallets\n" +
       "/migrate — assess live eligibility (does not enable live trading)\n" +
