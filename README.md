@@ -294,3 +294,16 @@ The `feature/9n8-telegram-network-controls` branch builds the network selector a
 - The existing Paper/Live separation, daily risk circuit breakers, separate buy/sell slippage settings, withdrawal controls, and live activation gates from the Solana-live base are preserved.
 
 This branch does not generate EVM wallets, does not implement EVM trading, does not enable live trading by default, and does not certify unattended mainnet trading. The single-message panel ID is held in process memory; after a worker restart, a new panel is created when the user next opens a command.
+
+## Telegram transport ownership
+
+The production 9N8 Telegram bot uses the Supabase `telegram-bot-next` webhook.
+The Python Vercel Daemon is an outbound notification/worker process; it must not
+poll Telegram or publish a competing Bot API command menu. Worker-only mode always
+disables aiogram polling.
+
+The Python combined runtime also defaults to webhook mode. For a local,
+standalone development session only, set `N9N8_TELEGRAM_TRANSPORT=polling`
+**after removing the Telegram webhook**. Telegram cannot deliver updates through
+a webhook and `getUpdates` long polling at the same time. Restore the webhook
+before returning to the hosted production bot.
