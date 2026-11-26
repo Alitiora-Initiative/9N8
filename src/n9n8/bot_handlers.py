@@ -161,7 +161,6 @@ def _mode_keyboard(mode: str, enabled: bool) -> InlineKeyboardMarkup:
 
 def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
     launchpad = str(config.get("launchpad", "both"))
-    pump_mode = str(config.get("pump_mode", "fresh"))
     mev = "ON" if config.get("mev_shield", True) else "OFF"
     rows = [
         [
@@ -170,46 +169,47 @@ def _settings_keyboard(config: dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Both", callback_data="settings:launchpad:both"),
         ],
         [
-            InlineKeyboardButton(text="Fresh Launch", callback_data="settings:pumpmode:fresh"),
-            InlineKeyboardButton(text="Migration", callback_data="settings:pumpmode:migration"),
-        ],
-        [
             InlineKeyboardButton(text=f"MEV Shield: {mev}", callback_data="settings:toggle:mev_shield"),
         ],
         [
-            InlineKeyboardButton(text=f"Buy SOL: {config['buy_amount_sol']}", callback_data="settings:field:buy_amount_sol"),
-            InlineKeyboardButton(text=f"Buy Slippage: {config.get('buy_slippage_pct', config.get('slippage_pct','15'))}%", callback_data="settings:field:buy_slippage_pct"),
+            InlineKeyboardButton(text=f"Buy SOL: {config.get('buy_amount_sol','0.05')}", callback_data="settings:field:buy_amount_sol"),
+            InlineKeyboardButton(text=f"Buy Slippage: {config.get('buy_slippage_pct',config.get('slippage_pct','15'))}%", callback_data="settings:field:buy_slippage_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Sell Slippage: {config.get('sell_slippage_pct', config.get('slippage_pct','20'))}%", callback_data="settings:field:sell_slippage_pct"),
+            InlineKeyboardButton(text=f"Sell Slippage: {config.get('sell_slippage_pct',config.get('slippage_pct','20'))}%", callback_data="settings:field:sell_slippage_pct"),
+            InlineKeyboardButton(text=f"Jito Tip: {format_sol(int(config.get('jito_tip_lamports',2000000)))} SOL", callback_data="settings:field:jito_tip_lamports"),
         ],
         [
-            InlineKeyboardButton(text=f"Priority μLamports: {config['priority_fee_lamports']}", callback_data="settings:field:priority_fee_lamports"),
-            InlineKeyboardButton(text=f"Jito Tip: {format_sol(int(config['jito_tip_lamports']))} SOL", callback_data="settings:field:jito_tip_lamports"),
+            InlineKeyboardButton(text=f"Priority μLamports: {config.get('priority_fee_lamports',10000)}", callback_data="settings:field:priority_fee_lamports"),
+            InlineKeyboardButton(text=f"Min Liquidity: {config.get('min_liquidity_sol','5')} SOL", callback_data="settings:field:min_liquidity_sol"),
         ],
         [
-            InlineKeyboardButton(text=f"Take Profit: {config['take_profit_pct']}%", callback_data="settings:field:take_profit_pct"),
-            InlineKeyboardButton(text=f"Stop Loss: {config['stop_loss_pct']}%", callback_data="settings:field:stop_loss_pct"),
+            InlineKeyboardButton(text=f"TP1: +{config.get('take_profit_pct','100')}%", callback_data="settings:field:take_profit_pct"),
+            InlineKeyboardButton(text=f"TP2: +{config.get('take_profit_2_pct','300')}%", callback_data="settings:field:take_profit_2_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Max Hold: {config['max_hold_seconds']}s", callback_data="settings:field:max_hold_seconds"),
-            InlineKeyboardButton(text=f"Moon Bag: {config['moon_bag_pct']}%", callback_data="settings:field:moon_bag_pct"),
+            InlineKeyboardButton(text=f"TP2 sells: {config.get('take_profit_2_sell_pct','25')}%", callback_data="settings:field:take_profit_2_sell_pct"),
+            InlineKeyboardButton(text=f"Trailing stop: {config.get('trailing_stop_pct','20')}%", callback_data="settings:field:trailing_stop_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Daily Trades: {config['daily_position_limit']}", callback_data="settings:field:daily_position_limit"),
-            InlineKeyboardButton(text=f"Daily Drawdown: {config['max_daily_drawdown_pct']}%", callback_data="settings:field:max_daily_drawdown_pct"),
+            InlineKeyboardButton(text=f"Hard stop: -{config.get('stop_loss_pct','30')}%", callback_data="settings:field:stop_loss_pct"),
+            InlineKeyboardButton(text=f"Max hold: {int(config.get('max_hold_seconds',14400))//3600}h", callback_data="settings:field:max_hold_seconds"),
         ],
         [
-            InlineKeyboardButton(text=f"Migration Trigger: {config.get('pump_migration_progress_pct', '80')}%", callback_data="settings:field:pump_migration_progress_pct"),
-            InlineKeyboardButton(text=f"Min Liquidity USD: {config.get('min_liquidity_usd', '5000')}", callback_data="settings:field:min_liquidity_usd"),
+            InlineKeyboardButton(text=f"Min LP locked: {config.get('min_lp_locked_pct','80')}%", callback_data="settings:field:min_lp_locked_pct"),
+            InlineKeyboardButton(text=f"Max dev: {config.get('max_dev_wallet_pct','5')}%", callback_data="settings:field:max_dev_wallet_pct"),
         ],
         [
-            InlineKeyboardButton(text=f"Top-10 Cap: {config['max_top10_concentration_pct']}%", callback_data="settings:field:max_top10_concentration_pct"),
+            InlineKeyboardButton(text=f"Top-10 cap: {config.get('max_top10_concentration_pct','25')}%", callback_data="settings:field:max_top10_concentration_pct"),
+            InlineKeyboardButton(text=f"Daily trades: {config.get('daily_position_limit',5)}", callback_data="settings:field:daily_position_limit"),
         ],
-        [InlineKeyboardButton(text="Back to Dashboard", callback_data="home:show")],
+        [
+            InlineKeyboardButton(text=f"Daily drawdown: {config.get('max_daily_drawdown_pct','15')}%", callback_data="settings:field:max_daily_drawdown_pct"),
+            InlineKeyboardButton(text=f"Migration: {config.get('pump_migration_progress_pct','80')}%", callback_data="settings:field:pump_migration_progress_pct"),
+        ],
+        [InlineKeyboardButton(text="Back to Live Menu", callback_data="live:menu")],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
 
 def _fees_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1553,7 +1553,7 @@ def _validated_setting(field: str, raw: str):
     if not value.is_finite():
         raise ValueError("Enter a finite number.")
     ranges = {
-        "buy_amount_sol": (Decimal("0.001"), Decimal("0.25")),
+        "buy_amount_sol": (Decimal("0.001"), Decimal("0.50")),
         "slippage_pct": (Decimal("0.1"), Decimal("50")),
         "buy_slippage_pct": (Decimal("0.1"), Decimal("50")),
         "sell_slippage_pct": (Decimal("0.1"), Decimal("50")),
