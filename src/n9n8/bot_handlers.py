@@ -499,7 +499,9 @@ async def _dashboard_text(telegram_id: int) -> str:
     scanner_task = getattr(svc.engine, "_scanner_task", None)
     scanner_status = "RUNNING" if scanner_task and not scanner_task.done() else "IDLE"
     return (
-        "⚡ 9N8 · SOLANA TRADING CONTROL\n\n"
+        "⚡ 9N8 · SOLANA SNIPER DASHBOARD\n\n"
+        "NETWORK: 🟣 SOLANA MAINNET · only execution-enabled chain\n"
+        "EVM networks: visible in selector · not connected for trading\n\n"
         "TWO SEPARATE MODES\n"
         f"🧪 Paper Trading: {'RUNNING' if paper_on else 'PAUSED'}\n"
         f"Virtual cash: {paper_balance}\n"
@@ -513,6 +515,12 @@ async def _dashboard_text(telegram_id: int) -> str:
         f"Deposit address: {address or 'Create a wallet to receive SOL'}\n"
         f"Live activation: {activation}\n"
         f"Operator live switch: {'ON' if svc.settings.live_trading_enabled else 'OFF'}\n\n"
+        "ACTIVE LIVE RULES\n"
+        f"• Buy: {live_config.get('buy_amount_sol','0.05')} SOL · min liquidity: {live_config.get('min_liquidity_sol','5')} SOL\n"
+        f"• Buy/sell slippage: {live_config.get('buy_slippage_pct','15')}% / {live_config.get('sell_slippage_pct','20')}%\n"
+        f"• Jito tip: {format_sol(int(live_config.get('jito_tip_lamports',2000000)))} SOL · priority fee: {live_config.get('priority_fee_lamports',10000)} μLamports\n"
+        f"• TP1: +{live_config.get('take_profit_pct','100')}% · TP2: +{live_config.get('take_profit_2_pct','300')}%\n"
+        f"• Trail: {live_config.get('trailing_stop_pct','20')}% · hard stop: -{live_config.get('stop_loss_pct','30')}% · max hold: {int(live_config.get('max_hold_seconds',14400))//3600}h\n\n"
         "Paper trades use real market quotes but virtual funds only. Live mode uses your wallet "
         "and needs a separate readiness check and your confirmation."
     )
