@@ -93,7 +93,7 @@ button:disabled{opacity:.55;cursor:wait}
     <section class="card" id="exchangePanel">
       <h2>Exchange account connections</h2>
       <p class="muted">Use the API key and secret from your exchange. OKX also needs the passphrase you created with the key. 9N8 checks the permissions, then saves the connection encrypted.</p>
-      <div class="notice">Choose the markets you need below. On Binance, “Spot &amp; Margin &amp; Stock Trading” covers Spot and eligible related products; Futures and Options have their own switches. Bybit uses one key across Spot and derivatives: choose a system-generated key that gives you an API key and secret (not a self-generated RSA key). Some regional Bybit accounts have extra third-party connection rules. OKX uses one broad Trade permission, and your account mode determines which products are available. Keep Withdraw and account transfers turned OFF. Never paste a seed phrase or wallet private key.</div>
+      <div class="notice">For Binance, the recommended mode automatically reads the API-key restrictions and account product flags rather than assuming Spot. It reports Spot, Margin, Futures, Options, Portfolio Margin, IP restrictions and funds-movement permissions. Binance exposes one shared Futures API flag for USDⓈ-M and COIN-M; it does not return separate key toggles for those two products. Bybit uses one key across Spot and derivatives. OKX uses one broad Trade permission. Keep Withdraw and account transfers turned OFF. Never paste a seed phrase or wallet private key.</div>
       <form id="exchangeForm" autocomplete="off">
         <label for="provider">Exchange</label>
         <select id="provider" required>
@@ -103,6 +103,7 @@ button:disabled{opacity:.55;cursor:wait}
         </select>
         <label for="environment">Account</label>
         <select id="environment" required><option value="live">My real exchange account</option></select>
+        <div class="notice" id="binanceAutoDetect"><label style="display:flex;gap:8px;align-items:flex-start;margin:0"><input id="autoDetectBinanceMarkets" type="checkbox" checked style="width:auto;margin-top:3px">Automatically read every enabled Binance API-key and account permission</label><p class="muted" style="margin:8px 0 0">Recommended. No order is placed. Turn this off only when you want to inspect a manually selected subset.</p></div>
         <fieldset class="scanner-panel" id="marketPermissions" style="border:1px solid #344b63;border-radius:14px;padding:14px;margin:16px 0">
           <legend style="padding:0 6px;font-weight:700">Which markets should this key cover?</legend>
           <div class="grid">

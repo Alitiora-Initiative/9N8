@@ -12,6 +12,9 @@ const exchangeStatus = $("exchangeStatus");
 const balanceButton = $("loadBinanceBalance");
 const balanceTarget = $("binanceBalance");
 const marketHint = $("marketPermissionHint");
+const autoDetectRow = $("binanceAutoDetect");
+const autoDetectInput = $("autoDetectBinanceMarkets");
+const marketFieldset = $("marketPermissions");
 const marketInputs = () => Array.from(document.querySelectorAll('input[name="exchangeMarket"]'));
 
 async function apiPost(body) {
@@ -36,17 +39,24 @@ function syncExchangeFields() {
   bybitRegionFields.classList.toggle("hidden", provider !== "bybit");
   $("bybitRegionNote").classList.toggle("hidden", provider !== "bybit" || bybitRegionInput.value !== "eea");
   passphraseInput.required = isOkx;
+  autoDetectRow.classList.toggle("hidden", !isBinance);
+  const autoDetect = isBinance && autoDetectInput.checked;
+  marketFieldset.classList.toggle("hidden", autoDetect);
 
   const stocks = $("stocksMarketOption");
-  stocks.classList.toggle("hidden", !isBinance);
+  stocks.classList.add("hidden");
   const stockInput = stocks.querySelector("input");
-  stockInput.disabled = !isBinance;
-  if (!isBinance) stockInput.checked = false;
+  stockInput.disabled = true;
+  stockInput.checked = false;
 
   if (isBinance) {
-    marketHint.textContent = "Binance: Spot, Margin and eligible stock-linked products use the “Spot & Margin & Stock Trading” permission. Futures and Options have their own permissions. You do not need to turn on products you are not selecting.";
+    marketHint.textContent = autoDetect
+      ? "Automatic mode reads the Binance API-key switches and account-level product flags, then reports which products are enabled. USDⓈ-M and COIN-M share Binance’s Futures key permission."
+      : "Manual mode checks only the selected products against the Binance API-key switches and account-level product flags.";
     saveButton.textContent = "Check Binance permissions and save";
-    exchangeStatus.textContent = "Choose the markets you want. Keep Withdraw, Internal Transfer and Universal Transfer turned off.";
+    exchangeStatus.textContent = autoDetect
+      ? "Ready to read all Binance API-key and account product flags. Use a key with Reading enabled and Withdraw, Internal Transfer and Universal Transfer turned off."
+      : "Choose the markets you want. Keep Withdraw, Internal Transfer and Universal Transfer turned off.";
   } else if (isOkx) {
     marketHint.textContent = "OKX has one broad Trade permission, not a separate API-key switch for each product. The account mode and available instruments still matter. Trade permission may also allow internal funding transfers; 9N8 does not use transfer endpoints.";
     saveButton.textContent = "Check OKX permissions and save";
@@ -59,6 +69,7 @@ function syncExchangeFields() {
 }
 
 providerSelect.addEventListener("change", syncExchangeFields);
+autoDetectInput.addEventListener("change", syncExchangeFields);
 syncExchangeFields();
 
 function explainPermissionStatus(value) {
@@ -76,8 +87,9 @@ function explainPermissionStatus(value) {
 $("exchangeForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const provider = providerSelect.value;
+  const autoDetectMarkets = provider === "binance" && autoDetectInput.checked;
   const requestedMarkets = marketInputs().filter((input) => input.checked && !input.disabled).map((input) => input.value);
-  if (!requestedMarkets.length) {
+  if (!autoDetectMarkets && !requestedMarkets.length) {
     exchangeStatus.textContent = "Choose at least one market first.";
     return;
   }
@@ -97,13 +109,15 @@ $("exchangeForm").addEventListener("submit", async (event) => {
   saveButton.disabled = true;
   exchangeStatus.textContent = "Checking the permissions with your exchange…";
   try {
-    const result = await apiPost({
+    const request = {
       action: "connect_exchange",
       provider,
       environment: "live",
-      requestedMarkets,
+      autoDetectMarkets,
       credentials,
-    });
+    };
+    if (!autoDetectMarkets) request.requestedMarkets = requestedMarkets;
+    const result = await apiPost(request);
     window.n8ActiveExchangeConnectionId = result.connectionId || "";
     window.n8ActiveExchangeProvider = provider;
     const permissions = result.permissions || {};
@@ -112,15 +126,37 @@ $("exchangeForm").addEventListener("submit", async (event) => {
       market.replaceAll("_", " ").toUpperCase() + ": " + explainPermissionStatus(status)
     );
     const providerName = provider === "okx" ? "OKX" : provider === "bybit" ? "Bybit" : "Binance";
-    exchangeStatus.textContent =
-      providerName + " account access checked and saved.\n" +
-      "Selected: " + requestedMarkets.map((market) => market.replaceAll("_", " ")).join(", ") + ".\n" +
-      details.join("\n") +
-      (permissions.tradeScopeWarning ? "\nImportant: " + permissions.tradeScopeWarning : "") +
-      (permissions.marginNote ? "\nMargin: " + permissions.marginNote : "") +
-      "\nNo exchange orders are placed by connecting this key. Real trading is still locked.";
+    const key = permissions.keyPermissions || {};
+    const account = permissions.accountProducts || {};
+    const flag = (value) => value === true ? "ON" : value === false ? "OFF" : "unknown";
+    const inventory = provider === "binance" ? [
+      "API key — Read " + flag(key.reading) + "; IP restriction " + flag(key.ipRestricted) +
+        "; Spot/Margin " + flag(key.spotAndMarginTrading) + "; Margin " + flag(key.margin) +
+        "; Futures " + flag(key.futures) + "; Options " + flag(key.vanillaOptions) +
+        "; Portfolio Margin " + flag(key.portfolioMarginTrading) + "; Withdrawals " + flag(key.withdrawals) +
+        "; Internal Transfer " + flag(key.internalTransfer) + "; Universal Transfer " + flag(key.universalTransfer) +
+        "; FIX Trade " + flag(key.fixApiTrade) + "; FIX Read-only " + flag(key.fixReadOnly) + ".",
+      "Account — Margin " + flag(account.marginEnabled) + "; Futures " + flag(account.futuresEnabled) +
+        "; Options " + flag(account.optionsEnabled) + "; Portfolio Margin " + flag(account.portfolioMarginEnabled) + ".",
+      permissions.futuresScopeNote || "",
+      permissions.stockProductsNote || "",
+      "Portfolio Margin status: " + String(permissions.portfolioMarginStatus || "not reported"),
+    ].filter(Boolean) : [];
+    const selectedSummary = autoDetectMarkets
+      ? "Auto-detected products: " + ((permissions.detectedMarkets || []).join(", ") || "no trade product scopes")
+      : "Selected: " + requestedMarkets.map((market) => market.replaceAll("_", " ")).join(", ");
+    exchangeStatus.textContent = [
+      providerName + " account access checked and saved.",
+      selectedSummary,
+      ...inventory,
+      ...details,
+      permissions.tradeScopeWarning ? "Important: " + permissions.tradeScopeWarning : "",
+      permissions.marginNote ? "Margin: " + permissions.marginNote : "",
+      "No exchange orders are placed by connecting this key. Real trading is still locked.",
+    ].filter(Boolean).join("\n");
     $("exchangeForm").reset();
     providerSelect.value = provider;
+    autoDetectInput.checked = true;
     syncExchangeFields();
     balanceTarget.textContent = "Connection saved. Refresh balances to read the connected exchange account.";
   } catch (error) {

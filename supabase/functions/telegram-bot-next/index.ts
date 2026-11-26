@@ -44,7 +44,7 @@ const SUPABASE_SERVICE_KEY = (() => {
   }
 })();
 const FUNCTION_URL = SUPABASE_URL + "/functions/v1/telegram-bot-next";
-const MINI_APP_URL = "https://9n8-secure-connect.vercel.app/connect";
+const MINI_APP_URL = FUNCTION_URL + "?view=connect";
 const MIGRATION_PAGE_URL = "https://9n8-secure-connect.vercel.app/migrate";
 const SETUP_PAGE_URL = "https://9n8-secure-connect.vercel.app/setup";
 const CORS_HEADERS = {
@@ -2914,7 +2914,7 @@ async function registerWebhook(body: any): Promise<Response> {
 
 async function mainHandler(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  if (req.method === "GET" && url.searchParams.get("view") === "connect") return Response.redirect(MINI_APP_URL, 302);
+  if (req.method === "GET" && url.searchParams.get("view") === "connect") return connectHtml();
   if (req.method === "GET" && url.searchParams.get("view") === "setup") return Response.redirect(SETUP_PAGE_URL, 302);
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS_HEADERS });
   if (req.method === "GET" && url.searchParams.get("view") === "wallet-config") {
