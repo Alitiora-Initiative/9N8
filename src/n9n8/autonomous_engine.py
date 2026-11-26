@@ -118,6 +118,13 @@ class AutonomousEngine:
             name=f"9n8-wallet-{telegram_id}",
         )
 
+    async def reset_wallet_watcher(self, telegram_id: int) -> None:
+        old = self._wallet_watch_tasks.pop(telegram_id, None)
+        if old and not old.done():
+            old.cancel()
+            await asyncio.gather(old, return_exceptions=True)
+        await self.watch_wallet(telegram_id)
+
     async def _monitor_wallet_deposits(self, telegram_id: int, address: str) -> None:
         previous = await self.helius.balance_lamports(address)
         try:
@@ -129,18 +136,17 @@ class AutonomousEngine:
                 previous = current
                 if delta <= 0:
                     continue
-                signature = None
                 await self.notify(
                     telegram_id,
-                    f"SOL DEPOSIT DETECTED\n"
+                    f"SOL BALANCE CREDIT DETECTED\n"
                     f"Received: {from_lamports(delta)} SOL\n"
                     f"Current wallet balance: {from_lamports(current)} SOL\n"
                     f"Wallet: {address}\n"
-                    "This notification reflects an account-balance change observed by Helius.",
+                    "Helius observed an incoming SOL balance change; credits can include transfers or reclaimed account rent.",
                 )
                 if self.telemetry:
                     await self.telemetry(telegram_id, {
-                        "type": "deposit_detected",
+                        "type": "balance_credit",
                         "asset": "SOL",
                         "amount_lamports": delta,
                         "balance_lamports": current,
