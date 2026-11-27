@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "dev": "vite --host 0.0.0.0"
+    "dev": "vite --host 0.0.0.0",
+    "test:wallet-transaction": "node --test ./tests/wallet-transaction.test.mjs"
   },
   "dependencies": {
     "@walletconnect/universal-provider": "2.26.0",

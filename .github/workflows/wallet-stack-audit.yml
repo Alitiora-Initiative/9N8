@@ -36,6 +36,9 @@ jobs:
       - name: Verify clean lockfile install after safe updates
         working-directory: web
         run: npm ci --no-audit --no-fund
+      - name: Test Solana v3 versioned transaction round-trip
+        working-directory: web
+        run: npm run test:wallet-transaction
       - name: Audit complete dependency graph and enforce available fixes
         working-directory: web
         shell: bash
@@ -103,7 +106,7 @@ jobs:
             -d '{"state":"success","description":"Clean npm ci install, Vite build and RPC smoke test passed; audit report uploaded.","context":"9N8 wallet lockfile clean install"}'
       - name: Upload dependency lockfile and audit report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v5
         with:
           name: 9n8-wallet-stack-lock-and-audit
           path: |
