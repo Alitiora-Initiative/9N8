@@ -326,8 +326,12 @@ Keep the existing `9n8-secure-connect` frontend project rooted at `web/`;
 do not send backend secrets to it.
 
 The root `vercel.toml`, `index.py`, `src/`, and `worker/Dockerfile`
-belong to a dedicated Vercel backend project rooted at the repository root
-(`.`), or to an equivalent background-worker host. The GitHub Actions
-secret-sync job requires the Actions variable `VERCEL_BACKEND_PROJECT_ID`
-and refuses the known frontend project ID. Keep `N9N8_TRADING_MODE=paper`
-and `LIVE_TRADING_ENABLED=false` until live certification is complete.
+belong to the dedicated Vercel backend project `9n8-python-engine`, rooted at
+the repository root (`.`). Run the dedicated **9N8 runtime secret sync**
+workflow to copy the required credentials into Supabase and the Production
+backend environment. Its Vercel project ID is pinned to the backend project;
+it never syncs secrets to the public `9n8-secure-connect` frontend. The
+workflow preserves `N9N8_TRADING_MODE=paper` and
+`LIVE_TRADING_ENABLED=false`. See
+`docs/RUNTIME_SECRETS_AND_TREASURY.md` for the credential map and one-time
+provider-token setup.
