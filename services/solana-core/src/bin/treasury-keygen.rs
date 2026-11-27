@@ -44,7 +44,10 @@ fn generate_to_path(path: &Path) -> io::Result<String> {
     }
 
     let mut file = options.open(path)?;
-    if let Err(error) = file.write_all(json.as_bytes()).and_then(|_| file.sync_all()) {
+    if let Err(error) = file
+        .write_all(json.as_bytes())
+        .and_then(|_| file.sync_all())
+    {
         drop(file);
         let _ = fs::remove_file(path);
         return Err(error);
@@ -70,7 +73,9 @@ fn main() -> ExitCode {
             println!("MASTER_TREASURY_ADDRESS={address}");
             println!("Private key file: {}", output.display());
             println!("File permissions: owner read/write only (0600)");
-            println!("The private key was not printed. Back it up offline; never commit or upload it.");
+            println!(
+                "The private key was not printed. Back it up offline; never commit or upload it."
+            );
             ExitCode::SUCCESS
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -108,10 +113,19 @@ mod tests {
 
         assert!((32..=44).contains(&address.len()));
         let raw = fs::read_to_string(&path).expect("keypair file should be readable");
-        let inner = raw.trim().strip_prefix('[').unwrap().strip_suffix(']').unwrap();
+        let inner = raw
+            .trim()
+            .strip_prefix('[')
+            .unwrap()
+            .strip_suffix(']')
+            .unwrap();
         let secret_bytes: Vec<u8> = inner
             .split(',')
-            .map(|part| part.trim().parse::<u8>().expect("keypair byte should be u8"))
+            .map(|part| {
+                part.trim()
+                    .parse::<u8>()
+                    .expect("keypair byte should be u8")
+            })
             .collect();
         assert_eq!(secret_bytes.len(), 64);
 
