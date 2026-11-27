@@ -37,7 +37,7 @@ Run GitHub Actions → **9N8 runtime secret sync** to populate them. The workflo
 The production endpoint is:
 `https://qlfcazdfxexcnzdgpqqm.supabase.co/functions/v1/telegram-bot-next`
 
-The workflow requires `SUPABASE_ACCESS_TOKEN` and `VERCEL_TOKEN` as GitHub Actions secrets. The existing `TELEGRAM_WEBHOOK_URL` Actions secret must equal the canonical `telegram-bot-next` endpoint. It also reads `TELEGRAM_BOT_TOKEN`, `JUPITER_API_KEY`, `HELIUS_API_KEY`, and `TELEGRAM_CHAT_ID) using their exact existing names. Organization-level tokens work only when that organization's Actions-secret policy grants this repository access. Supabase-managed `SUPABASE_URL` and `SUPABASE_SECRET_KEYS` are read inside the Edge Function runtime. Never put a Supabase service/secret key in the frontend.
+The workflow requires `SUPABASE_ACCESS_TOKEN` and `VERCEL_TOKEN` as GitHub Actions secrets. The existing `TELEGRAM_WEBHOOK_URL` Actions secret must equal the canonical `telegram-bot-next` endpoint. It also reads `TELEGRAM_BOT_TOKEN`, `JUPITER_API_KEY`, `HELIUS_API_KEY`, and `TELEGRAM_CHAT_ID` using their exact existing names. Organization-level tokens work only when that organization's Actions-secret policy grants this repository access. Supabase-managed `SUPABASE_URL` and `SUPABASE_SECRET_KEYS` are read inside the Edge Function runtime. Never put a Supabase service/secret key in the frontend.
 
 The new universal candidate does not read `TELEGRAM_OWNER_ID` or any global `OKX_API_*` variable. The legacy function still has its old environment-variable contract. Do not move a shared exchange key into the universal function; each user supplies their own demo/testnet API credentials through the secure Mini App.
 
