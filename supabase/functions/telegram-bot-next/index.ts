@@ -3062,7 +3062,7 @@ async function handleMessage(update: any) {
   }
   if (command === "/wallets") {
     try {
-      const accounts = await db("n8_wallet_accounts?select=wallet_index,chain_namespace,network,public_address,derivation_path&user_id=eq." +
+      const accounts = await db("n8_wallet_accounts?select=wallet_index,chain_namespace,network,public_address,derivation_path,label&user_id=eq." +
         encodeURIComponent(row.id) + "&order=wallet_index.asc,chain_namespace.asc,network.asc&limit=25");
       const lines = Array.isArray(accounts) && accounts.length
         ? accounts.map((account: any) => [
@@ -3074,7 +3074,7 @@ async function handleMessage(update: any) {
       await sendPanel(row.id, chatId, "💳 9N8 NON-CUSTODIAL WALLETS\n\n" + lines +
         "\n\nBalances and QR codes are available in the secure Wallet Manager. The recovery phrase never appears in Telegram.",
         { inline_keyboard: [
-          [{ text: "💳 Open Wallet Manager", web_app: { url: MINI_APP_URL + (MINI_APP_URL.includes("?") ? "&" : "?") + "view=wallet" } }],
+          [{ text: "💳 Open Wallet Manager", web_app: { url: MINI_APP_URL.includes("view=wallet") ? MINI_APP_URL : MINI_APP_URL + (MINI_APP_URL.includes("?") ? "&" : "?") + "view=wallet" } }],
           [{ text: "🏠 Back to Dashboard", callback_data: "n8:services" }],
         ] });
     } catch {
