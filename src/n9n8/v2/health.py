@@ -39,7 +39,6 @@ class EngineHealth:
             raise ValueError("component names must be unique")
 
     def public_payload(self) -> dict[str, object]:
-        """Telemetry only; credentials, RPC query strings and private keys omitted."""
         return {
             "observed_at": self.observed_at.astimezone(timezone.utc).isoformat(),
             "trading_mode": self.trading_mode,
@@ -59,3 +58,33 @@ class EngineHealth:
                 for component in self.components
             ],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerHeartbeat:
+    """Sanitized worker lease; presence alone is not provider health."""
+
+    worker_id: str
+    status: str
+    trading_mode: str
+    last_seen_at: datetime
+    lease_seconds: int = 90
+
+    def __post_init__(self) -> None:
+        if not self.worker_id.strip():
+            raise ValueError("worker_id is required")
+        if self.status not in {"starting", "running", "stopping", "stopped", "error"}:
+            raise ValueError("unsupported worker status")
+        if self.trading_mode not in {"paper", "live"}:
+            raise ValueError("trading_mode must be paper or live")
+        if self.last_seen_at.tzinfo is None or self.last_seen_at.utcoffset() is None:
+            raise ValueError("last_seen_at must be timezone-aware")
+        if isinstance(self.lease_seconds, bool) or not 5 <= self.lease_seconds <= 3600:
+            raise ValueError("lease_seconds must be between 5 and 3600")
+
+    def is_alive(self, *, now: datetime | None = None) -> bool:
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None or current.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+        age = (current.astimezone(timezone.utc) - self.last_seen_at.astimezone(timezone.utc)).total_seconds()
+        return self.status == "running" and -5 <= age <= self.lease_seconds

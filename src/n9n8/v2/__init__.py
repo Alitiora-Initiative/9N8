@@ -3,8 +3,15 @@
 Provider adapters are loaded only by their owning process. This package does
 not start Telegram, open network connections, read secrets or sign transactions.
 """
+from .cache import RedisMarketCache
 from .contracts import Candle, TradeIntent, TradeSide, TradingMode
+from .economics import (
+    EconomicEvent, VenueQuote, assess_cross_venue_arbitrage,
+    classify_trade_transfer_mechanics, funding_cashflow, macro_event_blackout,
+    market_maker_inventory_pressure, metcalfe_activity_index, reflexivity_feedback,
+)
 from .execution import ExecutionState, LiveReadiness, PaperQuoteAdapter, transition
+from .health import ComponentHealth, EngineHealth, WorkerHeartbeat
 from .market_data import MarketDataQualityError, normalize_ohlcv
 from .microstructure import (
     BookLevel, BookMetrics, ExecutionEstimate, analyze_order_book,
@@ -27,6 +34,10 @@ from .quant_research import (
 from .risk import QuoteRiskInput, RiskLimits, assess_quote
 
 __all__ = [
+    "RedisMarketCache", "EconomicEvent", "VenueQuote", "assess_cross_venue_arbitrage",
+    "classify_trade_transfer_mechanics", "funding_cashflow", "macro_event_blackout",
+    "market_maker_inventory_pressure", "metcalfe_activity_index", "reflexivity_feedback",
+    "ComponentHealth", "EngineHealth", "WorkerHeartbeat",
     "Candle", "TradeIntent", "TradeSide", "TradingMode",
     "ExecutionState", "LiveReadiness", "PaperQuoteAdapter", "transition",
     "MarketDataQualityError", "normalize_ohlcv",
