@@ -4,6 +4,7 @@ import asyncio
 import base64
 import itertools
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -57,6 +58,9 @@ class JupiterJitoExecutor:
         self._ids = itertools.count(1)
         self._tip_accounts: list[str] = []
         self._tip_lock = asyncio.Lock()
+        # One shared limiter covers /order and /build from Paper and Live.
+        self._api_request_lock = asyncio.Lock()
+        self._last_api_request_at = 0.0
 
     async def start(self) -> None:
         if self._session is None or self._session.closed:
@@ -75,17 +79,30 @@ class JupiterJitoExecutor:
     async def _jupiter_get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         await self.start()
         assert self._session
-        try:
-            async with self._session.get(
-                self.settings.jupiter_base_url + endpoint,
-                params=params,
-                headers=self._headers(),
-            ) as response:
-                data = await response.json(content_type=None)
-                if response.status >= 400:
-                    raise ExecutionError(f"Jupiter HTTP {response.status}: {str(data)[:220]}")
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-            raise ExecutionError(f"Jupiter request failed: {type(exc).__name__}") from exc
+
+        # /order plus /build adds a second request for Live risk preflight.
+        # Serialize every GET from Paper and Live through one provider budget.
+        min_interval = 1.05 if self.settings.jupiter_api_key else 2.1
+        async with self._api_request_lock:
+            elapsed = time.monotonic() - self._last_api_request_at
+            delay = min_interval - elapsed
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._last_api_request_at = time.monotonic()
+            try:
+                async with self._session.get(
+                    self.settings.jupiter_base_url + endpoint,
+                    params=params,
+                    headers=self._headers(),
+                ) as response:
+                    data = await response.json(content_type=None)
+                    if response.status >= 400:
+                        raise ExecutionError(f"Jupiter HTTP {response.status}: {str(data)[:220]}")
+            except ExecutionError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+                raise ExecutionError(f"Jupiter request failed: {type(exc).__name__}") from exc
+
         if not isinstance(data, dict):
             raise ExecutionError("Jupiter returned an unexpected response.")
         if data.get("error"):
