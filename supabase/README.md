@@ -13,9 +13,9 @@
 ### Universal candidate — deployed, awaiting secrets and webhook registration
 - Function: `telegram-bot-next`
 - API/webhook endpoint: `https://qlfcazdfxexcnzdgpqqm.supabase.co/functions/v1/telegram-bot-next`
-- Deployed version inspected: 5 (ACTIVE)
+- Current deployment status: ACTIVE (check Supabase Dashboard for the latest function version)
 - JWT gateway verification: false; webhook traffic is authenticated by the Telegram secret-token header; Mini App actions validate Telegram-signed `initData`.
-- Telegram webhook is not registered to this endpoint until the owner adds the missing runtime secrets and submits the setup form.
+- The production Telegram webhook is registered to this endpoint by the GitHub Actions workflow **9N8 runtime secret sync**. That workflow stores the Telegram/Jupiter runtime secrets, generates the webhook secret, calls Telegram `setWebhook`, and verifies the endpoint with `getWebhookInfo`.
 
 ### Secure frontend
 - Vercel project: `9n8-secure-connect`
@@ -24,19 +24,20 @@
 - Frontend is a static HTTPS app. It never contains Supabase service-role/secret keys or the Telegram bot token.
 - It sends Mini App `initData` and user-entered credentials directly to the Supabase function over HTTPS. The backend validates identity and stores exchange credentials in Supabase Vault.
 
-## Shared runtime secrets still required
+## Runtime secrets and webhook registration
 
-The universal candidate health check currently reported that these two user-managed secrets were missing in Supabase:
+The production `telegram-bot-next` function reads these user-managed runtime secrets:
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_WEBHOOK_SECRET`
+- `JUPITER_API_KEY`
 
-Add them in the Supabase Edge Function Secrets UI:
-`https://supabase.com/dashboard/project/qlfcazdfxexcnzdgpqqm/functions/secrets`
+Run GitHub Actions → **9N8 runtime secret sync** to populate them from the existing repository Actions secrets. The workflow generates a fresh random `TELEGRAM_WEBHOOK_SECRET` for each run, stores it in Supabase, registers the same value with Telegram's `setWebhook`, and verifies the configured endpoint. Do not manually register the legacy `telegram-bot` function as the production webhook.
 
-The webhook secret must use only letters, digits, underscores, and hyphens. Keep the same value for Supabase's secret and the setup form. The setup page passes it to the server-side Telegram `setWebhook` call. Do not put these values in GitHub repository files or chat messages.
+The production endpoint is:
+`https://qlfcazdfxexcnzdgpqqm.supabase.co/functions/v1/telegram-bot-next`
 
-Supabase-managed `SUPABASE_URL` and `SUPABASE_SECRET_KEYS` are read inside the Edge Function runtime. The health check confirmed the database secret key is present. Never put a Supabase service/secret key in the frontend.
+The one-time workflow prerequisites are `SUPABASE_ACCESS_TOKEN` and `VERCEL_TOKEN` as repository Actions secrets. Supabase-managed `SUPABASE_URL` and `SUPABASE_SECRET_KEYS` are read inside the Edge Function runtime. Never put a Supabase service/secret key in the frontend.
 
 The new universal candidate does not read `TELEGRAM_OWNER_ID` or any global `OKX_API_*` variable. The legacy function still has its old environment-variable contract. Do not move a shared exchange key into the universal function; each user supplies their own demo/testnet API credentials through the secure Mini App.
 
