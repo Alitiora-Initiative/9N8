@@ -101,8 +101,8 @@ function validateEnvelope(input: any) {
     kdf_iterations: 600000, salt_b64: input.salt, iv_b64: input.iv, ciphertext_b64: input.ciphertext,
   };
 }
-function validateAccounts(value: unknown): any[] {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 25) throw new Error("wallet_accounts_invalid");
+function validateAccounts(value: unknown, requirePrimary = true): any[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 25) throw new Error("wallet_accounts_invalid");
   const accounts = value.map((entry: any) => {
     const namespace = String(entry?.chainNamespace ?? "");
     const chainId = String(entry?.chainId ?? "");
@@ -130,8 +130,8 @@ function validateAccounts(value: unknown): any[] {
   });
   const keys = new Set(accounts.map((row) => [row.wallet_index, row.chain_namespace, row.chain_id].join(":")));
   if (keys.size !== accounts.length) throw new Error("wallet_accounts_duplicate");
-  if (!accounts.some((row) => row.chain_namespace === "solana" && row.wallet_index === 0) ||
-      !accounts.some((row) => row.chain_namespace === "eip155" && row.chain_id === "8453")) {
+  if (requirePrimary && (!accounts.some((row) => row.chain_namespace === "solana" && row.wallet_index === 0) ||
+      !accounts.some((row) => row.chain_namespace === "eip155" && row.chain_id === "8453"))) {
     throw new Error("wallet_primary_accounts_missing");
   }
   return accounts;
@@ -196,7 +196,7 @@ async function handle(request: Request): Promise<Response> {
     if (action === "add_accounts") {
       const vaults = await db("n8_wallet_vaults?select=id&user_id=eq." + encodeURIComponent(ownerId));
       if (!Array.isArray(vaults) || !vaults[0]?.id) return response({ ok: false, error: "wallet_vault_not_found" }, 404, origin);
-      const accounts = validateAccounts(body?.accounts);
+      const accounts = validateAccounts(body?.accounts, false);
       await db("n8_wallet_accounts?on_conflict=user_id,chain_namespace,chain_id,public_address", "POST",
         accounts.map((account) => ({ user_id: ownerId, ...account, is_selected: false })),
         "resolution=ignore-duplicates,return=minimal");
