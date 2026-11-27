@@ -586,6 +586,11 @@ class AutonomousEngine:
             priority_fee_micro_lamports=priority_micro,
             jito_tip_lamports=jito_tip,
             use_jito=use_jito,
+            require_quote_risk=True,
+            liquidity_usd=risk.liquidity_usd,
+            min_liquidity_usd=str(min_liquidity_usd),
+            max_price_impact_pct=str(config.get("max_price_impact_pct", "2")),
+            max_slippage_bps=int(config.get("max_slippage_bps", 5000)),
         )
         # Reconcile both transactions in a Jito bundle. The tip is a separate
         # transaction and its network fee is part of the user's actual cost basis.

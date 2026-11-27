@@ -5,6 +5,7 @@ import base64
 import itertools
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -21,6 +22,7 @@ from solders.transaction import Transaction, VersionedTransaction
 from .config import Settings
 from .helius import HeliusClient
 from .math_engine import minimum_out
+from .v2.risk import assess_jupiter_quote
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +219,11 @@ class JupiterJitoExecutor:
         jito_tip_lamports: int = 0,
         treasury_fee_lamports: int = 0,
         use_jito: bool = True,
+        require_quote_risk: bool = False,
+        liquidity_usd: str | None = None,
+        min_liquidity_usd: str = "0",
+        max_price_impact_pct: str = "2",
+        max_slippage_bps: int = 5000,
     ) -> SwapResult:
         if amount_raw <= 0:
             raise ValueError("Swap amount must be positive.")
@@ -239,6 +246,31 @@ class JupiterJitoExecutor:
         expected_out = int(quote.get("outAmount") or 0)
         if expected_out <= 0:
             raise ExecutionError("Jupiter returned no positive output quote.")
+
+        # Assess the same /build response used for the transaction below. The
+        # live caller must supply liquidity from its independent token-security
+        # inspection. Missing quote fields fail closed before signing.
+        if require_quote_risk:
+            if liquidity_usd is None:
+                raise ExecutionError("V2 quote risk requires verified token liquidity; refusing live signing.")
+            try:
+                assessment = assess_jupiter_quote(
+                    quote,
+                    observed_at=datetime.now(timezone.utc),
+                    liquidity_usd=liquidity_usd,
+                    slippage_bps=slippage_bps,
+                    max_price_impact_pct=max_price_impact_pct,
+                    max_slippage_bps=max_slippage_bps,
+                    min_liquidity_usd=min_liquidity_usd,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ExecutionError(
+                    "V2 Jupiter quote-risk preflight could not be verified; refusing live signing."
+                ) from exc
+            if not assessment.approved:
+                raise ExecutionError(
+                    "V2 Jupiter quote-risk rejected live swap: " + ", ".join(assessment.blockers)
+                )
         min_out = int(quote.get("otherAmountThreshold") or minimum_out(expected_out, slippage_bps))
         if min_out <= 0:
             raise ExecutionError("Jupiter minimum output is zero; refusing trade.")
