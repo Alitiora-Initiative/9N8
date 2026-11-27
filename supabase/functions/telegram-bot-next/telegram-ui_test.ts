@@ -113,3 +113,11 @@ Deno.test("engine diagnostics separates configured variables from runtime health
     if (!missing.includes(expected)) throw new Error("Missing unavailable-config state: " + expected);
   }
 });
+
+
+Deno.test("first-run wallet onboarding opens the secure wallet Mini App", () => {
+  const keyboard = buildWalletOnboardingKeyboard("https://9n8-secure-connect.vercel.app/?view=wallet");
+  const rows = keyboard.inline_keyboard;
+  if (!rows[0][0].text.includes("Create My Non-custodial Wallet")) throw new Error("missing first-run wallet action");
+  if (rows[0][0].web_app?.url !== "https://9n8-secure-connect.vercel.app/?view=wallet") throw new Error("wallet link is incorrect");
+});
