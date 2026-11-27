@@ -3,5 +3,14 @@ name = "n9n8-solana-core"
 version = "0.1.0"
 edition = "2021"
 publish = false
+
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "treasury-keygen"
+path = "src/bin/treasury-keygen.rs"
+
+[dependencies]
+solana-keypair = "=4.0.0"
+solana-signer = "=4.0.0"
