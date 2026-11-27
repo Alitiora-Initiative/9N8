@@ -35,8 +35,11 @@ Add these **two additional repository Actions secrets**:
 
 - `SUPABASE_ACCESS_TOKEN`: a Supabase personal access token with permission to set Edge Function secrets for project `qlfcazdfxexcnzdgpqqm`.
 - `VERCEL_TOKEN`: a Vercel access token with permission to manage environment variables for project `9n8-python-engine`.
+- `TELEGRAM_WEBHOOK_SECRET`: a one-time, random 64-character lowercase hexadecimal secret, used unchanged by both the Telegram webhook and the Supabase Edge Function.
 
-These are provider access tokens for the sync workflow. They are not substitutes for the application credentials already listed in the repository.
+Generate the webhook secret on your own Linux machine with `openssl rand -hex 32`, then paste the output directly into GitHub Actions Secrets under the exact name `TELEGRAM_WEBHOOK_SECRET`. Do not paste it into this chat, commit it, or send it to Telegram. Keep it stable; do not regenerate it on every workflow run.
+
+These are provider/security credentials for the sync workflow. They are not substitutes for the application credentials already listed in the repository.
 
 After creating the Linux treasury wallet, add the printed public address as an **Actions Variable** named `MASTER_TREASURY_ADDRESS`. Never add the private key file as an Actions secret.
 
