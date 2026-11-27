@@ -71,3 +71,36 @@ def test_jupiter_quote_preflight_fails_closed_on_missing_or_excessive_inputs():
         "estimated_slippage_exceeds_limit",
         "liquidity_below_minimum",
     }
+
+
+
+def test_jupiter_build_quote_must_not_be_materially_worse_than_order_quote():
+    from src.n9n8.v2.risk import assess_build_quote_consistency
+
+    order_quote = {
+        "inputMint": "SOL", "outputMint": "TOKEN", "inAmount": "100",
+        "outAmount": "1000",
+    }
+    acceptable = {
+        "inputMint": "SOL", "outputMint": "TOKEN", "inAmount": "100",
+        "outAmount": "980",
+    }
+    assert assess_build_quote_consistency(
+        order_quote, acceptable, max_deviation_bps=300
+    ) == Decimal("200")
+
+    unacceptable = dict(acceptable, outAmount="950")
+    with pytest.raises(ValueError, match="worse than /order"):
+        assess_build_quote_consistency(
+            order_quote, unacceptable, max_deviation_bps=300
+        )
+
+
+def test_jupiter_order_and_build_quote_pair_or_amount_mismatch_is_rejected():
+    from src.n9n8.v2.risk import assess_build_quote_consistency
+
+    with pytest.raises(ValueError, match="outputMint mismatch"):
+        assess_build_quote_consistency(
+            {"inputMint": "SOL", "outputMint": "A", "inAmount": "1", "outAmount": "10"},
+            {"inputMint": "SOL", "outputMint": "B", "inAmount": "1", "outAmount": "10"},
+        )

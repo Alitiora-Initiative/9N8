@@ -36,6 +36,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "min_liquidity_usd": "0",
     "max_price_impact_pct": "2",
     "max_slippage_bps": 5000,
+    "max_build_quote_deviation_bps": 300,
     "pump_mode": "migration",
     "pump_migration_progress_pct": "80",
     "max_top10_concentration_pct": "25",

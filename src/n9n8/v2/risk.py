@@ -137,3 +137,46 @@ def assess_jupiter_quote(
         now=now,
         max_quote_age_seconds=max_quote_age_seconds,
     )
+
+
+
+def assess_build_quote_consistency(
+    order_quote: object,
+    build_quote: object,
+    *,
+    max_deviation_bps: int = 300,
+) -> Decimal:
+    """Return the adverse /build output deviation versus /order in basis points.
+
+    /order exposes priceImpactPct; /build supplies the raw instructions and
+    output amount. Both are requested for the same mint pair and input amount.
+    If /build is worse than /order by more than the configured tolerance, block.
+    """
+    from collections.abc import Mapping
+
+    if not isinstance(order_quote, Mapping) or not isinstance(build_quote, Mapping):
+        raise ValueError("Jupiter order and build responses must be objects")
+    try:
+        order_out = Decimal(str(order_quote["outAmount"]))
+        build_out = Decimal(str(build_quote["outAmount"]))
+    except (KeyError, InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("Jupiter order/build outAmount is missing or invalid") from exc
+    if not order_out.is_finite() or not build_out.is_finite() or order_out <= 0 or build_out <= 0:
+        raise ValueError("Jupiter order/build output amounts must be positive and finite")
+    if isinstance(max_deviation_bps, bool) or not 0 <= int(max_deviation_bps) <= 5000:
+        raise ValueError("max_deviation_bps must be between 0 and 5000")
+
+    for key in ("inputMint", "outputMint", "inAmount"):
+        order_value = order_quote.get(key)
+        build_value = build_quote.get(key)
+        if order_value is not None and build_value is not None and str(order_value) != str(build_value):
+            raise ValueError(f"Jupiter order/build {key} mismatch")
+
+    adverse_difference = max(Decimal("0"), order_out - build_out)
+    deviation_bps = adverse_difference * Decimal("10000") / order_out
+    if deviation_bps > Decimal(int(max_deviation_bps)):
+        raise ValueError(
+            f"Jupiter /build output is {deviation_bps:.2f} bps worse than /order; "
+            f"limit is {max_deviation_bps} bps"
+        )
+    return deviation_bps
