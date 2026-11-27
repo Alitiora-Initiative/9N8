@@ -106,7 +106,7 @@ jobs:
             -d '{"state":"success","description":"Clean npm ci install, Vite build and RPC smoke test passed; audit report uploaded.","context":"9N8 wallet lockfile clean install"}'
       - name: Upload dependency lockfile and audit report
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: 9n8-wallet-stack-lock-and-audit
           path: |

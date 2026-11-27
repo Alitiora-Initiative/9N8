@@ -27,11 +27,11 @@ pub fn constant_product_quote(
     }
 
     let spot = amount_in.checked_mul(reserve_out)? / reserve_in;
-    let impact = if spot == 0 {
-        0
-    } else {
-        spot.saturating_sub(amount_out).saturating_mul(10_000) / spot
-    };
+    let impact = spot
+        .saturating_sub(amount_out)
+        .saturating_mul(10_000)
+        .checked_div(spot)
+        .unwrap_or(0);
 
     Some(AmmQuote {
         amount_out,
