@@ -2669,6 +2669,7 @@ async function walletWelcomeText(): Promise<string> {
     "🟣 Solana Mainnet: wallet creation, address QR and live SOL balance check are available.",
     "🔵 Base · 🔷 Ethereum · 🟡 BNB · 🟣 Arbitrum: the public EVM address is derived locally; chain balance feeds and trade execution are not enabled in this release.",
     "⚠️ Write your recovery phrase offline. Never send it in Telegram, screenshots, or support chats. Keep your passphrase safe too.",
+    "IMPORTANT FOR EXISTING USERS: the new browser vault does not automatically import old 9N8 Python/Neon wallets. If you previously created or funded a legacy 9N8 wallet, do not deposit or move funds until that wallet has been safely recovered and reconciled.",
     "Paper and Live trading remain separate; live-money execution stays approval-gated.",
   ].join("\n");
 }
@@ -2720,6 +2721,7 @@ async function dashboardText(userId: string): Promise<string> {
     "Owner approval: " + (state?.ownerApprovalRequired === false ? "not required by stored policy" : "required"),
     "Emergency stop: " + (state?.killSwitch ? "ACTIVE" : "not active"), "",
     "The Telegram webhook never receives private keys or recovery phrases. Wallet balances above are read-only RPC values.",
+    "Legacy Python/Neon wallet balances are not included in this dashboard. Check and reconcile any previously funded legacy wallet before moving funds.",
     "🧠 Engine & Diagnostics: open /engine to inspect code capabilities and integration gaps.",
     "Menu navigation edits this dashboard message. Opening a screen does not enable autonomous execution or place a trade.",
   ].join("\n");
