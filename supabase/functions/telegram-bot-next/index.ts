@@ -26,7 +26,7 @@ import {
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
 import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
-import { buildEngineStatusText, buildLiveStatusKeyboard, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard, type IntegrationHealth } from "./telegram-ui.ts";
+import { buildEngineStatusText, buildLiveStatusKeyboard, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard, buildWalletOnboardingKeyboard, type IntegrationHealth } from "./telegram-ui.ts";
 
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
@@ -2660,24 +2660,69 @@ function serviceOverview(): string {
 }
 
 
+async function walletWelcomeText(): Promise<string> {
+  return [
+    "🎉 WELCOME TO 9N8 DEX TERMINAL", "",
+    "Your non-custodial wallet is generated on your own device — not inside Telegram.",
+    "Tap Create My Non-custodial Wallet. Set a backup passphrase, then 9N8 will derive your Solana wallet and shared EVM address locally.",
+    "🔐 Recovery phrase protection: AES-256-GCM encrypted backup. Only encrypted backup bytes and public addresses are stored by 9N8; the server cannot decrypt your recovery phrase.",
+    "🟣 Solana Mainnet: wallet creation, address QR and live SOL balance check are available.",
+    "🔵 Base · 🔷 Ethereum · 🟡 BNB · 🟣 Arbitrum: the public EVM address is derived locally; chain balance feeds and trade execution are not enabled in this release.",
+    "⚠️ Write your recovery phrase offline. Never send it in Telegram, screenshots, or support chats. Keep your passphrase safe too.",
+    "Paper and Live trading remain separate; live-money execution stays approval-gated.",
+  ].join("\\n");
+}
+
 async function dashboardText(userId: string): Promise<string> {
   let state: any = null;
   try { state = await getLiveStatus(userId); } catch { /* Report conservative defaults. */ }
+  let walletRows: any[] | null = null;
+  try {
+    const rows = await db("n8_wallet_accounts?select=wallet_index,chain_namespace,chain_id,network,public_address,label&user_id=eq." +
+      encodeURIComponent(userId) + "&order=wallet_index.asc,chain_namespace.asc,chain_id.asc&limit=25");
+    walletRows = Array.isArray(rows) ? rows : [];
+  } catch { /* Do not claim an address or balance when the wallet store is unavailable. */ }
+  const solana = (walletRows ?? []).filter((account) => account.chain_namespace === "solana");
+  const evm = (walletRows ?? []).find((account) => account.chain_namespace === "eip155" && account.chain_id === "8453");
+  let walletSummary = walletRows === null ? "Wallet status: temporarily unavailable." :
+    solana.length ? "🟣 W1 (Main): " + String(solana[0].public_address) : "Wallet not created yet.";
+  if (solana.length) {
+    try {
+      const result = await fetch(SOLANA_RPC_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getBalance", params: [solana[0].public_address, { commitment: "confirmed" }] }),
+        cache: "no-store",
+        signal: AbortSignal.timeout(6000),
+      });
+      const payload = await result.json().catch(() => ({}));
+      if (result.ok && !payload?.error && Number.isSafeInteger(payload?.result?.value)) {
+        walletSummary += "\\nBalance: " + (Number(payload.result.value) / 1_000_000_000).toFixed(6) + " SOL";
+      } else {
+        walletSummary += "\\nBalance: RPC temporarily unavailable";
+      }
+    } catch {
+      walletSummary += "\\nBalance: RPC temporarily unavailable";
+    }
+  }
+  if (evm?.public_address) walletSummary += "\\n🔵 EVM (Base / Ethereum / BNB / Arbitrum): " + String(evm.public_address);
+  const walletCount = solana.length + (evm ? 1 : 0);
   return [
     "⚡ 9N8 — SOLANA SNIPER DASHBOARD", "",
     "🟣 Active execution path: Solana Mainnet",
-    "🔵 Base · 🔷 Ethereum · 🟡 BNB Chain: external wallet pairing is available; trading adapters are NOT CONNECTED",
+    "🔵 Base · 🔷 Ethereum · 🟡 BNB Chain: address derivation is available; EVM trading adapters are NOT CONNECTED",
     "🟢 Robinhood / equities: brokerage integration NOT CONNECTED", "",
+    "💳 Wallets (" + walletCount + " public account records):",
+    walletSummary, "",
     "🧪 Paper: separate virtual ledger; no real SOL is spent.",
     "🔴 Live: " + (state?.killSwitch ? "STOPPED BY KILL SWITCH" : "GATED — readiness and execution checks required"),
     "Execution policy: " + String(state?.executionMode ?? "approval"),
     "Owner approval: " + (state?.ownerApprovalRequired === false ? "not required by stored policy" : "required"),
     "Emergency stop: " + (state?.killSwitch ? "ACTIVE" : "not active"), "",
-    "Wallet balances are read from the wallet manager; this Telegram webhook never receives private keys or recovery phrases.",
-    "First-time setup: open 💳 Non-custodial Wallets & Watch to generate your wallet on-device. The browser encrypts the recovery backup with AES-256-GCM before storing ciphertext; 9N8 cannot decrypt it. Never send a seed phrase or private key in Telegram.",
+    "The Telegram webhook never receives private keys or recovery phrases. Wallet balances above are read-only RPC values.",
     "🧠 Engine & Diagnostics: open /engine to inspect code capabilities and integration gaps.",
     "Menu navigation edits this dashboard message. Opening a screen does not enable autonomous execution or place a trade.",
-  ].join("\n");
+  ].join("\\n");
 }
 
 async function checkTelegramBotApi(): Promise<IntegrationHealth> {
@@ -2897,7 +2942,14 @@ async function handleMessage(update: any) {
     await setBotProfileAndCommands();
     await audit(row.id, chatId, "private_start");
     // /start must create a fresh visible reply; don't silently edit a stale dashboard above the chat.
-    await sendPanel(row.id, chatId, await dashboardText(row.id), mainKeyboard(), undefined, true);
+    const vaultRows = await db("n8_wallet_vaults?select=id&user_id=eq." + encodeURIComponent(row.id) + "&limit=1").catch(() => null);
+    const hasClientVault = Array.isArray(vaultRows) && vaultRows.length > 0;
+    await sendPanel(
+      row.id, chatId,
+      hasClientVault ? await dashboardText(row.id) : await walletWelcomeText(),
+      hasClientVault ? mainKeyboard() : buildWalletOnboardingKeyboard(MINI_APP_URL),
+      undefined, true,
+    );
     return;
   }
     if (command === "/engine" || command === "/diagnostics") {
@@ -2946,10 +2998,10 @@ async function handleMessage(update: any) {
   }
   if (command === "/sniper" || command === "/dashboard") {
     await sendPanel(row.id, chatId,
-      "🚀 9N8 SOLANA CONTROL APP\n\nOpen the secure 9N8 app for wallet connections, live market context and supported manual Jupiter quotes. Paper and Live remain separate; opening the app does not enable autonomous execution.",
+      "🚀 9N8 SOLANA CONTROL APP\n\nOpen the secure 9N8 app for non-custodial wallet management, live market context and supported manual Jupiter quotes. Paper and Live remain separate; opening the app does not enable autonomous execution.",
       { inline_keyboard: [
         [{ text: "🚀 Open 9N8 Control App", web_app: { url: SOLANA_SNIPER_URL } }],
-        [{ text: "💼 Wallet & Jupiter", web_app: { url: MINI_APP_URL } }],
+        [{ text: "💳 Non-custodial Wallets & Watch", web_app: { url: MINI_APP_URL } }],
         [{ text: "↩ Back to Dashboard", callback_data: "n8:services" }],
       ] });
     return;
