@@ -1,0 +1,112 @@
+name: 9N8 polyglot adapter checks
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, rewrite/9n8-polyglot-engine-v2]
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  source-contracts:
+    name: Strategy adapter source contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - run: python scripts/check_external_language_sources.py
+
+  go-market-gateway:
+    name: Go market-data gateway tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+          cache-dependency-path: services/market-gateway/go.mod
+      - working-directory: services/market-gateway
+        run: |
+          gofmt -w *.go
+          go vet ./...
+          go test -race -count=1 ./...
+
+  rust-solana-core:
+    name: Rust Solana math and deduplication tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - working-directory: services/solana-core
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --all-targets
+
+  cpp-native-risk:
+    name: C++ order-book risk and generated assembly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Configure, build and run C++ tests
+        run: |
+          cmake -S services/native-risk -B build/native-risk -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/native-risk --parallel 2
+          ctest --test-dir build/native-risk --output-on-failure
+      - name: Generate compiler assembly listing
+        run: |
+          mkdir -p build/assembly
+          g++ -std=c++20 -O2 -Wall -Wextra -Wpedantic -Werror -I services/native-risk/include -S services/native-risk/src/orderbook.cpp -o build/assembly/orderbook.s
+          test -s build/assembly/orderbook.s
+      - uses: actions/upload-artifact@v6
+        with:
+          name: 9n8-native-risk-assembly
+          path: build/assembly/orderbook.s
+          if-no-files-found: error
+
+  dotnet-broker-risk:
+    name: C# broker risk adapter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet build platforms/metatrader-bridge/9N8.BrokerBridge.csproj --configuration Release
+      - run: dotnet run --project platforms/metatrader-bridge/9N8.BrokerBridge.csproj --configuration Release --no-build
+
+  solidity-policy:
+    name: Solidity EVM policy compilation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: mkdir -p build/solidity
+      - run: npx --yes solc@0.8.26 --bin contracts/solidity/9N8RiskPolicy.sol -o build/solidity
+      - run: test -s build/solidity/contracts_solidity_9N8RiskPolicy_sol_N8RiskPolicy.bin
+
+  r-portfolio-research:
+    name: R portfolio metric smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - run: Rscript -e 'stopifnot(requireNamespace("stats", quietly = TRUE))'
+      - run: Rscript -e 'Sys.setenv(N8_SELF_TEST="1"); source("research/R/portfolio_diagnostics.R")'
+
+  julia-risk-research:
+    name: Julia Monte Carlo smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
+      - run: julia --color=yes research/Julia/monte_carlo.jl
+
+  # MetaTrader and TradingView have vendor IDE/terminal runtimes. The static
+  # source-contract job checks their signal-only APIs and forbids broker orders.
