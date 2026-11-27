@@ -1,26 +1,35 @@
 export type InlineButton = { text: string; callback_data?: string; web_app?: { url: string }; url?: string };
 export type InlineKeyboard = { inline_keyboard: InlineButton[][] };
 
+export type IntegrationHealth =
+  | "CONNECTED"
+  | "NOT CONFIGURED"
+  | "AUTH FAILED"
+  | "RATE LIMITED"
+  | "UNAVAILABLE"
+  | "INVALID RESPONSE";
+
 export type EngineDiagnosticsConfig = {
   telegramTokenConfigured: boolean;
+  telegramApiHealth: IntegrationHealth;
   webhookSecretConfigured: boolean;
   supabaseUrlConfigured: boolean;
   supabaseServiceCredentialConfigured: boolean;
   solanaRpcEndpointAvailable: boolean;
   jupiterApiKeyConfigured: boolean;
+  jupiterApiHealth: IntegrationHealth;
   walletConnectProjectConfigured: boolean;
 };
 
 /**
- * Reports implemented capabilities and environment-variable presence only.
- * It deliberately does not describe credentials as authenticated or the
- * separate Python worker as online.
+ * Reports configuration presence separately from explicit read-only provider
+ * probes. It deliberately does not describe the separate Python worker as online.
  */
 export function buildEngineStatusText(config: EngineDiagnosticsConfig): string {
   const status = (available: boolean) => available ? "CONFIGURED / AVAILABLE" : "MISSING";
   return [
     "🧠 9N8 ENGINE & DIAGNOSTICS", "",
-    "CONFIGURATION PRESENCE (not a connectivity or credential-validity test)",
+    "CONFIGURATION PRESENCE (names and value presence only)",
     "Telegram bot token: " + status(config.telegramTokenConfigured),
     "Telegram webhook secret: " + status(config.webhookSecretConfigured),
     "Supabase project URL: " + status(config.supabaseUrlConfigured),
@@ -28,6 +37,10 @@ export function buildEngineStatusText(config: EngineDiagnosticsConfig): string {
     "Solana RPC endpoint: " + status(config.solanaRpcEndpointAvailable),
     "Jupiter API key: " + status(config.jupiterApiKeyConfigured),
     "WalletConnect / Reown project: " + status(config.walletConnectProjectConfigured), "",
+    "LIVE READ-ONLY PROVIDER CHECKS",
+    "Telegram Bot API getMe: " + config.telegramApiHealth,
+    "Jupiter Swap V2 quote-only request: " + config.jupiterApiHealth,
+    "The Jupiter probe requests a quote only; it has no taker wallet, signs no transaction and submits no swap.", "",
     "IMPLEMENTED COMPONENTS",
     "• TypeScript/Deno Telegram webhook and interactive control panels",
     "• Jupiter Swap V2 quote/order/execute/status handlers with amount, expiry, taker and price-impact guards",
