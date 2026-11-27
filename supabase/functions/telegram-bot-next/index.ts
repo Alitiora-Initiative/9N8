@@ -46,7 +46,7 @@ const SUPABASE_SERVICE_KEY = (() => {
   }
 })();
 const FUNCTION_URL = SUPABASE_URL + "/functions/v1/telegram-bot-next";
-const MINI_APP_URL = FUNCTION_URL + "?view=connect";
+const MINI_APP_URL = "https://9n8-secure-connect.vercel.app/?view=wallet";
 const MIGRATION_PAGE_URL = "https://9n8-secure-connect.vercel.app/migrate";
 const SETUP_PAGE_URL = "https://9n8-secure-connect.vercel.app/setup";
 const CORS_HEADERS = {
