@@ -2,11 +2,13 @@ export const NETWORKS = {
   solana: { code: "solana", label: "Solana Mainnet", connected: true, executionEnabled: true,
     note: "The existing Solana control panel and server-side safety gates remain the only supported on-chain execution path." },
   base: { code: "base", label: "Base", connected: false, executionEnabled: false,
-    note: "EVM wallet onboarding, Base RPC monitoring, risk checks and order execution are not deployed." },
+    note: "WalletConnect pairing and address ownership verification are available in the secure wallet app. Base RPC market monitoring, token-risk checks, swap routing, trade signing and receipt reconciliation are not connected." },
   ethereum: { code: "ethereum", label: "Ethereum", connected: false, executionEnabled: false,
-    note: "EVM wallet onboarding, Ethereum RPC monitoring, risk checks and order execution are not deployed." },
-  bnb: { code: "bnb", label: "BNB Chain", connected: false, executionEnabled: false,
-    note: "EVM wallet onboarding, BNB Chain RPC monitoring, risk checks and order execution are not deployed." },
+    note: "WalletConnect pairing and address ownership verification are available in the secure wallet app. Ethereum RPC market monitoring, token-risk checks, swap routing, trade signing and receipt reconciliation are not connected." },
+  bnb: { code: "bnb", label: "BNB Smart Chain", connected: false, executionEnabled: false,
+    note: "WalletConnect pairing and address ownership verification are available in the secure wallet app. BNB RPC market monitoring, token-risk checks, PancakeSwap routing, trade signing and receipt reconciliation are not connected." },
+  robinhood: { code: "robinhood", label: "Robinhood / Equities", connected: false, executionEnabled: false,
+    note: "Robinhood is a brokerage service, not a blockchain. No approved Robinhood OAuth/API brokerage connector or verified tokenized-equity route is connected." },
 } as const;
 
 export type NetworkCode = keyof typeof NETWORKS;
