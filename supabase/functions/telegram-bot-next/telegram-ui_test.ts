@@ -1,4 +1,4 @@
-import { buildEngineStatusText, buildLiveStatusKeyboard, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText } from "./telegram-ui.ts";
+import { buildEngineStatusText, buildLiveStatusKeyboard, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildWalletOnboardingKeyboard } from "./telegram-ui.ts";
 
 function flatten(keyboard: { inline_keyboard: { text: string; callback_data?: string; web_app?: { url: string } }[][] }) {
   return keyboard.inline_keyboard.flat();
@@ -9,7 +9,7 @@ Deno.test("dashboard exposes Telegram control screens", () => {
   const labels = buttons.map((button) => button.text);
   for (const required of [
     "🧪 Paper Trading", "🔴 Live Controls", "🎯 Manual Quick-Snipe", "📊 Positions",
-    "🧭 Live Readiness Review", "⚙️ Trading Settings", "🛡 Anti-Rug Filters", "🌐 Switch Chain / Market", "🧠 Engine & Diagnostics", "📜 Trade History", "💸 Withdraw",
+    "🧭 Live Readiness Review", "⚙️ Trading Settings", "🛡 Anti-Rug Filters", "🌐 Switch Chain / Market", "🧠 Engine & Diagnostics", "📜 Trade History", "💸 Withdraw", "💳 Non-custodial Wallets & Watch",
   ]) {
     if (!labels.includes(required)) throw new Error("Missing dashboard control: " + required);
   }
@@ -112,4 +112,12 @@ Deno.test("engine diagnostics separates configured variables from runtime health
   ]) {
     if (!missing.includes(expected)) throw new Error("Missing unavailable-config state: " + expected);
   }
+});
+
+
+Deno.test("first-run wallet onboarding opens the secure wallet Mini App", () => {
+  const keyboard = buildWalletOnboardingKeyboard("https://9n8-secure-connect.vercel.app/?view=wallet");
+  const rows = keyboard.inline_keyboard;
+  if (!rows[0][0].text.includes("Create My Non-custodial Wallet")) throw new Error("missing first-run wallet action");
+  if (rows[0][0].web_app?.url !== "https://9n8-secure-connect.vercel.app/?view=wallet") throw new Error("wallet link is incorrect");
 });

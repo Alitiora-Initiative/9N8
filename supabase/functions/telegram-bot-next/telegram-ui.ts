@@ -64,12 +64,25 @@ export function buildEngineStatusText(config: EngineDiagnosticsConfig): string {
     "• Solidity policy is compiled source only and is not deployed; Pine/MQL scripts are research/signal adapters, not connected to chart or broker accounts.",
     "• WalletConnect can pair Solana, Ethereum, Base and BNB wallets and verify address ownership. Pairing does NOT mean the bot can execute trades on that chain.",
     "• Only the existing Solana path has an on-chain swap connector. Base, Ethereum and BNB trade execution, market listeners, risk adapters and receipt reconciliation are NOT CONNECTED.",
+    "• Non-custodial wallet creation derives keys in the browser; the server receives public addresses and AES-256-GCM encrypted backup bytes only. The server cannot decrypt the recovery phrase.",
     "• Robinhood brokerage and equities execution are NOT CONNECTED; Robinhood is not a blockchain.",
     "• A configured key means only that a value is present. It does not prove the provider accepted it or that a network request succeeds.", "",
     "LIVE-TRADING SAFETY",
     "• Live trading remains gated by operator configuration, wallet checks, risk limits and a separate confirmation.",
     "• No trade was placed by opening this diagnostic screen. Never send a seed phrase or private key in Telegram."
   ].join("\n");
+}
+
+
+export function buildWalletOnboardingKeyboard(walletAndJupiterUrl: string): InlineKeyboard {
+  const url = walletAndJupiterUrl.includes("view=wallet")
+    ? walletAndJupiterUrl
+    : walletAndJupiterUrl + (walletAndJupiterUrl.includes("?") ? "&" : "?") + "view=wallet";
+  return { inline_keyboard: [
+    [{ text: "🔐 Create My Non-custodial Wallet", web_app: { url } }],
+    [{ text: "📥 Wallets / Deposit / QR", web_app: { url } }],
+    [{ text: "🧠 Engine & Diagnostics", callback_data: "n8:engine" }],
+  ] };
 }
 
 export function buildMainKeyboard(solanaControlUrl: string, walletAndJupiterUrl: string): InlineKeyboard {
@@ -82,7 +95,7 @@ export function buildMainKeyboard(solanaControlUrl: string, walletAndJupiterUrl:
     [{ text: "🌐 Switch Chain / Market", callback_data: "n8:networks" }],
     [{ text: "🧠 Engine & Diagnostics", callback_data: "n8:engine" }],
     [{ text: "📜 Trade History", callback_data: "n8:history" }, { text: "💸 Withdraw", callback_data: "n8:withdraw" }],
-    [{ text: "💼 Wallet & Jupiter", web_app: { url: walletAndJupiterUrl } }],
+    [{ text: "💳 Non-custodial Wallets & Watch", web_app: { url: walletAndJupiterUrl.includes("view=wallet") ? walletAndJupiterUrl : walletAndJupiterUrl + (walletAndJupiterUrl.includes("?") ? "&" : "?") + "view=wallet" } }],
     [{ text: "📚 Services", callback_data: "n8:services" }, { text: "📡 Live Status", callback_data: "n8:live_status" }],
   ] };
 }
@@ -103,7 +116,7 @@ export function buildNetworkSelectorText(networks: {
     networks.bnb?.note ?? "Wallet pairing is available in the secure app; BNB trade execution is not connected.", "",
     "🟢 ROBINHOOD / EQUITIES — BROKERAGE NOT CONNECTED",
     networks.robinhood?.note ?? "No Robinhood brokerage connector is deployed.", "",
-    "IMPORTANT: WalletConnect pairing and ownership verification are not trading adapters. Do not deposit funds into a bot-controlled address; 9N8 does not currently generate custodial multi-chain wallets. No recovery phrase or private key is requested in Telegram.",
+    "IMPORTANT: 9N8 can generate a client-side non-custodial wallet in its secure Mini App. WalletConnect pairing and ownership verification are not trading adapters. No recovery phrase or private key is requested in Telegram. EVM trading remains disconnected.",
   ].join("\n");
 }
 

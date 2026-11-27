@@ -1,7 +1,7 @@
 name: 9N8 Solana tests
 on:
   push:
-    branches: [main, feature/solana-telegram-sniper, feature/9n8-neon-platform-split, feature/solana-live-controls-completion, feature/9n8-telegram-network-controls]
+    branches: [main, feature/solana-telegram-sniper, feature/9n8-neon-platform-split, feature/solana-live-controls-completion, feature/9n8-telegram-network-controls, feat/noncustodial-wallet-rebuild]
   pull_request:
     branches: [main, feature/solana-live-controls-completion]
   workflow_dispatch:
@@ -58,6 +58,12 @@ jobs:
           console.log("NPM AUDIT SUMMARY:", JSON.stringify(counts));
           console.log("NPM AUDIT FINDINGS:", JSON.stringify(findings, null, 2));
           NODE
+      - name: Test client-side wallet derivation and encrypted backup
+        working-directory: web
+        run: npm run test:wallet-vault
+      - name: Test Jupiter transaction serialization
+        working-directory: web
+        run: npm run test:wallet-transaction
       - name: Build web app
         working-directory: web
         run: npm run build
@@ -85,4 +91,4 @@ jobs:
       - name: Run chain and broker registry tests
         run: deno test supabase/functions/telegram-bot-next/networks_test.ts
       - name: Type-check Supabase edge functions
-        run: deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts
+        run: deno check supabase/functions/telegram-bot-next/index.ts supabase/functions/n8-paper-worker/index.ts supabase/functions/wallet-vault/index.ts
