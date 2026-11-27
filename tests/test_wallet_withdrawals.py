@@ -92,3 +92,11 @@ async def test_confirmed_withdrawal_records_receipt_and_network_fee():
     manager.db.record_trade_receipt.assert_awaited_once()
     manager.db.set_payout_address.assert_awaited_once_with(123, str(destination.pubkey()))
     assert [method for method, _ in manager.helius.calls] == ["getFeeForMessage", "sendTransaction"]
+
+
+def test_fee_path_requires_treasury_when_paper_runtime_has_none():
+    manager = WalletManager.__new__(WalletManager)
+    manager.treasury = None
+
+    with pytest.raises(WalletError, match="MASTER_TREASURY_ADDRESS"):
+        manager._treasury_recipient()
