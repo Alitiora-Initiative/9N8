@@ -22,8 +22,8 @@ Do not put Telegram, Jupiter, Helius, Supabase service, database, or wallet priv
 | `HELIUS_API_KEY` (Secret) | Not read by this Edge Function | Secret | Python Helius RPC/WebSocket credentials |
 | `TELEGRAM_CHAT_ID` (Secret) | Not required by the multi-user webhook | Secret | Python config accepts this exact name as its positive numeric authorized-user fallback |
 | `MASTER_TREASURY_ADDRESS` (Actions Variable) | Not used | Config | Public address only; populated after local key generation |
-| `TELEGRAM_WEBHOOK_URL` (existing Secret) | Not read | Not read | The sync workflow uses the canonical `telegram-bot-next` URL below |
-| `TELEGRAM_WEBHOOK_SECRET` | Generated during sync and stored in Supabase | Not used | A fresh random secret is generated, then sent to Telegram's `setWebhook` in the same run |
+| `TELEGRAM_WEBHOOK_URL` (existing Secret) | Not read at runtime | Not read | The sync workflow validates this against the canonical `telegram-bot-next` URL and registers that URL with Telegram |
+| `TELEGRAM_WEBHOOK_SECRET` | Runtime secret | Not used | Generated and masked inside each sync run, then stored in Supabase and sent to Telegram's `setWebhook`; it is not a GitHub Actions secret |
 
 The deployed Edge Function reads `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and `JUPITER_API_KEY` using `Deno.env.get(...)`. GitHub Secrets are not automatically inherited by Supabase or Vercel.
 
@@ -31,41 +31,42 @@ The Python config reads `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `HELIUS_API_KE
 
 ## One-time Actions setup
 
-Add these **two additional repository Actions secrets**:
+Add these **two provider-access credentials** as repository Actions secrets (or organization secrets explicitly granted to this repository):
 
-- `SUPABASE_ACCESS_TOKEN`: a Supabase personal access token with permission to set Edge Function secrets for project `qlfcazdfxexcnzdgpqqm`.
-- `VERCEL_TOKEN`: a Vercel access token with permission to manage environment variables for project `9n8-python-engine`.
-- `TELEGRAM_WEBHOOK_SECRET`: a one-time, random 64-character lowercase hexadecimal secret, used unchanged by both the Telegram webhook and the Supabase Edge Function.
+- `SUPABASE_ACCESS_TOKEN`: a Supabase personal access token with permission to set Edge Function secrets and deploy `telegram-bot-next` in project `qlfcazdfxexcnzdgpqqm`.
+- `VERCEL_TOKEN`: a Vercel access token with permission to manage Production environment variables and create a Production deployment for `9n8-python-engine`.
 
-Generate the webhook secret on your own Linux machine with `openssl rand -hex 32`, then paste the output directly into GitHub Actions Secrets under the exact name `TELEGRAM_WEBHOOK_SECRET`. Do not paste it into this chat, commit it, or send it to Telegram. Keep it stable; do not regenerate it on every workflow run.
+The existing application secrets keep their exact names: `TELEGRAM_BOT_TOKEN`, `JUPITER_API_KEY`, `HELIUS_API_KEY`, `TELEGRAM_CHAT_ID`, and `TELEGRAM_WEBHOOK_URL`. The workflow checks that the webhook URL equals the canonical `telegram-bot-next` endpoint. `TWELVEDATA_API_KEY` is not currently consumed by these two production runtimes.
 
-These are provider/security credentials for the sync workflow. They are not substitutes for the application credentials already listed in the repository.
+**Do not add `TELEGRAM_WEBHOOK_SECRET` manually.** The workflow creates a fresh 256-bit secret only after both provider preflight checks pass, masks it in the Actions log, writes it to a temporary runner environment, syncs it to Supabase, and registers it with Telegram in the same run. It is not printed, committed, or retained as a repository variable.
 
-After creating the Linux treasury wallet, add the printed public address as an **Actions Variable** named `MASTER_TREASURY_ADDRESS`. Never add the private key file as an Actions secret.
+After the Linux treasury wallet is generated, add the printed public address as an **Actions Variable** named `MASTER_TREASURY_ADDRESS`. Never add the private key file as an Actions secret.
+
+Provider access tokens are account-level control credentials. Create them in their respective provider dashboards, grant only the required project/team access, and add them directly to GitHub Actions. Do not paste the values into this chat.
 
 ## Run the sync
 
-Open GitHub → Actions → **9N8 runtime secret sync** → Run workflow.
+Open GitHub → Actions → **9N8 runtime secret sync** → Run workflow. It is intentionally manual; do not run it repeatedly to test credentials, because each successful run rotates the Telegram webhook secret and creates one Vercel Production deployment.
 
-The workflow:
+The workflow performs these checks and actions in order:
 
-1. Checks that the required existing Actions secrets and positive Telegram chat/user ID are present.
-2. Uses the stable `TELEGRAM_WEBHOOK_SECRET` supplied through Actions Secrets; it does not rotate this value on every run.
-3. Writes only the exact Supabase Edge Function secrets to a temporary mode-0600 file and runs `supabase secrets set`.
-4. Deploys only `telegram-bot-next` with `--no-verify-jwt`, preserving its existing Telegram secret-header and signed Mini App authentication.
-5. Calls the function's read-only health endpoint to confirm it sees both Telegram runtime secrets, without returning secret values.
-6. Verifies Telegram bot identity with `getMe`, registers the canonical `telegram-bot-next` webhook, and confirms the URL with `getWebhookInfo`.
-7. Performs a Jupiter Swap V2 quote-only request using the configured API key. It supplies no taker wallet and cannot build a signed transaction or submit a swap.
-6. Upserts `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `HELIUS_API_KEY`, and `JUPITER_API_KEY` into the Production environment of the actual Python backend project, not the frontend.
-7. Syncs the optional public treasury address when the Actions Variable exists.
-8. Verifies the Vercel variable names and Production targets without decrypting or printing their values.
-The workflow will stop if Vercel Production has drifted from the safety defaults `N9N8_TRADING_MODE=paper` and `LIVE_TRADING_ENABLED=false`. It never enables Live mode or submits a trade.
+1. Checks the existing application secrets, the two provider access tokens, the positive numeric Telegram chat/user ID, and the canonical webhook URL. It validates the optional treasury address as a 32-byte Solana public key.
+2. Performs a Jupiter Swap V2 quote-only request and a Telegram Bot API `getMe` preflight before changing any production secrets or webhook configuration.
+3. Generates a fresh webhook secret, stores it only in the runner environment, masks it, and writes the exact Supabase runtime values to a temporary mode-0600 file.
+4. Sets `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and `JUPITER_API_KEY` as Supabase Edge Function secrets, then deploys only `telegram-bot-next` with `--no-verify-jwt`, preserving its own Telegram-header and signed Mini App authentication.
+5. Calls the function's safe GET health endpoint to confirm it sees the Telegram token and webhook secret without returning secret values.
+6. Registers the canonical `telegram-bot-next` URL with Telegram's `setWebhook` and confirms it using `getWebhookInfo`.
+7. Upserts `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `HELIUS_API_KEY`, and `JUPITER_API_KEY` into the Production environment of the actual Python backend project, not the frontend. It syncs the optional public treasury address when the Actions Variable exists.
+8. Verifies Vercel variable names and Production targets without decrypting or printing values. It refuses to continue if `N9N8_TRADING_MODE` is not `paper` or `LIVE_TRADING_ENABLED` is not `false`.
+9. Creates one fresh Vercel Production deployment of `9n8-python-engine` from the current `main` commit so the new environment is activated.
+
+The workflow never enables Live mode, creates a wallet, signs a transaction, or submits a trade. The Jupiter validation request has no taker wallet and cannot create a signed swap transaction. The Vercel deployment uses the existing project's settings and GitHub connection.
 
 ## Deployment activation
 
-Supabase Edge Function secrets are available to deployed Edge Functions as runtime environment variables without a function redeployment.
+Supabase Edge Function secrets are made available to Edge Functions as runtime environment variables. This workflow deploys `telegram-bot-next` after setting them and verifies the configured names before registering the webhook.
 
-Vercel environment variable changes do **not** change an already-built deployment. They become available after the next successful deployment of `9n8-python-engine`. The sync workflow deliberately does not create a deployment, so a daily Vercel deployment quota limit cannot cause an additional failed deployment attempt. After the environment sync succeeds, deploy the backend when the Vercel quota permits.
+Vercel environment variable changes do not alter an already-built deployment. The workflow therefore creates one Production deployment of `9n8-python-engine` after syncing its Production environment. The deployment begins building immediately; check its Vercel deployment status and build logs before treating the Python runtime as ready.
 
 ## Treasury wallet security
 
