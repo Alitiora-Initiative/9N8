@@ -26,7 +26,7 @@ import {
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
 import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
-import { buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard } from "./telegram-ui.ts";
+import { buildEngineStatusText, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard } from "./telegram-ui.ts";
 
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
@@ -2583,6 +2583,7 @@ async function setBotProfileAndCommands(): Promise<void> {
         { command: "start", description: "Open the 9N8 Solana Sniper dashboard" },
         { command: "sniper", description: "Open the complete Solana Sniper control panel" },
         { command: "snipe", description: "Open manual Solana quick-snipe" },
+        { command: "engine", description: "Show engine capabilities and runtime diagnostics" },
         { command: "history", description: "View recorded Jupiter swap receipts" },
         { command: "withdraw", description: "Show safe self-custody withdrawal guidance" },
         { command: "solana_paper", description: "Open separate Solana Paper Trading controls" },
@@ -2629,6 +2630,7 @@ function serviceOverview(): string {
     "",
     "GET STARTED",
     "/sniper — open the Solana Sniper dashboard",
+    "/engine — inspect implemented modules, configuration and integration gaps",
     "/solana_paper — open isolated virtual Solana trading",
     "/solana_live — open gated live-wallet controls",
     "/networks — show supported and unavailable chains",
@@ -2656,8 +2658,21 @@ async function dashboardText(userId: string): Promise<string> {
     "Owner approval: " + (state?.ownerApprovalRequired === false ? "not required by stored policy" : "required"),
     "Emergency stop: " + (state?.killSwitch ? "ACTIVE" : "not active"), "",
     "Wallet balance and Python-worker PnL are not reported by this Telegram webhook. Open the secure app for wallet sessions and Jupiter quotes.",
+    "🧠 Engine & Diagnostics: open /engine to inspect code capabilities and integration gaps.",
     "Menu navigation edits this dashboard message. Opening a screen does not enable autonomous execution or place a trade.",
   ].join("\n");
+}
+
+async function engineStatusScreen(): Promise<string> {
+  return buildEngineStatusText({
+    telegramTokenConfigured: Boolean(TOKEN),
+    webhookSecretConfigured: Boolean(HOOK_SECRET),
+    supabaseUrlConfigured: Boolean(SUPABASE_URL),
+    supabaseServiceCredentialConfigured: Boolean(SUPABASE_SERVICE_KEY),
+    solanaRpcEndpointAvailable: Boolean(SOLANA_RPC_URL),
+    jupiterApiKeyConfigured: Boolean(JUPITER_API_KEY),
+    walletConnectProjectConfigured: Boolean(REOWN_PROJECT_ID),
+  });
 }
 
 async function positionsScreen(userId: string): Promise<string> {
@@ -2815,7 +2830,11 @@ async function handleMessage(update: any) {
     await sendPanel(row.id, chatId, await dashboardText(row.id), mainKeyboard());
     return;
   }
-    if (command === "/services") {
+    if (command === "/engine" || command === "/diagnostics") {
+    await sendPanel(row.id, chatId, await engineStatusScreen(), buildReturnKeyboard());
+    return;
+  }
+  if (command === "/services") {
     await sendPanel(row.id, chatId, serviceOverview(), mainKeyboard());
     return;
   }
@@ -2828,7 +2847,7 @@ async function handleMessage(update: any) {
       "9N8 COMMANDS\n\n/start — main dashboard\n/sniper — control app\n/snipe [MINT] — manual quick-snipe guidance\n" +
       "/networks — chain status\n/positions — recorded positions\n/history — Jupiter receipts\n/settings — stored risk policy\n" +
       "/safety — anti-rug requirements\n/withdraw — self-custody withdrawal guidance\n/paper — isolated virtual trading\n" +
-      "/live — gated live status\n/connect — wallet and exchange links\n/pause — pause activity\n/stop — emergency stop\n/resume — paper only\n\n" +
+      "/engine — engine diagnostics\\n"/live — gated live status\n/connect — wallet and exchange links\n/pause — pause activity\n/stop — emergency stop\n/resume — paper only\n\n" +
       "Pasting a token address does not execute a buy. Never send private keys, seed phrases or exchange secrets in Telegram.",
       mainKeyboard());
     return;
@@ -2987,6 +3006,7 @@ async function handleCallback(update: any) {
   if (!chat?.id || chat.type !== "private" || !q.from?.id) return;
   const row = await userRow(q.from);
   if (q.data === "n8:services") await sendPanel(row.id, Number(chat.id), await dashboardText(row.id), mainKeyboard(), Number(q.message?.message_id));
+  if (q.data === "n8:engine") await sendPanel(row.id, Number(chat.id), await engineStatusScreen(), buildReturnKeyboard(), Number(q.message?.message_id));
   if (q.data === "n8:networks") {
     await sendPanel(row.id, Number(chat.id), networkSelectorText(), networkSelectorKeyboard(), Number(q.message?.message_id));
   }

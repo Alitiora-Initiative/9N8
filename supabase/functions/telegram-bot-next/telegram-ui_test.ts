@@ -1,4 +1,4 @@
-import { buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText } from "./telegram-ui.ts";
+import { buildEngineStatusText, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText } from "./telegram-ui.ts";
 
 function flatten(keyboard: { inline_keyboard: { text: string; callback_data?: string; web_app?: { url: string } }[][] }) {
   return keyboard.inline_keyboard.flat();
@@ -37,5 +37,50 @@ Deno.test("manual snipe opens secure wallet flow without automatic-buy callbacks
   if (!buttons.some((button) => button.web_app?.url === "https://wallet.example")) throw new Error("Wallet app button missing.");
   if (buttons.some((button) => /buy|execute|auto/i.test(button.callback_data ?? ""))) {
     throw new Error("Manual snipe cannot trigger an automatic order.");
+  }
+});
+
+Deno.test("engine diagnostics separates configured variables from runtime health", () => {
+  const full = buildEngineStatusText({
+    telegramTokenConfigured: true,
+    webhookSecretConfigured: true,
+    supabaseUrlConfigured: true,
+    supabaseServiceCredentialConfigured: true,
+    solanaRpcEndpointAvailable: true,
+    jupiterApiKeyConfigured: true,
+    walletConnectProjectConfigured: true,
+  });
+  for (const expected of [
+    "🧠 9N8 ENGINE & DIAGNOSTICS",
+    "CONFIGURATION PRESENCE (not a connectivity or credential-validity test)",
+    "Jupiter API key: CONFIGURED / AVAILABLE",
+    "Jupiter Swap V2 quote/order/execute/status handlers",
+    "Python worker's Neon wallet, positions, PnL, heartbeat and detailed strategy settings are NOT synchronized",
+    "Base, Ethereum and BNB Chain execution are NOT CONNECTED",
+    "No trade was placed by opening this diagnostic screen",
+  ]) {
+    if (!full.includes(expected)) throw new Error("Missing truthful engine diagnostic: " + expected);
+  }
+  if (/Python worker: ONLINE|worker heartbeat: HEALTHY/i.test(full)) {
+    throw new Error("Diagnostics must not claim the separate worker is online.");
+  }
+
+  const missing = buildEngineStatusText({
+    telegramTokenConfigured: false,
+    webhookSecretConfigured: false,
+    supabaseUrlConfigured: false,
+    supabaseServiceCredentialConfigured: false,
+    solanaRpcEndpointAvailable: false,
+    jupiterApiKeyConfigured: false,
+    walletConnectProjectConfigured: false,
+  });
+  for (const expected of [
+    "Telegram bot token: MISSING",
+    "Telegram webhook secret: MISSING",
+    "Supabase project URL: MISSING",
+    "Solana RPC endpoint: MISSING",
+    "Jupiter API key: MISSING",
+  ]) {
+    if (!missing.includes(expected)) throw new Error("Missing unavailable-config state: " + expected);
   }
 });
