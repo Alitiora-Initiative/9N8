@@ -9,7 +9,7 @@ Deno.test("dashboard exposes Telegram control screens", () => {
   const labels = buttons.map((button) => button.text);
   for (const required of [
     "🧪 Paper Trading", "🔴 Live Controls", "🎯 Manual Quick-Snipe", "📊 Positions",
-    "🧭 Live Readiness Review", "⚙️ Trading Settings", "🛡 Anti-Rug Filters", "🌐 Switch Chain / Market", "🧠 Engine & Diagnostics", "📜 Trade History", "💸 Withdraw",
+    "🧭 Live Readiness Review", "⚙️ Trading Settings", "🛡 Anti-Rug Filters", "🌐 Switch Chain / Market", "🧠 Engine & Diagnostics", "📜 Trade History", "💸 Withdraw", "💳 Non-custodial Wallets & Watch",
   ]) {
     if (!labels.includes(required)) throw new Error("Missing dashboard control: " + required);
   }
