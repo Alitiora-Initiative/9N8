@@ -10,8 +10,9 @@ function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
-Deno.test("network registry exposes Solana, Base, Ethereum and BNB", () => {
-  assert(Object.keys(NETWORKS).join(",") === "solana,base,ethereum,bnb", "unexpected network registry");
+Deno.test("network registry exposes Solana, Base, Ethereum, BNB and Robinhood brokerage status", () => {
+  assert(Object.keys(NETWORKS).join(",") === "solana,base,ethereum,bnb,robinhood", "unexpected network registry");
+  assert(NETWORKS.robinhood.executionEnabled === false, "Robinhood is a brokerage and must not be treated as an available chain adapter");
 });
 
 Deno.test("only the existing Solana path is enabled for execution", () => {
@@ -19,11 +20,13 @@ Deno.test("only the existing Solana path is enabled for execution", () => {
   assert(!networkExecutionEnabled("base"), "Base must stay disabled");
   assert(!networkExecutionEnabled("ethereum"), "Ethereum must stay disabled");
   assert(!networkExecutionEnabled("bnb"), "BNB must stay disabled");
+  assert(!networkExecutionEnabled("robinhood"), "Robinhood brokerage must stay disabled until its connector is certified");
 });
 
 Deno.test("network lookup normalizes case and rejects unknown networks", () => {
   assert(getNetwork(" BASE ")?.code === "base", "case-insensitive lookup failed");
   assert(getNetwork("unknown") === undefined, "unknown network should not resolve");
+  assert(getNetwork(" ROBINHOOD ")?.label === "Robinhood / Equities", "Robinhood brokerage lookup failed");
 });
 
 Deno.test("address format recognition is narrow and does not initiate execution", () => {

@@ -1,4 +1,4 @@
-import { buildEngineStatusText, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText } from "./telegram-ui.ts";
+import { buildEngineStatusText, buildLiveStatusKeyboard, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText } from "./telegram-ui.ts";
 
 function flatten(keyboard: { inline_keyboard: { text: string; callback_data?: string; web_app?: { url: string } }[][] }) {
   return keyboard.inline_keyboard.flat();
@@ -9,7 +9,7 @@ Deno.test("dashboard exposes Telegram control screens", () => {
   const labels = buttons.map((button) => button.text);
   for (const required of [
     "🧪 Paper Trading", "🔴 Live Controls", "🎯 Manual Quick-Snipe", "📊 Positions",
-    "⚙️ Trading Settings", "🛡 Anti-Rug Filters", "🌐 Switch Chain", "🧠 Engine & Diagnostics", "📜 Trade History", "💸 Withdraw",
+    "🧭 Live Readiness Review", "⚙️ Trading Settings", "🛡 Anti-Rug Filters", "🌐 Switch Chain / Market", "🧠 Engine & Diagnostics", "📜 Trade History", "💸 Withdraw",
   ]) {
     if (!labels.includes(required)) throw new Error("Missing dashboard control: " + required);
   }
@@ -18,18 +18,35 @@ Deno.test("dashboard exposes Telegram control screens", () => {
   }
 });
 
-Deno.test("network selector reports EVM chains as unavailable", () => {
+Deno.test("network selector distinguishes wallet pairing from trade execution", () => {
   const networks = {
-    base: { note: "Base is not deployed." },
-    ethereum: { note: "Ethereum is not deployed." },
-    bnb: { note: "BNB is not deployed." },
+    base: { note: "Base wallet pairing is available; trading is not connected." },
+    ethereum: { note: "Ethereum wallet pairing is available; trading is not connected." },
+    bnb: { note: "BNB wallet pairing is available; trading is not connected." },
+    robinhood: { note: "Robinhood brokerage adapter is not connected." },
   };
   const screen = buildNetworkSelectorText(networks);
-  for (const expected of ["SOLANA MAINNET — ACTIVE", "BASE — NOT CONNECTED", "ETHEREUM — NOT CONNECTED", "BNB CHAIN — NOT CONNECTED"]) {
-    if (!screen.includes(expected)) throw new Error("Missing status: " + expected);
-  }
+  for (const expected of [
+    "SOLANA MAINNET — CONNECTED EXECUTION PATH",
+    "BASE — WALLET LINKING AVAILABLE · TRADING NOT CONNECTED",
+    "ETHEREUM — WALLET LINKING AVAILABLE · TRADING NOT CONNECTED",
+    "BNB SMART CHAIN — WALLET LINKING AVAILABLE · TRADING NOT CONNECTED",
+    "ROBINHOOD / EQUITIES — BROKERAGE NOT CONNECTED",
+    "No recovery phrase or private key is requested in Telegram",
+  ]) if (!screen.includes(expected)) throw new Error("Missing network status: " + expected);
   const buttons = flatten(buildNetworkSelectorKeyboard("https://wallet.example"));
-  if (!buttons.some((button) => button.callback_data === "n8:network:base")) throw new Error("Base selector missing.");
+  for (const callback of ["n8:network:base", "n8:network:ethereum", "n8:network:bnb", "n8:network:robinhood"]) {
+    if (!buttons.some((button) => button.callback_data === callback)) throw new Error("Missing market selector: " + callback);
+  }
+  if (!buttons.some((button) => button.web_app?.url === "https://wallet.example")) throw new Error("Secure wallet connection link missing.");
+});
+
+Deno.test("live status menu provides wallet, readiness, refresh and dashboard actions", () => {
+  const buttons = flatten(buildLiveStatusKeyboard("https://wallet.example", "https://control.example/migrate"));
+  if (!buttons.some((button) => button.web_app?.url === "https://wallet.example")) throw new Error("Wallet navigation missing.");
+  if (!buttons.some((button) => button.web_app?.url === "https://control.example/migrate")) throw new Error("Readiness navigation missing.");
+  if (!buttons.some((button) => button.callback_data === "n8:live_status")) throw new Error("Live refresh callback missing.");
+  if (!buttons.some((button) => button.callback_data === "n8:services")) throw new Error("Dashboard navigation missing.");
 });
 
 Deno.test("manual snipe opens secure wallet flow without automatic-buy callbacks", () => {
@@ -56,7 +73,8 @@ Deno.test("engine diagnostics separates configured variables from runtime health
     "Jupiter API key: CONFIGURED / AVAILABLE",
     "Jupiter Swap V2 quote/order/execute/status handlers",
     "Python worker's Neon wallet, positions, PnL, heartbeat and detailed strategy settings are NOT synchronized",
-    "Base, Ethereum and BNB Chain execution are NOT CONNECTED",
+    "Base, Ethereum and BNB trade execution, market listeners, risk adapters and receipt reconciliation are NOT CONNECTED.",
+    "Robinhood brokerage and equities execution are NOT CONNECTED; Robinhood is not a blockchain.",
     "No trade was placed by opening this diagnostic screen",
   ]) {
     if (!full.includes(expected)) throw new Error("Missing truthful engine diagnostic: " + expected);
