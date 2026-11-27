@@ -169,7 +169,7 @@ button:disabled{opacity:.55;cursor:wait}
         <div class="notice">9N8 stores only AES-256-GCM encrypted backup bytes and public wallet addresses. Use a unique passphrase of at least 12 characters. If you lose both the recovery phrase and passphrase, 9N8 cannot recover your funds. Never screenshot or share your phrase.</div>
         <label for="walletVaultPassphrase">Local backup passphrase (never sent to 9N8)</label>
         <input id="walletVaultPassphrase" type="password" minlength="12" maxlength="256" autocomplete="new-password" placeholder="At least 12 characters">
-        <section id="walletVaultCreate" class="scanner-panel">
+        <section id="walletVaultCreate" class="scanner-panel hidden">
           <p><strong>New user setup</strong></p>
           <p class="muted">The wallet is generated only after you press the button. Keep the page open and save the phrase offline.</p>
           <button id="walletVaultCreateButton" type="button">🔐 Create non-custodial wallet</button>
