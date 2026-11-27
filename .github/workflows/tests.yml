@@ -108,7 +108,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HELIUS_API_KEY: ${{ secrets.HELIUS_API_KEY }}
           MASTER_TREASURY_ADDRESS: ${{ secrets.MASTER_TREASURY_ADDRESS }}
-          ENCRYPTION_MASTER_KEY: ${{ secrets.ENCRYPTION_MASTER_KEY }}
           JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
         run: |
           python - <<'PY'
@@ -133,11 +132,11 @@ jobs:
               "TELEGRAM_BOT_TOKEN": os.environ.get("TELEGRAM_BOT_TOKEN", "").strip(),
               "AUTHORIZED_USER_ID": authorized,
               "HELIUS_API_KEY": os.environ.get("HELIUS_API_KEY", "").strip(),
-              "MASTER_TREASURY_ADDRESS": os.environ.get("MASTER_TREASURY_ADDRESS", "").strip(),
-              "ENCRYPTION_MASTER_KEY": os.environ.get("ENCRYPTION_MASTER_KEY", "").strip(),
+              # Fee treasury is optional in paper-only mode; fee paths hard-fail without it.
           }
           optional = {
               "JUPITER_API_KEY": os.environ.get("JUPITER_API_KEY", "").strip(),
+              "MASTER_TREASURY_ADDRESS": os.environ.get("MASTER_TREASURY_ADDRESS", "").strip(),
           }
           missing = [name for name, value in values.items() if not value]
           if not token:
@@ -178,7 +177,7 @@ jobs:
                   print("Environment update failed for " + name + " (" + type(error).__name__ + ").")
                   sys.exit(1)
           print("Synced sensitive production variables to Vercel: " + ", ".join(synced))
-          print("Existing encryption key was copied unchanged. Paper mode and live-trading lock were not modified.")
+          print("Encryption key is provisioned directly in Vercel. Treasury is optional for paper mode; live trading remains locked.")
           PY
       - name: Trigger Vercel Git deployment after environment sync
         run: |
