@@ -52,8 +52,10 @@ The workflow:
 1. Checks that the required existing Actions secrets and positive Telegram chat/user ID are present.
 2. Uses the stable `TELEGRAM_WEBHOOK_SECRET` supplied through Actions Secrets; it does not rotate this value on every run.
 3. Writes only the exact Supabase Edge Function secrets to a temporary mode-0600 file and runs `supabase secrets set`.
-4. Verifies Telegram bot identity with `getMe`, registers the canonical `telegram-bot-next` webhook, and confirms the URL with `getWebhookInfo`.
-5. Performs a Jupiter Swap V2 quote-only request using the configured API key. It supplies no taker wallet and cannot build a signed transaction or submit a swap.
+4. Deploys only `telegram-bot-next` with `--no-verify-jwt`, preserving its existing Telegram secret-header and signed Mini App authentication.
+5. Calls the function's read-only health endpoint to confirm it sees both Telegram runtime secrets, without returning secret values.
+6. Verifies Telegram bot identity with `getMe`, registers the canonical `telegram-bot-next` webhook, and confirms the URL with `getWebhookInfo`.
+7. Performs a Jupiter Swap V2 quote-only request using the configured API key. It supplies no taker wallet and cannot build a signed transaction or submit a swap.
 6. Upserts `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `HELIUS_API_KEY`, and `JUPITER_API_KEY` into the Production environment of the actual Python backend project, not the frontend.
 7. Syncs the optional public treasury address when the Actions Variable exists.
 8. Verifies the Vercel variable names and Production targets without decrypting or printing their values.
