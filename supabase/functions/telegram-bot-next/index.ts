@@ -26,7 +26,7 @@ import {
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
 import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
-import { buildEngineStatusText, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard } from "./telegram-ui.ts";
+import { buildEngineStatusText, buildLiveStatusKeyboard, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard } from "./telegram-ui.ts";
 
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
@@ -187,16 +187,16 @@ async function editDashboardMessage(chatId: number, messageId: number, text: str
   } catch { return false; }
 }
 
-async function sendPanel(userId: string, chatId: number, text: string, markup?: Obj, preferredMessageId?: number): Promise<number | null> {
+async function sendPanel(userId: string, chatId: number, text: string, markup?: Obj, preferredMessageId?: number, forceNew = false): Promise<number | null> {
   let messageId = Number(preferredMessageId) > 0 ? Number(preferredMessageId) : 0;
-  if (!messageId) {
+  if (!messageId && !forceNew) {
     try {
       const rows = await db("n8_users?select=telegram_dashboard_message_id&id=eq." + encodeURIComponent(userId));
       const stored = Array.isArray(rows) ? Number(rows[0]?.telegram_dashboard_message_id) : 0;
       if (Number.isSafeInteger(stored) && stored > 0) messageId = stored;
     } catch { /* A stale dashboard pointer must not block opening the bot. */ }
   }
-  if (messageId && await editDashboardMessage(chatId, messageId, text, markup)) {
+  if (!forceNew && messageId && await editDashboardMessage(chatId, messageId, text, markup)) {
     try {
       await db("n8_users?id=eq." + encodeURIComponent(userId), "PATCH",
         { telegram_dashboard_message_id: messageId }, "return=minimal");
@@ -270,6 +270,10 @@ function networkSelectorKeyboard(): Obj {
 
 function mainKeyboard(): Obj {
   return buildMainKeyboard(SOLANA_SNIPER_URL, MINI_APP_URL);
+}
+
+function liveStatusKeyboard(): Obj {
+  return buildLiveStatusKeyboard(MINI_APP_URL, MIGRATION_PAGE_URL);
 }
 
 async function verifyInitData(raw: string, maxAgeSeconds = 300): Promise<any> {
@@ -2431,6 +2435,7 @@ async function liveStatusText(userId: string): Promise<string> {
     "Minimum liquidity: $" + Number(state.minimumLiquidityUsd).toLocaleString("en-US"),
     "",
     "Live release: not activated in this build.",
+    "Wallet connection does not activate trading. A verified user-owned wallet, current connector certification, fresh balance check, passed strategy gate and explicit owner authorization are still required.",
   ];
   if (latest) {
     lines.push(
@@ -2440,9 +2445,19 @@ async function liveStatusText(userId: string): Promise<string> {
       "Window: " + String(latest.evaluation_window_days) + " days",
     );
     const failed = Array.isArray(latest.failed_checks) ? latest.failed_checks : [];
-    if (failed.length) lines.push("Blocking checks: " + failed.length);
+    if (failed.length) {
+      lines.push("", "BLOCKING REQUIREMENTS (" + failed.length + ")");
+      for (const [index, reason] of failed.slice(0, 5).entries()) lines.push((index + 1) + ". " + clean(reason, 180));
+      if (failed.length > 5) lines.push("…and " + (failed.length - 5) + " more.");
+    } else if (latest.status !== "eligible_pending_setup") {
+      lines.push("This assessment contains no stored blocker list. Run a fresh readiness assessment before requesting any activation.");
+    }
   } else {
-    lines.push("No live migration assessment yet. Use /migrate to assess your account.");
+    lines.push(
+      "No live migration assessment recorded.",
+      "Connect and verify your own wallet through the secure Wallet & Jupiter app, then use the Live Readiness Review button.",
+      "This does not send funds, submit orders or unlock live execution."
+    );
   }
   return lines.join("\n");
 }
@@ -2650,14 +2665,16 @@ async function dashboardText(userId: string): Promise<string> {
   try { state = await getLiveStatus(userId); } catch { /* Report conservative defaults. */ }
   return [
     "⚡ 9N8 — SOLANA SNIPER DASHBOARD", "",
-    "🟣 Active network: Solana Mainnet",
-    "🔵 Base · 🔷 Ethereum · 🟡 BNB Chain: NOT CONNECTED", "",
+    "🟣 Active execution path: Solana Mainnet",
+    "🔵 Base · 🔷 Ethereum · 🟡 BNB Chain: external wallet pairing is available; trading adapters are NOT CONNECTED",
+    "🟢 Robinhood / equities: brokerage integration NOT CONNECTED", "",
     "🧪 Paper: separate virtual ledger; no real SOL is spent.",
     "🔴 Live: " + (state?.killSwitch ? "STOPPED BY KILL SWITCH" : "GATED — readiness and execution checks required"),
     "Execution policy: " + String(state?.executionMode ?? "approval"),
     "Owner approval: " + (state?.ownerApprovalRequired === false ? "not required by stored policy" : "required"),
     "Emergency stop: " + (state?.killSwitch ? "ACTIVE" : "not active"), "",
     "Wallet balance and Python-worker PnL are not reported by this Telegram webhook. Open the secure app for wallet sessions and Jupiter quotes.",
+    "The secure app pairs external wallets; 9N8 does not currently create bot-custodied multi-chain deposit wallets. Never send a seed phrase or private key in Telegram.",
     "🧠 Engine & Diagnostics: open /engine to inspect code capabilities and integration gaps.",
     "Menu navigation edits this dashboard message. Opening a screen does not enable autonomous execution or place a trade.",
   ].join("\n");
@@ -2827,7 +2844,8 @@ async function handleMessage(update: any) {
   if (command === "/start" || command === "/menu") {
     await setBotProfileAndCommands();
     await audit(row.id, chatId, "private_start");
-    await sendPanel(row.id, chatId, await dashboardText(row.id), mainKeyboard());
+    // /start must create a fresh visible reply; don't silently edit a stale dashboard above the chat.
+    await sendPanel(row.id, chatId, await dashboardText(row.id), mainKeyboard(), undefined, true);
     return;
   }
     if (command === "/engine" || command === "/diagnostics") {
@@ -2910,15 +2928,14 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/migrate") {
-    await send(chatId,
-      "LIVE-TRADING READINESS\\n\\n" +
+    await sendPanel(row.id, chatId, "LIVE-TRADING READINESS\\n\\n" +
       await liveStatusText(row.id) +
-      "\\n\\nThis is a status report only. Live execution remains locked; connecting a wallet or exchange does not enable real-money orders."
-    );
+      "\\n\\nThis is a readiness report. Live execution stays locked until every server-side requirement and owner authorization is satisfied.",
+      liveStatusKeyboard());
     return;
   }
   if (command === "/live") {
-    await sendPanel(row.id, chatId, await liveStatusText(row.id), buildReturnKeyboard());
+    await sendPanel(row.id, chatId, await liveStatusText(row.id), liveStatusKeyboard());
     return;
   }
   if (command === "/risk") {
@@ -2953,7 +2970,7 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/status") {
-    await sendPanel(row.id, chatId, await liveStatusText(row.id), buildReturnKeyboard());
+    await sendPanel(row.id, chatId, await liveStatusText(row.id), liveStatusKeyboard());
     return;
   }
   if (command === "/paper" || command === "/solana_paper") {
@@ -3007,6 +3024,9 @@ async function handleCallback(update: any) {
   const row = await userRow(q.from);
   if (q.data === "n8:services") await sendPanel(row.id, Number(chat.id), await dashboardText(row.id), mainKeyboard(), Number(q.message?.message_id));
   if (q.data === "n8:engine") await sendPanel(row.id, Number(chat.id), await engineStatusScreen(), buildReturnKeyboard(), Number(q.message?.message_id));
+  if (q.data === "n8:live_readiness") {
+    await sendPanel(row.id, Number(chat.id), await liveStatusText(row.id), liveStatusKeyboard(), Number(q.message?.message_id));
+  }
   if (q.data === "n8:networks") {
     await sendPanel(row.id, Number(chat.id), networkSelectorText(), networkSelectorKeyboard(), Number(q.message?.message_id));
   }
@@ -3018,8 +3038,8 @@ async function handleCallback(update: any) {
     } else if (!networkExecutionEnabled(network.code)) {
       await audit(row.id, Number(chat.id), "unsupported_network_selection_blocked", "rejected", { network: network.code });
       await sendPanel(row.id, Number(chat.id),
-        network.label.toUpperCase() + " IS NOT CONNECTED\n\n" + network.note +
-        "\n\nSolana Mainnet remains the only active execution network. No RPC, wallet, quote or transaction was attempted.",
+        network.label.toUpperCase() + " · TRADE EXECUTION NOT CONNECTED\n\n" + network.note +
+        "\n\nSolana remains the only connected on-chain swap path. No trade quote, allowance, approval or transaction was requested.",
         networkSelectorKeyboard(), Number(q.message?.message_id));
     } else {
       await sendPanel(row.id, Number(chat.id),
@@ -3031,16 +3051,16 @@ async function handleCallback(update: any) {
     await sendPanel(row.id, Number(chat.id), "🧪 SOLANA PAPER TRADING\n\nLive market data · virtual SOL · separate practice ledger · no blockchain transaction is signed or broadcast.", solanaPanelKeyboard("paper"), Number(q.message?.message_id));
   }
   if (q.data === "n8:solana_live") {
-    await sendPanel(row.id, Number(chat.id), await liveStatusText(row.id), solanaPanelKeyboard("live"), Number(q.message?.message_id));
+    await sendPanel(row.id, Number(chat.id), await liveStatusText(row.id), liveStatusKeyboard(), Number(q.message?.message_id));
   }
   if (q.data === "n8:solana_positions") {
     await sendPanel(row.id, Number(chat.id), await positionsScreen(row.id), solanaPanelKeyboard("positions"), Number(q.message?.message_id));
   }
   if (q.data === "n8:solana_settings") {
-    await sendPanel(row.id, Number(chat.id), await settingsScreen(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
+    await sendPanel(row.id, Number(chat.id), await settingsScreen(row.id), solanaPanelKeyboard("settings"), Number(q.message?.message_id));
   }
   if (q.data === "n8:solana_safety") {
-    await sendPanel(row.id, Number(chat.id), safetyScreen(), buildReturnKeyboard(), Number(q.message?.message_id));
+    await sendPanel(row.id, Number(chat.id), safetyScreen(), solanaPanelKeyboard("safety"), Number(q.message?.message_id));
   }
   if (q.data === "n8:snipe") {
     await sendPanel(row.id, Number(chat.id), manualSnipeScreen(), buildManualQuickSnipeKeyboard(MINI_APP_URL), Number(q.message?.message_id));
@@ -3059,7 +3079,7 @@ async function handleCallback(update: any) {
   }
   if (q.data === "n8:paper_status") await sendPanel(row.id, Number(chat.id), await paperStatusText(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
   if (q.data === "n8:connections") await sendPanel(row.id, Number(chat.id), await listConnections(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
-  if (q.data === "n8:live_status") await sendPanel(row.id, Number(chat.id), await liveStatusText(row.id), buildReturnKeyboard(), Number(q.message?.message_id));
+  if (q.data === "n8:live_status") await sendPanel(row.id, Number(chat.id), await liveStatusText(row.id), liveStatusKeyboard(), Number(q.message?.message_id));
   if (q.data === "n8:resume_confirm") {
     const now = new Date().toISOString();
     await db("n8_risk_policies?user_id=eq." + encodeURIComponent(row.id), "PATCH", {
