@@ -6,13 +6,19 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite --host 0.0.0.0",
-    "test:wallet-transaction": "node --test ./tests/wallet-transaction.test.mjs"
+    "test:wallet-transaction": "node --test ./tests/wallet-transaction.test.mjs",
+    "test:wallet-vault": "node --test ./tests/wallet-vault-crypto.test.mjs"
   },
   "dependencies": {
     "@walletconnect/universal-provider": "2.26.0",
     "@solana/web3.js": "3.2.1",
     "qrcode": "1.5.4",
-    "lightweight-charts": "5.3.0"
+    "lightweight-charts": "5.3.0",
+    "@scure/bip32": "2.4.0",
+    "@scure/bip39": "2.4.0",
+    "ed25519-hd-key": "2.0.0",
+    "tweetnacl": "1.0.3",
+    "viem": "2.58.6"
   },
   "devDependencies": {
     "vite": "8.3.8"
