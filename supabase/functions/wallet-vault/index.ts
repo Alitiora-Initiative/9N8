@@ -25,10 +25,16 @@ const CORS_HEADERS = {
   "access-control-max-age": "600",
   "vary": "Origin",
 };
+function isAllowedOrigin(origin: string): boolean {
+  // Vercel generates unique branch deployment hostnames. Scope the wildcard
+  // to this exact project and team suffix; never allow arbitrary *.vercel.app.
+  return ALLOWED_ORIGINS.has(origin) ||
+    /^https:\/\/9n8-secure-connect(?:-[a-z0-9-]+)?-jolse\.vercel\.app$/i.test(origin);
+}
 
 function response(body: unknown, status = 200, origin = ""): Response {
   const headers = new Headers({ "content-type": "application/json; charset=utf-8", "cache-control": "no-store, max-age=0", ...CORS_HEADERS });
-  if (origin && ALLOWED_ORIGINS.has(origin)) headers.set("access-control-allow-origin", origin);
+  if (origin && isAllowedOrigin(origin)) headers.set("access-control-allow-origin", origin);
   return new Response(JSON.stringify(body), { status, headers });
 }
 function errorMessage(error: unknown): string {
@@ -162,8 +168,8 @@ async function getVault(userId: string): Promise<any> {
 async function handle(request: Request): Promise<Response> {
   const origin = request.headers.get("origin") ?? "";
   if (request.method === "OPTIONS") {
-    if (origin && !ALLOWED_ORIGINS.has(origin)) return response({ ok: false, error: "origin_not_allowed" }, 403);
-    return new Response(null, { status: 204, headers: { ...CORS_HEADERS, ...(origin ? { "access-control-allow-origin": origin } : {}) } });
+    if (origin && !isAllowedOrigin(origin)) return response({ ok: false, error: "origin_not_allowed" }, 403);
+    return new Response(null, { status: 204, headers: { ...CORS_HEADERS, ...(origin && isAllowedOrigin(origin) ? { "access-control-allow-origin": origin } : {}) } });
   }
   if (request.method !== "POST") return response({ ok: false, error: "method_not_allowed" }, 405, origin);
   if (origin && !ALLOWED_ORIGINS.has(origin)) return response({ ok: false, error: "origin_not_allowed" }, 403, origin);
