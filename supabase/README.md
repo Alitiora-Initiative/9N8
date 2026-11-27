@@ -32,7 +32,7 @@ The production `telegram-bot-next` function reads these user-managed runtime sec
 - `TELEGRAM_WEBHOOK_SECRET`
 - `JUPITER_API_KEY`
 
-Run GitHub Actions → **9N8 runtime secret sync** to populate them from the existing repository Actions secrets. The workflow generates a fresh random `TELEGRAM_WEBHOOK_SECRET` for each run, stores it in Supabase, registers the same value with Telegram's `setWebhook`, and verifies the configured endpoint. Do not manually register the legacy `telegram-bot` function as the production webhook.
+Run GitHub Actions → **9N8 runtime secret sync** to populate them from the repository Actions secrets. Generate `TELEGRAM_WEBHOOK_SECRET` once on your own Linux machine with `openssl rand -hex 32`, add it directly to GitHub Actions Secrets under that exact name, and keep it unchanged between workflow runs. The workflow stores that same value in Supabase, registers it with Telegram's `setWebhook`, and verifies the configured endpoint. It also probes Telegram `getMe` and a Jupiter quote-only request. Do not manually register the legacy `telegram-bot` function as the production webhook.
 
 The production endpoint is:
 `https://qlfcazdfxexcnzdgpqqm.supabase.co/functions/v1/telegram-bot-next`
