@@ -211,15 +211,15 @@ class PaperTradingEngine:
         except (TypeError, ValueError) as exc:
             await self.notify(
                 telegram_id,
-                "PAPER TOKEN SKIPPED · QUOTE RISK UNVERIFIED\\n"
-                f"Mint: {candidate.mint}\\nReason: {type(exc).__name__}",
+                "PAPER TOKEN SKIPPED · QUOTE RISK UNVERIFIED\n"
+                f"Mint: {candidate.mint}\nReason: {type(exc).__name__}",
             )
             return
         if not quote_risk.approved:
             await self.notify(
                 telegram_id,
-                "PAPER TOKEN SKIPPED · QUOTE RISK\\n"
-                f"Mint: {candidate.mint}\\n" + "\\n".join(quote_risk.blockers),
+                "PAPER TOKEN SKIPPED · QUOTE RISK\n"
+                f"Mint: {candidate.mint}\n" + "\n".join(quote_risk.blockers),
             )
             return
         received = int(quote.get("otherAmountThreshold") or quote.get("outAmount") or 0)

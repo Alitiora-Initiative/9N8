@@ -31,7 +31,7 @@ from .quant_research import (
     random_forest_regime_holdout, sample_autocorrelation, scalar_kalman_filter,
     walk_forward_splits,
 )
-from .risk import QuoteRiskInput, RiskLimits, assess_quote
+from .risk import QuoteRiskInput, RiskLimits, assess_jupiter_quote, assess_quote
 
 __all__ = [
     "RedisMarketCache", "EconomicEvent", "VenueQuote", "assess_cross_venue_arbitrage",
@@ -50,5 +50,5 @@ __all__ = [
     "adf_stationarity_test", "cointegration_test", "finbert_sentiment",
     "gaussian_hmm_regimes", "geometric_brownian_path", "mean_reversion_half_life",
     "random_forest_regime_holdout", "sample_autocorrelation", "scalar_kalman_filter",
-    "walk_forward_splits", "QuoteRiskInput", "RiskLimits", "assess_quote",
+    "walk_forward_splits", "QuoteRiskInput", "RiskLimits", "assess_jupiter_quote", "assess_quote",
 ]
