@@ -29,9 +29,16 @@ class WalletError(RuntimeError):
 
 
 class WalletManager:
-    def __init__(self, helius: HeliusClient, db: Database, oracle: PriceOracle, treasury: str):
+    def __init__(self, helius: HeliusClient, db: Database, oracle: PriceOracle, treasury: str | None):
         self.helius, self.db, self.oracle = helius, db, oracle
-        self.treasury = Pubkey.from_string(treasury)
+        self.treasury = Pubkey.from_string(treasury) if treasury and treasury.strip() else None
+
+    def _treasury_recipient(self) -> Pubkey:
+        if self.treasury is None:
+            raise WalletError(
+                "MASTER_TREASURY_ADDRESS is not configured. Treasury fee transfers remain disabled."
+            )
+        return self.treasury
 
     @staticmethod
     def generate_keypair() -> tuple[Keypair, str]:
@@ -137,7 +144,7 @@ class WalletManager:
             telegram_id,
             [transfer(TransferParams(
                 from_pubkey=(await self.keypair_for(telegram_id)).pubkey(),
-                to_pubkey=self.treasury,
+                to_pubkey=self._treasury_recipient(),
                 lamports=lamports,
             ))],
         )
@@ -274,7 +281,7 @@ class WalletManager:
         blockhash = await self._latest_hash()
         payout = balance - fee_lamports - 10_000
         instructions = [
-            transfer(TransferParams(from_pubkey=source, to_pubkey=self.treasury, lamports=fee_lamports)),
+            transfer(TransferParams(from_pubkey=source, to_pubkey=self._treasury_recipient(), lamports=fee_lamports)),
             transfer(TransferParams(from_pubkey=source, to_pubkey=recipient, lamports=payout)),
         ]
         message = Message.new_with_blockhash(instructions, source, blockhash)
@@ -370,7 +377,7 @@ class WalletManager:
             raise WalletError("Old wallet cannot cover the $1 wipe fee and network fee.")
         blockhash = await self._latest_hash()
         fee_ix = transfer(TransferParams(
-            from_pubkey=source, to_pubkey=self.treasury, lamports=fee_lamports
+            from_pubkey=source, to_pubkey=self._treasury_recipient(), lamports=fee_lamports
         ))
         provisional_payout = balance - fee_lamports - 5000
         payout_ix = transfer(TransferParams(
