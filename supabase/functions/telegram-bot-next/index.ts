@@ -26,7 +26,7 @@ import {
   type BinanceSymbolInfo,
 } from "./binance-live.ts";
 import { getNetwork, isEvmAddressCandidate, isSolanaAddressCandidate, NETWORKS, networkExecutionEnabled } from "./networks.ts";
-import { buildEngineStatusText, buildLiveStatusKeyboard, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard } from "./telegram-ui.ts";
+import { buildEngineStatusText, buildLiveStatusKeyboard, buildMainKeyboard, buildManualQuickSnipeKeyboard, buildNetworkSelectorKeyboard, buildNetworkSelectorText, buildReturnKeyboard, type IntegrationHealth } from "./telegram-ui.ts";
 
 
 const TOKEN = (Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "").trim();
@@ -2680,14 +2680,66 @@ async function dashboardText(userId: string): Promise<string> {
   ].join("\n");
 }
 
+async function checkTelegramBotApi(): Promise<IntegrationHealth> {
+  if (!TOKEN) return "NOT CONFIGURED";
+  try {
+    const result = await fetch("https://api.telegram.org/bot" + TOKEN + "/getMe", {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      signal: AbortSignal.timeout(6_000),
+    });
+    const payload = await result.json().catch(() => ({}));
+    if (result.ok && payload?.ok === true && payload?.result?.is_bot === true) return "CONNECTED";
+    if (result.status === 401 || Number(payload?.error_code) === 401) return "AUTH FAILED";
+    if (result.status === 429 || Number(payload?.error_code) === 429) return "RATE LIMITED";
+    return "UNAVAILABLE";
+  } catch {
+    return "UNAVAILABLE";
+  }
+}
+
+async function checkJupiterQuoteApi(): Promise<IntegrationHealth> {
+  if (!JUPITER_API_KEY) return "NOT CONFIGURED";
+  const query = new URLSearchParams({
+    inputMint: SOL_MINT,
+    outputMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    amount: "100000000",
+  });
+  try {
+    // No taker parameter is supplied: Jupiter returns a quote only, not a
+    // transaction. This diagnostic never signs, broadcasts, or spends funds.
+    const quote = await jupiterApi<any>("/swap/v2/order?" + query.toString(), {
+      apiKey: JUPITER_API_KEY,
+      fetcher: (input, init) => fetch(input, {
+        ...init,
+        signal: AbortSignal.timeout(8_000),
+      }),
+    });
+    const output = BigInt(String(quote?.outAmount ?? "0"));
+    return output > 0n && typeof quote?.router === "string" ? "CONNECTED" : "INVALID RESPONSE";
+  } catch (error) {
+    const status = Number((error as any)?.status ?? 0);
+    if (status === 401 || status === 403) return "AUTH FAILED";
+    if (status === 429) return "RATE LIMITED";
+    return "UNAVAILABLE";
+  }
+}
+
 async function engineStatusScreen(): Promise<string> {
+  const [telegramApiHealth, jupiterApiHealth] = await Promise.all([
+    checkTelegramBotApi(),
+    checkJupiterQuoteApi(),
+  ]);
   return buildEngineStatusText({
     telegramTokenConfigured: Boolean(TOKEN),
+    telegramApiHealth,
     webhookSecretConfigured: Boolean(HOOK_SECRET),
     supabaseUrlConfigured: Boolean(SUPABASE_URL),
     supabaseServiceCredentialConfigured: Boolean(SUPABASE_SERVICE_KEY),
     solanaRpcEndpointAvailable: Boolean(SOLANA_RPC_URL),
     jupiterApiKeyConfigured: Boolean(JUPITER_API_KEY),
+    jupiterApiHealth,
     walletConnectProjectConfigured: Boolean(REOWN_PROJECT_ID),
   });
 }
