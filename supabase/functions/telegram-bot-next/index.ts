@@ -2673,8 +2673,8 @@ async function dashboardText(userId: string): Promise<string> {
     "Execution policy: " + String(state?.executionMode ?? "approval"),
     "Owner approval: " + (state?.ownerApprovalRequired === false ? "not required by stored policy" : "required"),
     "Emergency stop: " + (state?.killSwitch ? "ACTIVE" : "not active"), "",
-    "Wallet balance and Python-worker PnL are not reported by this Telegram webhook. Open the secure app for wallet sessions and Jupiter quotes.",
-    "The secure app pairs external wallets; 9N8 does not currently create bot-custodied multi-chain deposit wallets. Never send a seed phrase or private key in Telegram.",
+    "Wallet balances are read from the wallet manager; this Telegram webhook never receives private keys or recovery phrases.",
+    "First-time setup: open 💳 Non-custodial Wallets & Watch to generate your wallet on-device. The browser encrypts the recovery backup with AES-256-GCM before storing ciphertext; 9N8 cannot decrypt it. Never send a seed phrase or private key in Telegram.",
     "🧠 Engine & Diagnostics: open /engine to inspect code capabilities and integration gaps.",
     "Menu navigation edits this dashboard message. Opening a screen does not enable autonomous execution or place a trade.",
   ].join("\n");
@@ -3061,7 +3061,25 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/wallets") {
-    await send(chatId, await listWallets(row.id));
+    try {
+      const accounts = await db("n8_wallet_accounts?select=wallet_index,chain_namespace,network,public_address,derivation_path&user_id=eq." +
+        encodeURIComponent(row.id) + "&order=wallet_index.asc,chain_namespace.asc,network.asc&limit=25");
+      const lines = Array.isArray(accounts) && accounts.length
+        ? accounts.map((account: any) => [
+            String(account.label ?? ("W" + (Number(account.wallet_index) + 1))),
+            String(account.network), String(account.public_address),
+            "Path: " + String(account.derivation_path),
+          ].join("\n")).join("\n\n")
+        : "No locally generated wallet is stored yet. Open the 9N8 Wallet Manager and create one on your device.";
+      await sendPanel(row.id, chatId, "💳 9N8 NON-CUSTODIAL WALLETS\n\n" + lines +
+        "\n\nBalances and QR codes are available in the secure Wallet Manager. The recovery phrase never appears in Telegram.",
+        { inline_keyboard: [
+          [{ text: "💳 Open Wallet Manager", web_app: { url: MINI_APP_URL + (MINI_APP_URL.includes("?") ? "&" : "?") + "view=wallet" } }],
+          [{ text: "🏠 Back to Dashboard", callback_data: "n8:services" }],
+        ] });
+    } catch {
+      await sendPanel(row.id, chatId, "Wallet Manager is not initialized yet. Open the secure 9N8 app from the dashboard.", mainKeyboard());
+    }
     return;
   }
   await send(chatId, "I did not recognize that command. Send /help.");
