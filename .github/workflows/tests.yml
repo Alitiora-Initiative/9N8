@@ -102,7 +102,7 @@ jobs:
       - name: Validate and sync runtime secrets without printing values
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_BACKEND_PROJECT_ID: ${{ vars.VERCEL_BACKEND_PROJECT_ID }}
+          VERCEL_BACKEND_PROJECT_ID: prj_XRNfMHxy12MsqJ0cuTvhAYmYGhh6
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           AUTHORIZED_USER_ID: ${{ secrets.AUTHORIZED_USER_ID }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -147,7 +147,7 @@ jobs:
               sys.exit(1)
           if missing:
               print("Runtime sync not run. Missing GitHub Actions secrets: " + ", ".join(missing))
-              print("Add the named secrets and VERCEL_BACKEND_PROJECT_ID variable to the 9N8 repository, then rerun this workflow.")
+              print("Add the named GitHub Actions secrets to the 9N8 repository, then rerun this workflow. The backend project ID is pinned to the Git-linked 9n8-python-engine project.")
               sys.exit(1)
 
           endpoint = ("https://api.vercel.com/v10/projects/" + project +
