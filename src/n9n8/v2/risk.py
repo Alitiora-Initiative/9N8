@@ -82,3 +82,58 @@ def assess_quote(
     if quote.liquidity_usd < limits.min_liquidity_usd:
         blockers.append("liquidity_below_minimum")
     return RiskAssessment(not blockers, tuple(blockers), max(0, age))
+
+
+
+def assess_jupiter_quote(
+    quote: object,
+    *,
+    observed_at: datetime,
+    liquidity_usd: object,
+    slippage_bps: int,
+    max_price_impact_pct: object = "2",
+    max_slippage_bps: int = 5000,
+    min_liquidity_usd: object = "0",
+    now: datetime | None = None,
+    max_quote_age_seconds: int = 20,
+) -> RiskAssessment:
+    """Validate Jupiter's actual quote against the V2 execution risk policy.
+
+    Jupiter's priceImpactPct is a fraction (0.01 = 1%). The configured maximum
+    price impact is a percentage (1 = 1%). Missing fields fail closed.
+    """
+    from collections.abc import Mapping
+
+    if not isinstance(quote, Mapping):
+        raise ValueError("Jupiter quote must be an object")
+    impact_raw = quote.get("priceImpactPct")
+    output_raw = quote.get("outAmount")
+    if impact_raw is None or output_raw is None:
+        raise ValueError("Jupiter quote is missing priceImpactPct or outAmount")
+    try:
+        expected_out = int(str(output_raw))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Jupiter quote outAmount is invalid") from exc
+    if expected_out <= 0:
+        raise ValueError("Jupiter quote outAmount must be positive")
+    impact_pct = decimal_value(max_price_impact_pct, "max_price_impact_pct")
+    if impact_pct <= 0 or impact_pct > Decimal("100"):
+        raise ValueError("max_price_impact_pct must be in (0, 100]")
+    limits = RiskLimits(
+        max_price_impact_fraction=impact_pct / Decimal("100"),
+        max_slippage_bps=int(max_slippage_bps),
+        min_liquidity_usd=decimal_value(min_liquidity_usd, "min_liquidity_usd"),
+    )
+    input_value = QuoteRiskInput(
+        observed_at=observed_at,
+        price_impact_fraction=decimal_value(impact_raw, "priceImpactPct"),
+        estimated_slippage_bps=int(slippage_bps),
+        liquidity_usd=decimal_value(liquidity_usd, "liquidity_usd"),
+        expected_out_raw=expected_out,
+    )
+    return assess_quote(
+        input_value,
+        limits=limits,
+        now=now,
+        max_quote_age_seconds=max_quote_age_seconds,
+    )
