@@ -61,3 +61,32 @@ def test_group_chat_id_is_rejected_as_authorized_user_fallback(monkeypatch):
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "-1001234567890")
     with pytest.raises(RuntimeError, match="positive private TELEGRAM_CHAT_ID"):
         Settings.from_env()
+
+
+def test_paper_mode_does_not_require_a_fee_treasury(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-telegram-token")
+    monkeypatch.setenv("AUTHORIZED_USER_ID", "123456789")
+    monkeypatch.setenv("HELIUS_API_KEY", "test-helius-key")
+    monkeypatch.delenv("MASTER_TREASURY_ADDRESS", raising=False)
+    monkeypatch.setenv("ENCRYPTION_MASTER_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("N9N8_TRADING_MODE", "paper")
+    monkeypatch.setenv("LIVE_TRADING_ENABLED", "false")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("N9N8_REQUIRE_POSTGRES", "false")
+
+    settings = Settings.from_env()
+
+    assert settings.trading_mode == "paper"
+    assert settings.treasury == ""
+
+
+def test_live_mode_requires_a_fee_treasury(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-telegram-token")
+    monkeypatch.setenv("AUTHORIZED_USER_ID", "123456789")
+    monkeypatch.setenv("HELIUS_API_KEY", "test-helius-key")
+    monkeypatch.delenv("MASTER_TREASURY_ADDRESS", raising=False)
+    monkeypatch.setenv("ENCRYPTION_MASTER_KEY", Fernet.generate_key().decode())
+    monkeypatch.setenv("N9N8_TRADING_MODE", "live")
+    monkeypatch.setenv("LIVE_TRADING_ENABLED", "true")
+    with pytest.raises(RuntimeError, match="MASTER_TREASURY_ADDRESS"):
+        Settings.from_env()
