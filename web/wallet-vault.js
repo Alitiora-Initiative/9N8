@@ -108,6 +108,7 @@ function showRecoveryPhrase(mnemonic) {
   $("walletVaultBackupSaved").checked = false;
   setStatus("Recovery phrase is shown only in this private Mini App. Write it offline. It will be cleared from this screen after 60 seconds.", "warning");
   revealTimer = setTimeout(() => {
+    activeMnemonic = "";
     clearSecretElement(phrase);
     section.classList.add("hidden");
     setStatus("Recovery phrase display cleared. Your encrypted backup remains stored; the phrase cannot be recovered without the passphrase.", "info");
@@ -144,6 +145,7 @@ async function storeNewWallet() {
   setStatus("Saving AES-256-GCM encrypted backup and public addresses…");
   await api("save", { envelope, accounts });
   activeMnemonic = mnemonic;
+  $("walletVaultPassphrase").value = "";
   renderAccounts(accounts);
   $("walletVaultCreate").classList.add("hidden");
   $("walletVaultUnlock").classList.remove("hidden");
