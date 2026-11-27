@@ -8,17 +8,23 @@ This utility creates a **standard Solana Ed25519 wallet** on the machine where y
 - Rust stable toolchain (rustup, cargo)
 - Network access for the first Cargo dependency build
 
-## Generate the treasury wallet offline from the bot
+## Build the generator and create the treasury wallet locally
 
-From the repository root:
+Run these commands on a Linux computer you control, from the repository root. The first build needs internet access to download the pinned Rust dependencies. Once the binary is built, the keypair generation itself can run offline.
 
 ```bash
+# 1. Build the Rust utility once.
+cargo build --release --manifest-path services/solana-core/Cargo.toml --bin treasury-keygen
+
+# 2. Create a private directory for the keypair.
 install -d -m 700 "$HOME/.local/share/9n8/treasury"
-cargo run --release --manifest-path services/solana-core/Cargo.toml --bin treasury-keygen -- \
+
+# 3. Run the already-built binary locally (no bot/API request is made).
+./services/solana-core/target/release/treasury-keygen \
   "$HOME/.local/share/9n8/treasury/treasury-keypair.json"
 ```
 
-The command prints only the public MASTER_TREASURY_ADDRESS. It writes the 64-byte Solana keypair in the Solana CLI JSON-array format to a new file with mode 0600 (owner read/write only). It refuses to overwrite an existing file.
+The command prints only the public `MASTER_TREASURY_ADDRESS`. It writes the 64-byte Solana keypair in the Solana CLI JSON-array format to a new file with mode `0600` (owner read/write only), refuses to overwrite an existing file, and does not transmit the keypair anywhere.
 
 Check the file permissions:
 
