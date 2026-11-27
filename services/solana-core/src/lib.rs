@@ -81,13 +81,7 @@ mod tests {
 
     #[test]
     fn amm_math_is_integer_safe() {
-        let quote = constant_product_quote(
-            1_000_000,
-            100_000_000,
-            200_000_000,
-            30,
-        )
-        .unwrap();
+        let quote = constant_product_quote(1_000_000, 100_000_000, 200_000_000, 30).unwrap();
 
         assert!(quote.amount_out > 0);
         assert!(quote.amount_out < 2_000_000);
