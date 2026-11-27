@@ -2847,7 +2847,7 @@ async function handleMessage(update: any) {
       "9N8 COMMANDS\n\n/start — main dashboard\n/sniper — control app\n/snipe [MINT] — manual quick-snipe guidance\n" +
       "/networks — chain status\n/positions — recorded positions\n/history — Jupiter receipts\n/settings — stored risk policy\n" +
       "/safety — anti-rug requirements\n/withdraw — self-custody withdrawal guidance\n/paper — isolated virtual trading\n" +
-      "/engine — engine diagnostics\\n"/live — gated live status\n/connect — wallet and exchange links\n/pause — pause activity\n/stop — emergency stop\n/resume — paper only\n\n" +
+      "/live — gated live status\n/engine — engine diagnostics\n/connect — wallet and exchange links\n/pause — pause activity\n/stop — emergency stop\n/resume — paper only\n\n" +
       "Pasting a token address does not execute a buy. Never send private keys, seed phrases or exchange secrets in Telegram.",
       mainKeyboard());
     return;
