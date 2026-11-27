@@ -115,6 +115,7 @@ function showRecoveryPhrase(mnemonic) {
 }
 function clearRecoveryPhrase() {
   clearTimeout(revealTimer);
+  activeMnemonic = "";
   clearSecretElement($("walletVaultPhrase"));
   $("walletVaultReveal").classList.add("hidden");
 }
