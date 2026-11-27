@@ -86,7 +86,6 @@ function createEvmAccounts(seed) {
     }));
   } finally {
     privateKey.fill(0);
-    root.wipePrivateData();
   }
 }
 export async function generateWalletMnemonic() {
