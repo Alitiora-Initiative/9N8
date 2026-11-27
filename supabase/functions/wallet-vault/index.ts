@@ -1,5 +1,15 @@
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
-const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_KEY") ?? "";
+const SERVICE_KEY = (() => {
+  const direct = (Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "").trim() ||
+    (Deno.env.get("SUPABASE_SERVICE_KEY") ?? "").trim();
+  if (direct) return direct;
+  try {
+    const parsed = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}");
+    return String(parsed.default ?? parsed.service_role ?? "").trim();
+  } catch {
+    return "";
+  }
+})();
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") ?? "";
 const RPC_URL = Deno.env.get("SOLANA_RPC_URL") ?? "https://api.mainnet-beta.solana.com";
 const encoder = new TextEncoder();
