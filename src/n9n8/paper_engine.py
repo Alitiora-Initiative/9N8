@@ -10,6 +10,7 @@ from typing import Any
 from .launchpad_sniper import LaunchCandidate
 from .math_engine import dec, from_lamports, to_lamports, usd_to_lamports
 from .paper_store import PaperStore
+from .v2.risk import assess_jupiter_quote
 
 logger = logging.getLogger(__name__)
 SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -195,10 +196,32 @@ class PaperTradingEngine:
             await self.notify(telegram_id, "Paper entry skipped: buy amount exceeds the configured per-position cap.")
             return
         spend = to_lamports(amount_sol)
-        quote = await self._quote(
-            SOL_MINT, candidate.mint, spend,
-            str(config.get("buy_slippage_pct", config.get("slippage_pct", "15"))),
-        )
+        buy_slippage_pct = str(config.get("buy_slippage_pct", config.get("slippage_pct", "15")))
+        quote = await self._quote(SOL_MINT, candidate.mint, spend, buy_slippage_pct)
+        try:
+            quote_risk = assess_jupiter_quote(
+                quote,
+                observed_at=datetime.now(timezone.utc),
+                liquidity_usd=risk.liquidity_usd or "0",
+                slippage_bps=int(dec(buy_slippage_pct) * Decimal(100)),
+                max_price_impact_pct=str(config.get("max_price_impact_pct", "2")),
+                max_slippage_bps=int(config.get("max_slippage_bps", 5000)),
+                min_liquidity_usd=minimum_liquidity_usd,
+            )
+        except (TypeError, ValueError) as exc:
+            await self.notify(
+                telegram_id,
+                "PAPER TOKEN SKIPPED · QUOTE RISK UNVERIFIED\n"
+                f"Mint: {candidate.mint}\nReason: {type(exc).__name__}",
+            )
+            return
+        if not quote_risk.approved:
+            await self.notify(
+                telegram_id,
+                "PAPER TOKEN SKIPPED · QUOTE RISK\n"
+                f"Mint: {candidate.mint}\n" + "\n".join(quote_risk.blockers),
+            )
+            return
         received = int(quote.get("otherAmountThreshold") or quote.get("outAmount") or 0)
         if received <= 0:
             return
@@ -257,10 +280,26 @@ class PaperTradingEngine:
         if amount_sol <= 0 or amount_sol > self.max_position_sol:
             return {"passed": False, "reasons": ["Buy amount exceeds the configured safety cap."], "mint": mint}
         amount = to_lamports(amount_sol)
-        quote = await self._quote(
-            SOL_MINT, mint, amount,
-            str(config.get("buy_slippage_pct", config.get("slippage_pct", "15"))),
-        )
+        buy_slippage_pct = str(config.get("buy_slippage_pct", config.get("slippage_pct", "15")))
+        quote = await self._quote(SOL_MINT, mint, amount, buy_slippage_pct)
+        try:
+            quote_risk = assess_jupiter_quote(
+                quote,
+                observed_at=datetime.now(timezone.utc),
+                liquidity_usd=risk.liquidity_usd or "0",
+                slippage_bps=int(dec(buy_slippage_pct) * Decimal(100)),
+                max_price_impact_pct=str(config.get("max_price_impact_pct", "2")),
+                max_slippage_bps=int(config.get("max_slippage_bps", 5000)),
+                min_liquidity_usd=minimum_liquidity_usd,
+            )
+        except (TypeError, ValueError) as exc:
+            return {
+                "passed": False,
+                "reasons": ["V2 quote-risk data could not be verified: " + type(exc).__name__],
+                "mint": mint,
+            }
+        if not quote_risk.approved:
+            return {"passed": False, "reasons": list(quote_risk.blockers), "mint": mint}
         return {
             "passed": True, "mint": mint, "launchpad": "raydium",
             "buy_amount_sol": str(from_lamports(amount)),

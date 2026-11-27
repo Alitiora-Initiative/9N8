@@ -13,8 +13,8 @@ jobs:
     name: Legacy Python bot tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: "pip"
@@ -22,16 +22,16 @@ jobs:
       - run: pip install -r requirements.txt pytest pytest-asyncio httpx
       - run: python -m compileall -q src tests
       - run: python -c "import src.n9n8.main"
-      - run: python -m pytest -q
+      - run: python -m pytest -o asyncio_default_fixture_loop_scope=function -q
 
   web-build:
     name: Web app production build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
       - name: Install web dependencies
         working-directory: web
         run: npm install --no-audit --no-fund
@@ -66,7 +66,7 @@ jobs:
     name: Deno paper and Binance connector tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
@@ -95,7 +95,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v7
         with:
           ref: main
           persist-credentials: true

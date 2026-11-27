@@ -1,0 +1,26 @@
+# Isolated research profile. Do not install into the always-on live-trading worker.
+# Python 3.11+; market data and backtests only. Provider quotas and licenses apply.
+ccxt>=4.5,<5
+pandas>=2.2,<4
+pandas-ta-classic==0.9.0
+TA-Lib>=0.6,<1
+scikit-learn>=1.7,<2
+vectorbt>=0.27,<1
+backtrader==1.9.78.123
+yfinance>=0.2,<2
+Scrapy>=2.11,<3
+beautifulsoup4>=4.12,<5
+playwright>=1.50,<2
+selenium>=4.20,<5
+httpx>=0.27,<1
+gql[httpx]>=3.5,<5
+statsmodels>=0.14,<1
+scipy>=1.14,<2
+hmmlearn>=0.3,<1
+filterpy>=1.4,<2
+vaderSentiment>=3.3,<4
+redis>=5,<7
+
+# Install Playwright browsers separately using: playwright install chromium
+# TA-Lib can require the host's native TA-Lib library depending on platform.
+# pandas-ta-classic 0.9.0 is the current stable indicator package used here.

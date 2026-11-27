@@ -4,7 +4,9 @@ import asyncio
 import base64
 import itertools
 import logging
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -21,6 +23,7 @@ from solders.transaction import Transaction, VersionedTransaction
 from .config import Settings
 from .helius import HeliusClient
 from .math_engine import minimum_out
+from .v2.risk import assess_build_quote_consistency, assess_jupiter_quote
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,9 @@ class JupiterJitoExecutor:
         self._ids = itertools.count(1)
         self._tip_accounts: list[str] = []
         self._tip_lock = asyncio.Lock()
+        # One shared limiter covers /order and /build from Paper and Live.
+        self._api_request_lock = asyncio.Lock()
+        self._last_api_request_at = 0.0
 
     async def start(self) -> None:
         if self._session is None or self._session.closed:
@@ -73,17 +79,30 @@ class JupiterJitoExecutor:
     async def _jupiter_get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
         await self.start()
         assert self._session
-        try:
-            async with self._session.get(
-                self.settings.jupiter_base_url + endpoint,
-                params=params,
-                headers=self._headers(),
-            ) as response:
-                data = await response.json(content_type=None)
-                if response.status >= 400:
-                    raise ExecutionError(f"Jupiter HTTP {response.status}: {str(data)[:220]}")
-        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-            raise ExecutionError(f"Jupiter request failed: {type(exc).__name__}") from exc
+
+        # /order plus /build adds a second request for Live risk preflight.
+        # Serialize every GET from Paper and Live through one provider budget.
+        min_interval = 1.05 if self.settings.jupiter_api_key else 2.1
+        async with self._api_request_lock:
+            elapsed = time.monotonic() - self._last_api_request_at
+            delay = min_interval - elapsed
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._last_api_request_at = time.monotonic()
+            try:
+                async with self._session.get(
+                    self.settings.jupiter_base_url + endpoint,
+                    params=params,
+                    headers=self._headers(),
+                ) as response:
+                    data = await response.json(content_type=None)
+                    if response.status >= 400:
+                        raise ExecutionError(f"Jupiter HTTP {response.status}: {str(data)[:220]}")
+            except ExecutionError:
+                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
+                raise ExecutionError(f"Jupiter request failed: {type(exc).__name__}") from exc
+
         if not isinstance(data, dict):
             raise ExecutionError("Jupiter returned an unexpected response.")
         if data.get("error"):
@@ -217,6 +236,12 @@ class JupiterJitoExecutor:
         jito_tip_lamports: int = 0,
         treasury_fee_lamports: int = 0,
         use_jito: bool = True,
+        require_quote_risk: bool = False,
+        liquidity_usd: str | None = None,
+        min_liquidity_usd: str = "0",
+        max_price_impact_pct: str = "2",
+        max_slippage_bps: int = 5000,
+        max_build_quote_deviation_bps: int = 300,
     ) -> SwapResult:
         if amount_raw <= 0:
             raise ValueError("Swap amount must be positive.")
@@ -228,6 +253,32 @@ class JupiterJitoExecutor:
             raise ExecutionError("Live trading is locked in the environment.")
         if use_jito and jito_tip_lamports <= 0:
             raise ExecutionError("MEV shield requires a positive Jito tip.")
+        order_quote: dict[str, Any] | None = None
+        if require_quote_risk:
+            if liquidity_usd is None:
+                raise ExecutionError("V2 quote risk requires verified token liquidity; refusing live signing.")
+            # /order is the documented quote endpoint carrying priceImpactPct.
+            # It is evaluated before asking /build for the raw instructions.
+            try:
+                order_quote = await self.quote(input_mint, output_mint, amount_raw, slippage_bps)
+                assessment = assess_jupiter_quote(
+                    order_quote,
+                    observed_at=datetime.now(timezone.utc),
+                    liquidity_usd=liquidity_usd,
+                    slippage_bps=slippage_bps,
+                    max_price_impact_pct=max_price_impact_pct,
+                    max_slippage_bps=max_slippage_bps,
+                    min_liquidity_usd=min_liquidity_usd,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ExecutionError(
+                    "V2 Jupiter /order quote-risk preflight could not be verified; refusing live signing."
+                ) from exc
+            if not assessment.approved:
+                raise ExecutionError(
+                    "V2 Jupiter quote-risk rejected live swap: " + ", ".join(assessment.blockers)
+                )
+
         quote = await self._jupiter_get("/build", {
             "inputMint": input_mint,
             "outputMint": output_mint,
@@ -239,6 +290,16 @@ class JupiterJitoExecutor:
         expected_out = int(quote.get("outAmount") or 0)
         if expected_out <= 0:
             raise ExecutionError("Jupiter returned no positive output quote.")
+        if order_quote is not None:
+            try:
+                assess_build_quote_consistency(
+                    order_quote, quote,
+                    max_deviation_bps=max_build_quote_deviation_bps,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ExecutionError(
+                    "V2 Jupiter /build route is materially worse than its fresh /order quote; refusing live signing."
+                ) from exc
         min_out = int(quote.get("otherAmountThreshold") or minimum_out(expected_out, slippage_bps))
         if min_out <= 0:
             raise ExecutionError("Jupiter minimum output is zero; refusing trade.")
