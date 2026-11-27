@@ -83,7 +83,7 @@ export function buildMainKeyboard(solanaControlUrl: string, walletAndJupiterUrl:
     [{ text: "🌐 Switch Chain / Market", callback_data: "n8:networks" }],
     [{ text: "🧠 Engine & Diagnostics", callback_data: "n8:engine" }],
     [{ text: "📜 Trade History", callback_data: "n8:history" }, { text: "💸 Withdraw", callback_data: "n8:withdraw" }],
-    [{ text: "💳 Non-custodial Wallets & Watch", web_app: { url: walletAndJupiterUrl + (walletAndJupiterUrl.includes("?") ? "&" : "?") + "view=wallet" } }],
+    [{ text: "💳 Non-custodial Wallets & Watch", web_app: { url: walletAndJupiterUrl.includes("view=wallet") ? walletAndJupiterUrl : walletAndJupiterUrl + (walletAndJupiterUrl.includes("?") ? "&" : "?") + "view=wallet" } }],
     [{ text: "📚 Services", callback_data: "n8:services" }, { text: "📡 Live Status", callback_data: "n8:live_status" }],
   ] };
 }
