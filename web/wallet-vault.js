@@ -161,6 +161,7 @@ async function unlockExistingWallet() {
   const result = await api("load");
   setStatus("Decrypting locally with AES-256-GCM…");
   const mnemonic = await decryptWalletBackup(result.envelope, passphrase);
+  $("walletVaultPassphrase").value = "";
   activeMnemonic = mnemonic;
   renderAccounts(result.accounts || []);
   showRecoveryPhrase(mnemonic);
