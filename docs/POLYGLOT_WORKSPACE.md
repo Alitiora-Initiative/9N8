@@ -4,7 +4,7 @@ The Python + TypeScript control plane is supported by specialist native modules.
 
 | Language | Module | Responsibility |
 |---|---|---|
-| Python | src/n9n8 | Telegram domain, Solana supervisor, quant/risk and orchestration |
+| Python | src/n9n8 and src/n9n8/v2 | Telegram domain, Solana supervisor, typed execution/risk, quant research and provider orchestration |
 | Rust | services/solana-core | Bounded signature dedupe and integer AMM math |
 | C++20 | services/native-risk | Order-book spread, depth and impact calculations |
 | Go | services/market-gateway | Authenticated OHLCV normalization service |
@@ -32,3 +32,13 @@ The production Solana executor remains the only live signer. EVM contracts and b
 - Julia Monte Carlo: run julia research/Julia/monte_carlo.jl.
 - Solidity: compile with solc 0.8.26; deploy only after chain-specific audit and governance review.
 - Pine/MQL: add scripts to the respective chart/terminal and configure the HTTPS signal endpoint. MQL WebRequest needs explicit terminal allow-list access.
+
+
+## Research data and model adapters
+
+- research/data_sources.py implements asynchronous CCXT history, yfinance history, CoinMarketCap metadata, read-only GraphQL, supplied HTML JSON-LD parsing, allowlisted Playwright reads and VADER scoring.
+- research/scrapy/metadata_spider.py obeys robots.txt, uses per-domain download delay and AutoThrottle, and emits JSON-LD source URLs/timestamps. research/selenium_smoke.py is a page-load check only.
+- requirements-research.txt contains CCXT, Pandas, NumPy, pandas-ta-classic, TA-Lib, SciPy, Statsmodels, Scikit-Learn, VectorBT, Backtrader, yfinance, Scrapy, BeautifulSoup4, Playwright, Selenium, VADER, HTTPX, GraphQL, Redis and HMM support. requirements-research-ml.txt and requirements-evm.txt keep GPU and EVM dependencies isolated.
+- research/indicator_comparison.py, research/backtest_vectorbt.py, research/backtest_backtrader.py and research/tf_sequence_model.py consume supplied historical CSVs only.
+- v2/quant_research.py and v2/macro_features.py implement ADF/cointegration, autocorrelation, Kalman, GBM, mean-reversion half-life, walk-forward splits, HMM/Random Forest experiments, funding/OI descriptions, supply/FDV, session timing and cross-asset correlation.
+- Scrapy, Selenium and Playwright are optional research/QA tools; no proxy rotation or identity spoofing is used to evade site restrictions.

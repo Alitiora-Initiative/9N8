@@ -5,56 +5,56 @@ This catalogue accounts for every item in the requested specification. ACTIVE me
 ## Part 1 — Languages and runtimes (1–15)
 
 1. **Python — ACTIVE.** Primary asyncio worker, strategy coordinator, risk and Telegram business logic.
-2. **C++ — RESERVED.** Consider only after profiling a genuine CPU-bound hot path; no duplicate executor is added for appearance.
-3. **Rust — ACTIVE through native bindings.** Solders provides Rust-backed Solana primitives. A standalone Rust service is reserved for measured bottlenecks.
+2. **C++ — ACTIVE SPECIALIST MODULE.** The native-risk library computes order-book spread, depth imbalance and size-aware market impact; CI compiles/tests it and archives generated assembly.
+3. **Rust — ACTIVE.** Solders provides Rust-backed Python Solana primitives; services/solana-core adds checked integer AMM math and bounded signature deduplication.
 4. **JavaScript / Node.js — ACTIVE in tooling.** Browser Mini App and Node-based Vite/npm build; Node is not the long-running trading supervisor.
 5. **TypeScript — ACTIVE.** Deno Telegram webhook, Jupiter and wallet API boundaries.
 6. **SQL — ACTIVE.** PostgreSQL/Neon authoritative state and migrations.
-7. **Solidity — RESERVED.** Only for a separately audited EVM token/contract adapter; current execution is Solana-only.
-8. **Go — RESERVED.** Possible independent market-data fanout after measured concurrency requirements.
-9. **C# — RESERVED.** Only if a future institutional terminal/broker integration requires it.
+7. **Solidity — ACTIVE OPTIONAL EVM POLICY MODULE.** The 0.8.26 risk policy compiles in CI but is not deployed and has no access to the Solana signer.
+8. **Go — ACTIVE SPECIALIST SERVICE.** An authenticated OHLCV gateway validates RFC3339, UTC, duplicates, closed bars and field integrity.
+9. **C# — ACTIVE BROKER RISK ADAPTER.** A .NET 8 module validates bid/ask spread, quote freshness and position exposure; it is not a broker order sender.
 10. **Bash / Shell — ACTIVE.** CI, Docker entrypoints and deployment operations.
-11. **Assembly — NOT A SOURCE-LANGUAGE REQUIREMENT.** Compilers generate machine code; raw assembly is unnecessary.
-12. **Pine Script — RESEARCH.** TradingView visualization and external indicator validation, not transaction execution.
-13. **MQL4 / MQL5 — RESERVED.** Only for a separately scoped MetaTrader Forex/CFD adapter.
+11. **Assembly — COMPILER OUTPUT.** C++ CI generates and archives optimized assembly listings; no hand-written assembly executor is required.
+12. **Pine Script — RESEARCH ADAPTER.** The TradingView v6 script plots EMA, ATR, VWAP and Bollinger signals and emits alerts only.
+13. **MQL4 / MQL5 — SIGNAL-ONLY ADAPTERS.** Both terminal scripts calculate EMA/ATR and relay signals over HTTPS; no OrderSend/CTrade order placement is present.
 14. **R — RESEARCH.** Statistical validation and reproducible research, not the always-on order process.
 15. **Julia — RESEARCH.** Optional numerical experiments after a benchmark justifies it.
 
 ## Part 2 — Python libraries and AI frameworks (16–30)
 
-16. **CCXT — RESEARCH ADAPTER.** Unified exchange market-data/backtest connector; live orders remain in separately permission-tested exchange adapters.
-17. **Pandas — RESEARCH.** DataFrame preparation and historical dataset inspection in the research profile.
+16. **CCXT — IMPLEMENTED RESEARCH CONNECTOR.** Async exchange OHLCV uses the built-in rate limiter and normalizes timestamps/bars; live exchange orders stay behind separate permission checks.
+17. **Pandas — RESEARCH / BACKTEST INPUT.** Reads chronological OHLCV history for indicator comparisons, VectorBT and Backtrader.
 18. **NumPy — ACTIVE.** Numerical primitives; financial money and lamports remain Decimal/integer.
-19. **TA-Lib — RESEARCH.** Optional native C technical indicators, not a required runtime install.
+19. **TA-Lib — RESEARCH / OPTIONAL NATIVE INDICATORS.** Indicator comparison script checks RSI results against pandas-ta-classic; native C library stays out of the live worker.
 20. **Pandas-TA — RESEARCH.** pandas-ta-classic is isolated for indicator experiments.
-21. **Web3.py — RESERVED.** EVM-only; never imported by the Solana executor.
+21. **Web3.py — READ-ONLY EVM CLIENT.** Optional client reads the Solidity risk registry and cannot sign or send transactions.
 22. **Solana-py / Solders — ACTIVE.** Python Solana RPC and Rust-backed key/transaction primitives.
 23. **Asyncio — ACTIVE.** Concurrent listeners, supervisors, Telegram tasks and worker lifecycle.
 24. **Aiohttp / HTTPX — ACTIVE.** Aiohttp powers providers; HTTPX remains a test/client utility, not a second execution stack.
-25. **Scikit-Learn — RESEARCH.** Model selection and regime experiments; models cannot bypass safety gates.
+25. **Scikit-Learn — RESEARCH IMPLEMENTED.** Random Forest regime experiment uses a chronological holdout; no model output overrides risk/approval gates.
 26. **PyTorch / TensorFlow — RESEARCH ONLY.** GPU/model serving belongs in an isolated environment, not the latency-sensitive execution process.
-27. **VectorBT — RESEARCH.** Vectorized backtests in an isolated environment.
-28. **Backtrader — RESEARCH.** Event-driven fee/slippage and portfolio simulation; isolated from mainnet adapters.
+27. **VectorBT — RESEARCH RUNNER.** A CSV-driven moving-average backtest includes fees and does not submit orders.
+28. **Backtrader — RESEARCH RUNNER.** Event-driven pandas-feed strategy uses a simulated broker with explicit commission and no live connection.
 29. **Aiogram / python-telegram-bot — ACTIVE CHOICE.** Aiogram owns Python-side bot logic; do not run two polling consumers for one token.
 30. **FastAPI — ACTIVE.** Authenticated request and telemetry API.
 
 ## Part 3 — Data sourcing and history (31–45)
 
-31. **yfinance — RESEARCH.** Historical equities/macro data, not live Solana execution prices.
-32. **CoinMarketCap API — OPTIONAL METADATA.** Store source/time; never treat market-cap estimates as executable prices.
+31. **yfinance — IMPLEMENTED RESEARCH CONNECTOR.** Pulls historical OHLCV only; timestamp normalization and closed-bar filtering happen before indicators.
+32. **CoinMarketCap API — IMPLEMENTED METADATA CONNECTOR.** Uses the official API key header and returns source/time-stamped listings; never treats market cap as an execution quote.
 33. **BeautifulSoup4 — RESEARCH INGESTION.** Parse permitted public HTML only; prefer documented APIs.
-34. **Playwright / Selenium — QA/RESEARCH.** Browser-rendered collection and UI regression, not hidden trading dependencies.
+34. **Playwright / Selenium — IMPLEMENTED QA/RESEARCH HELPERS.** Playwright uses HTTPS host allow-lists; Selenium smoke test only checks page load/title. Neither bypasses access controls.
 35. **Scrapy — RESEARCH INGESTION.** Bounded historical collection with source-specific crawl policy.
 36. **WebSockets (WSS) — ACTIVE.** Helius logs/account subscriptions and provider event streams.
 37. **REST APIs — ACTIVE.** Helius, Jupiter, exchange account and market-data calls.
-38. **GraphQL — RESERVED.** The Graph / Uniswap data only after an EVM adapter is deployed.
+38. **GraphQL — IMPLEMENTED READ-ONLY CONNECTOR.** HTTPS GraphQL query helper supports The Graph-style metadata endpoints; no write/mutation path is exposed.
 39. **RPC nodes — ACTIVE.** Helius Solana RPC/WebSocket; fallback providers must preserve chain and commitment semantics.
 40. **Proxy rotation / user-agent spoofing — NOT USED.** Do not evade provider controls. Use API keys, caching, concurrency bounds and documented retries.
-41. **Rate-limit backoff — ACTIVE REQUIREMENT.** Bounded exponential backoff with jitter and per-provider request budgets.
+41. **Rate-limit backoff — IMPLEMENTED.** Bounded exponential retry with jitter plus numeric/date Retry-After handling; providers retain their own rate limits.
 42. **OHLCV normalization — V2 IMPLEMENTED.** Decimal bars, validation, deduplication and closed-candle filtering.
 43. **UTC synchronization — V2 IMPLEMENTED.** Every normalized candle is timezone-aware UTC.
 44. **Survivorship-bias-free datasets — RESEARCH REQUIREMENT.** Retain delisted/rugged assets and failed listings in historical evaluations.
-45. **Sentiment NLP — RESEARCH.** VADER first; FinBERT only after licensed, timestamped news/social data exists.
+45. **Sentiment NLP — RESEARCH IMPLEMENTED.** VADER helper and optional FinBERT scoring are isolated from private Telegram content and live order eligibility.
 
 ## Part 4 — Quantitative mathematics (46–65)
 
@@ -69,11 +69,11 @@ This catalogue accounts for every item in the requested specification. ACTIVE me
 54. **VWAP — V2 IMPLEMENTED.** Volume-weighted average price with zero-volume rejection.
 55. **ATR — V2 IMPLEMENTED.** True range from closed OHLC bars.
 56. **Bollinger Bands — V2 IMPLEMENTED.** Decimal mean and standard deviation.
-57. **Cointegration / pairs trading — RESEARCH.** Requires multi-asset history and shorting/hedging venues; not a token-launch buy rule.
-58. **Kalman filters — RESEARCH.** Noise filtering and state estimation evaluated out of sample.
-59. **Hidden Markov Models — RESEARCH.** Regime experiments; no live model promotion without walk-forward validation.
-60. **Geometric Brownian Motion — RESEARCH SCENARIO.** Baseline scenario only, not a claim that meme-token returns are normally distributed.
-61. **Autocorrelation / ADF stationarity — RESEARCH.** Test assumptions before mean-reversion strategies.
+57. **Cointegration — RESEARCH IMPLEMENTED.** Optional Engle-Granger test and spread half-life helper; actual pairs execution remains unavailable without borrow/short venues.
+58. **Kalman filters — RESEARCH IMPLEMENTED.** A scalar filter smooths noisy price observations; no trade permission is produced.
+59. **Hidden Markov Models — OPTIONAL RESEARCH IMPLEMENTED.** GaussianHMM regime labeling runs only in the isolated ML profile.
+60. **Geometric Brownian Motion — RESEARCH IMPLEMENTED.** Seeded path generator is for baseline scenario analysis, not a meme-token forecast.
+61. **Autocorrelation / ADF — RESEARCH IMPLEMENTED.** Sample autocorrelation and optional statsmodels ADF helpers test time-series assumptions.
 62. **Walk-forward optimization — REQUIRED RESEARCH GATE.** Train/validate/test chronologically; no random-shuffle leakage.
 63. **Maker/taker fee calculus — EXCHANGE-SPECIFIC.** Required for CEX order strategies; Solana DEX routes use actual route fees, impact and network costs.
 64. **AMM / impermanent-loss math — ACTIVE FOUNDATION.** Existing constant-product math; extend per pool/program and validate against chain state.
@@ -81,25 +81,25 @@ This catalogue accounts for every item in the requested specification. ACTIVE me
 
 ## Part 5 — Economics and microstructure (66–85)
 
-66. **Supply/demand elasticity — RESEARCH.** Liquidity-impact and depth scenarios.
-67. **Liquidity cycles — RESEARCH.** Session/time-of-day performance by venue, not a hard-coded clock assumption.
+66. **Supply/demand elasticity — RESEARCH IMPLEMENTED.** Price/quantity elasticity helper is descriptive and requires sourced observations.
+67. **Liquidity cycles — RESEARCH IMPLEMENTED.** DST-aware Tokyo/London/New York session labels support measured time-of-day comparisons.
 68. **Bid-ask spread — ACTIVE FOR EXCHANGE BOOKS.** Spread is a cost and liquidity filter.
 69. **Market-maker inventory behavior — RESEARCH.** Do not present as observable fact without order-flow evidence.
 70. **Arbitrage / Law of One Price — RESERVED.** Requires synchronized venues, transfer constraints and net-cost accounting.
 71. **Funding rates — RESERVED.** Perpetual futures only after a dedicated derivatives adapter is reviewed.
-72. **Open interest divergence — RESERVED.** Same derivatives scope; source and timestamps required.
+72. **Open interest divergence — FEATURE CALCULATION IMPLEMENTED.** Descriptive price/OI quadrant labels exist; actual funding/OI data needs a permitted derivatives provider.
 73. **CPI economic calendar — RESERVED MACRO FILTER.** Never scrape an unverified calendar and silently pause trades.
 74. **FOMC rates — RESEARCH MACRO FEATURE.** Timestamp and source required.
 75. **DXY correlation — RESEARCH MACRO FEATURE.** Correlation is regime-dependent, not a guaranteed inverse relationship.
 76. **Tokenomics / vesting — ACTIVE RESEARCH REQUIREMENT.** Unlock schedules and authority state must be sourced and time-stamped.
-77. **Circulating supply vs FDV — ACTIVE RESEARCH REQUIREMENT.** Unknown supply fields fail closed for valuation rules.
+77. **Circulating supply vs FDV — RESEARCH IMPLEMENTED.** Supply ratio and estimated FDV helper rejects inconsistent/unknown supply inputs.
 78. **Metcalfe / active wallets — RESEARCH.** On-chain activity is context, not direct value prediction.
 79. **Risk-on / risk-off regime — V2 BASELINE EXTENSION.** Start with transparent thresholds; HMM/ML remains research-only.
 80. **Reflexivity — RESEARCH.** Convert into measurable feedback variables before it changes strategy weights.
 81. **Fat tails / black swans — V2 SCENARIO GATE.** Monte Carlo and stress cases; normal-distribution VaR alone is insufficient.
 82. **Herding / momentum cascades — RESEARCH.** Require deduplicated, timestamped social/flow data.
 83. **Mean reversion — RESEARCH STRATEGY.** Bollinger/ADF signals never override token safety and liquidity checks.
-84. **Correlation breakdown — PORTFOLIO RESEARCH.** Stress correlations rising during market-wide shocks.
+84. **Correlation breakdown — RESEARCH IMPLEMENTED.** Pairwise portfolio correlation helper supports stress analysis; it is not a diversification guarantee.
 85. **Zero-sum vs positive-sum mechanics — STRATEGY NOTES.** Evaluate short-horizon performance net of fees, slippage and competition.
 
 ## Part 6 — Infrastructure, safety and execution (86–100)
@@ -123,3 +123,11 @@ This catalogue accounts for every item in the requested specification. ACTIVE me
 ## Exclusion rule
 
 A technology appearing in this catalogue does not mean it is installed in production. Research and future adapters remain isolated until their data source, license, runtime, permissions, security tests and deployment requirements are satisfied.
+
+
+## Research connector implementation details
+
+- Provider ingestion lives in research/data_sources.py. CCXT uses its asynchronous client rate limiter; yfinance is historical-only; CoinMarketCap is metadata-only; GraphQL is read-only; BeautifulSoup extracts supplied public JSON-LD; Playwright uses explicit HTTPS host allow-lists; Scrapy obeys robots.txt and AutoThrottle; Selenium is a UI smoke test.
+- Optional profiles are requirements-research.txt (data/quant/backtest), requirements-research-ml.txt (PyTorch/TensorFlow/Transformers/HMM/FinBERT), and requirements-evm.txt (Web3.py). They are not installed in the always-on trading worker.
+- V2 also includes microstructure.py (depth walking, spread, imbalance, maker/taker costs and impermanent loss), quant_research.py (Kalman, GBM, ADF, cointegration, HMM, Random Forest, walk-forward and FinBERT interfaces), and macro_features.py (elasticity, funding/OI descriptions, time-zone-aware sessions, supply/FDV and correlations).
+- Research/browser sources must obey provider terms, robots.txt and rate limits. Proxy rotation or user-agent spoofing to bypass controls is deliberately excluded.

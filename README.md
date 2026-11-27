@@ -1,3 +1,13 @@
+# 9N8 Engine V2 rewrite status
+
+The active rebuild is tracked in [pull request #29](https://github.com/Alitiora-Initiative/9N8/pull/29). It introduces side-effect-free V2 domain contracts, risk/market-data/quant foundations, isolated research adapters and native-language services. The production bot remains on the prior stable composition root until worker/Telegram state synchronization, restart reconciliation and staged deployment checks pass.
+
+- Architecture: docs/ARCHITECTURE_REWRITE_V2.md
+- All 100 requested technologies: docs/TECHNOLOGY_CATALOG_100.md
+- Native-language adapters: docs/POLYGLOT_WORKSPACE.md
+- Research dependencies are separate from requirements.txt; never install ML/browser/EVM research profiles into the production signer process.
+- Live trading remains locked by the operator setting and explicit user approval. CI and research tests never submit real transactions.
+
 # 9N8 — Solana Telegram Launchpad Bot
 
 9N8 is a Telegram-first Solana launchpad monitoring and trading application. Telegram runs command handling and notifications; Vercel serves the FastAPI Mini App/API; a Vercel Daemon runs the continuous Python trading worker; a dedicated Neon PostgreSQL project stores encrypted wallets, settings, positions, receipts, risk records, telemetry and worker jobs. The worker connects to Helius RPC/WebSockets, Pump.fun/Raydium detection, Jupiter Swap API v2 and Jito bundles.

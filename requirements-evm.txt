@@ -1,0 +1,4 @@
+# Separate EVM research / adapter environment. Never import this into Solana signing.
+web3>=8,<9
+eth-account>=0.13,<1
+eth-utils>=5,<6

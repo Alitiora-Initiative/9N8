@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
+      - run: python -m compileall -q research src/n9n8/v2
       - run: python scripts/check_external_language_sources.py
 
   go-market-gateway:
@@ -109,4 +110,4 @@ jobs:
       - run: julia --color=yes research/Julia/monte_carlo.jl
 
   # MetaTrader and TradingView have vendor IDE/terminal runtimes. The static
-  # source-contract job checks their signal-only APIs and forbids broker orders.
+  # source-contract job compiles their text and forbids broker order calls.

@@ -1,0 +1,7 @@
+# Heavy, optional model-serving profile. Never install into the execution worker.
+-r requirements-research.txt
+torch>=2.5,<3
+tensorflow>=2.18,<3
+transformers>=4.48,<6
+datasets>=3.2,<5
+accelerate>=1.2,<2
