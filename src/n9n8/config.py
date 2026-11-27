@@ -76,6 +76,8 @@ class Settings:
         treasury = os.getenv("MASTER_TREASURY_ADDRESS", "").strip()
         encryption_raw = os.getenv("ENCRYPTION_MASTER_KEY", "").strip()
         mode = os.getenv("N9N8_TRADING_MODE", "paper").strip().lower()
+        if mode not in {"paper", "live"}:
+            raise RuntimeError("N9N8_TRADING_MODE must be paper or live.")
         if not token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is required.")
         if not helius_key and not (supplied_rpc and supplied_wss):
@@ -83,19 +85,19 @@ class Settings:
                 "Set HELIUS_API_KEY in the runtime environment, or provide both SOLANA_RPC_URL and SOLANA_WSS_URL."
             )
         if not treasury:
-            raise RuntimeError("MASTER_TREASURY_ADDRESS is required.")
-        try:
-            Pubkey.from_string(treasury)
-        except Exception as exc:
-            raise RuntimeError("MASTER_TREASURY_ADDRESS is not a valid Solana public key.") from exc
+            if mode == "live":
+                raise RuntimeError("MASTER_TREASURY_ADDRESS is required before live trading can start.")
+        else:
+            try:
+                Pubkey.from_string(treasury)
+            except Exception as exc:
+                raise RuntimeError("MASTER_TREASURY_ADDRESS is not a valid Solana public key.") from exc
         if not encryption_raw:
             raise RuntimeError("ENCRYPTION_MASTER_KEY is required; refusing to store unencrypted wallet keys.")
         try:
             Fernet(encryption_raw.encode("ascii"))
         except Exception as exc:
             raise RuntimeError("ENCRYPTION_MASTER_KEY must be a valid Fernet key.") from exc
-        if mode not in {"paper", "live"}:
-            raise RuntimeError("N9N8_TRADING_MODE must be paper or live.")
         live_enabled = _bool("LIVE_TRADING_ENABLED", False)
         database_url = os.getenv("DATABASE_URL", "").strip()
         require_postgres = _bool("N9N8_REQUIRE_POSTGRES", False)
