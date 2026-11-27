@@ -5,3 +5,8 @@ __pycache__/
 *.sqlite3
 *.db
 /data/
+
+# Offline-generated Solana keypairs (never commit private keys)
+treasury-keypair.json
+**/treasury-keypair.json
+*.keypair.json
