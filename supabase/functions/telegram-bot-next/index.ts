@@ -187,16 +187,16 @@ async function editDashboardMessage(chatId: number, messageId: number, text: str
   } catch { return false; }
 }
 
-async function sendPanel(userId: string, chatId: number, text: string, markup?: Obj, preferredMessageId?: number): Promise<number | null> {
+async function sendPanel(userId: string, chatId: number, text: string, markup?: Obj, preferredMessageId?: number, forceNew = false): Promise<number | null> {
   let messageId = Number(preferredMessageId) > 0 ? Number(preferredMessageId) : 0;
-  if (!messageId) {
+  if (!messageId && !forceNew) {
     try {
       const rows = await db("n8_users?select=telegram_dashboard_message_id&id=eq." + encodeURIComponent(userId));
       const stored = Array.isArray(rows) ? Number(rows[0]?.telegram_dashboard_message_id) : 0;
       if (Number.isSafeInteger(stored) && stored > 0) messageId = stored;
     } catch { /* A stale dashboard pointer must not block opening the bot. */ }
   }
-  if (messageId && await editDashboardMessage(chatId, messageId, text, markup)) {
+  if (!forceNew && messageId && await editDashboardMessage(chatId, messageId, text, markup)) {
     try {
       await db("n8_users?id=eq." + encodeURIComponent(userId), "PATCH",
         { telegram_dashboard_message_id: messageId }, "return=minimal");
@@ -2844,7 +2844,8 @@ async function handleMessage(update: any) {
   if (command === "/start" || command === "/menu") {
     await setBotProfileAndCommands();
     await audit(row.id, chatId, "private_start");
-    await sendPanel(row.id, chatId, await dashboardText(row.id), mainKeyboard());
+    // /start must create a fresh visible reply; don't silently edit a stale dashboard above the chat.
+    await sendPanel(row.id, chatId, await dashboardText(row.id), mainKeyboard(), undefined, true);
     return;
   }
     if (command === "/engine" || command === "/diagnostics") {
