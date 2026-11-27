@@ -84,34 +84,34 @@ This catalogue accounts for every item in the requested specification. ACTIVE me
 66. **Supply/demand elasticity — RESEARCH IMPLEMENTED.** Price/quantity elasticity helper is descriptive and requires sourced observations.
 67. **Liquidity cycles — RESEARCH IMPLEMENTED.** DST-aware Tokyo/London/New York session labels support measured time-of-day comparisons.
 68. **Bid-ask spread — ACTIVE FOR EXCHANGE BOOKS.** Spread is a cost and liquidity filter.
-69. **Market-maker inventory behavior — RESEARCH.** Do not present as observable fact without order-flow evidence.
-70. **Arbitrage / Law of One Price — RESERVED.** Requires synchronized venues, transfer constraints and net-cost accounting.
-71. **Funding rates — RESERVED.** Perpetual futures only after a dedicated derivatives adapter is reviewed.
+69. **Market-maker inventory behavior — IMPLEMENTED DIAGNOSTIC.** The inventory-pressure helper maps an account's measured inventory deviation from target into capped quote skew; it does not claim access to other makers' private inventory.
+70. **Arbitrage / Law of One Price — IMPLEMENTED OPPORTUNITY FILTER.** The cross-venue calculator accounts for fresh bid/ask quotes, visible depth, taker fees, transfer/network costs and net-edge thresholds; it does not place paired orders.
+71. **Funding rates — IMPLEMENTED CALCULATOR.** Funding cash flow is signed by long/short direction and rate; live funding observations still require a configured derivatives market-data provider.
 72. **Open interest divergence — FEATURE CALCULATION IMPLEMENTED.** Descriptive price/OI quadrant labels exist; actual funding/OI data needs a permitted derivatives provider.
-73. **CPI economic calendar — RESERVED MACRO FILTER.** Never scrape an unverified calendar and silently pause trades.
+73. **CPI economic calendar — IMPLEMENTED BLACKOUT CONTRACT.** A high-impact CPI/FOMC/NFP record must be timestamped and sourced; the blackout helper blocks entries only inside the configured event window.
 74. **FOMC rates — RESEARCH MACRO FEATURE.** Timestamp and source required.
 75. **DXY correlation — RESEARCH MACRO FEATURE.** Correlation is regime-dependent, not a guaranteed inverse relationship.
 76. **Tokenomics / vesting — ACTIVE RESEARCH REQUIREMENT.** Unlock schedules and authority state must be sourced and time-stamped.
 77. **Circulating supply vs FDV — RESEARCH IMPLEMENTED.** Supply ratio and estimated FDV helper rejects inconsistent/unknown supply inputs.
-78. **Metcalfe / active wallets — RESEARCH.** On-chain activity is context, not direct value prediction.
+78. **Metcalfe / active wallets — IMPLEMENTED DESCRIPTIVE INDEX.** Active-wallet counts produce a normalized N-squared activity index; this is not token fair value or a price target.
 79. **Risk-on / risk-off regime — V2 BASELINE EXTENSION.** Start with transparent thresholds; HMM/ML remains research-only.
-80. **Reflexivity — RESEARCH.** Convert into measurable feedback variables before it changes strategy weights.
+80. **Reflexivity — IMPLEMENTED DESCRIPTIVE SCORE.** Price return, active-wallet growth and net flow are combined into a co-directional feedback diagnostic, not a causal model or forecast.
 81. **Fat tails / black swans — V2 SCENARIO GATE.** Monte Carlo and stress cases; normal-distribution VaR alone is insufficient.
 82. **Herding / momentum cascades — RESEARCH.** Require deduplicated, timestamped social/flow data.
 83. **Mean reversion — RESEARCH STRATEGY.** Bollinger/ADF signals never override token safety and liquidity checks.
 84. **Correlation breakdown — RESEARCH IMPLEMENTED.** Pairwise portfolio correlation helper supports stress analysis; it is not a diversification guarantee.
-85. **Zero-sum vs positive-sum mechanics — STRATEGY NOTES.** Evaluate short-horizon performance net of fees, slippage and competition.
+85. **Zero-sum vs positive-sum mechanics — IMPLEMENTED ACCOUNTING CHECK.** Gross winners/losers are reconciled separately from fees and external capital flows so deposits are not counted as trading profit.
 
 ## Part 6 — Infrastructure, safety and execution (86–100)
 
-86. **PostgreSQL / TimescaleDB — ACTIVE DATABASE / OPTIONAL EXTENSION.** Neon PostgreSQL is authoritative; TimescaleDB is not assumed enabled until verified.
-87. **Redis — OPTIONAL CACHE.** Never replace PostgreSQL as the trade/receipt ledger.
+86. **PostgreSQL / TimescaleDB — ACTIVE DATABASE / OPTIONAL MIGRATION.** Neon PostgreSQL is authoritative; an opt-in hypertable migration is provided but is not applied unless the target database has TimescaleDB installed.
+87. **Redis — IMPLEMENTED OPTIONAL TTL CACHE.** RedisMarketCache only accepts market/research namespaces and rejects wallet/order/receipt/risk-ledger state; PostgreSQL stays authoritative.
 88. **Docker — ACTIVE.** Reproducible worker image and local service orchestration.
 89. **Linux VPS administration — ACTIVE DEPLOYMENT COMPETENCY.** Managed API/daemon infrastructure is used; region and latency are measured before placement.
 90. **Environment variables / secrets management — ACTIVE.** Secrets remain server-side and never enter the public Mini App bundle.
 91. **Idempotency keys — V2 IMPLEMENTED.** Stable intent hash and no duplicate submission on retries.
 92. **State machine architecture — V2 IMPLEMENTED.** Unknown submission is a reconciliation state, not a retry.
-93. **Dead-man switch / heartbeat — V2 TELEMETRY CONTRACT.** Production synchronization remains pending; the dashboard must show a real worker heartbeat before claiming health.
+93. **Dead-man switch / heartbeat — NEON HEARTBEAT + V2 LEASE CONTRACT.** The Python worker records Neon heartbeats and V2 checks lease freshness; the Supabase Telegram diagnostics panel remains unsynchronized until a secure cross-service bridge is deployed.
 94. **Circuit breakers — ACTIVE FOUNDATION.** Global live lock, per-user limits and daily drawdown controls; portfolio reconciliation remains a gate.
 95. **Paper / shadow mode — ACTIVE.** Isolated ledger and quote-only adapter; virtual money cannot reach signing code.
 96. **Structured logging / telemetry — ACTIVE / EXTEND.** Sanitized events only; no secrets or signed transaction material in logs.

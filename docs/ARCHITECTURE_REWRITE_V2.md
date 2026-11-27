@@ -69,6 +69,10 @@ Python, asyncio, aiohttp, websockets, FastAPI, aiogram, Solders, Solana RPC, Typ
 
 requirements-research.txt contains CCXT, Pandas/technical-analysis, scikit-learn, VectorBT, yfinance, Scrapy, BeautifulSoup, Playwright, SciPy, Statsmodels and VADER. It must not be installed into the always-on worker as an unreviewed dependency bundle. TA-Lib, Backtrader, PyTorch, TensorFlow, R and Julia workloads belong in isolated research environments.
 
+### Polyglot and research modules
+
+The repository contains independently checked Rust Solana math/deduplication, C++ order-book risk, a Go OHLCV gateway, C# broker-risk validation, Solidity policy compilation, TradingView Pine signals, MetaTrader 4/5 signal relays, R portfolio diagnostics and Julia Monte Carlo research. CCXT, Pandas, TA-Lib, pandas-ta-classic, VectorBT, Backtrader, yfinance, CoinMarketCap metadata, GraphQL, Scrapy, BeautifulSoup, Playwright, Selenium, scikit-learn, HMM, FinBERT, PyTorch and TensorFlow are isolated under research profiles. These modules do not directly sign or submit 9N8 trades.
+
 ### Platform adapters reserved for explicit expansion
 
 C++, Go, Solidity, Web3.py, C#, MQL4/MQL5 and GraphQL are not artificial production dependencies for the current Solana-only sniper. They have defined extension roles in TECHNOLOGY_CATALOG_100.md and become deployable adapters only when their corresponding chain, broker, performance or data requirement exists.
