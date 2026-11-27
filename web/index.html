@@ -158,9 +158,54 @@ button:disabled{opacity:.55;cursor:wait}
       </form>
     </section>
     <section class="card hidden" id="walletPanel">
-      <h2>Wallet sessions and address watch</h2>
-      <p class="muted">Connect Phantom, Trust Wallet, MetaMask or another supported wallet through WalletConnect. 9N8 uses this connection to verify wallet ownership with a message signature only. This build does not request swap transactions, token approvals or background trade-signing permission.</p>
+      <h2>Non-custodial wallet vault & wallet watch</h2>
+      <p class="muted">Create a new wallet locally or connect an existing wallet. The generated recovery phrase is encrypted on this device before the encrypted backup is stored; linked external wallets remain watch / explicit-signing connections.</p>
       <div class="notice">Never enter a seed phrase, recovery phrase, private key, or wallet password. Only paste a public receiving address.</div>
+
+      <section class="scanner-panel" id="n8WalletVault">
+        <span class="pill">CLIENT-SIDE NON-CUSTODIAL VAULT</span>
+        <h3>Generate and manage your wallets</h3>
+        <p class="muted">Create a 12-word BIP-39 recovery phrase on this device. Solana wallets and a shared EVM address (Ethereum, Base, BNB Chain and Arbitrum) are derived locally. Your phrase and passphrase never go to Telegram or the server.</p>
+        <div class="notice">9N8 stores only AES-256-GCM encrypted backup bytes and public wallet addresses. Use a unique passphrase of at least 12 characters. If you lose both the recovery phrase and passphrase, 9N8 cannot recover your funds. Never screenshot or share your phrase.</div>
+        <label for="walletVaultPassphrase">Local backup passphrase (never sent to 9N8)</label>
+        <input id="walletVaultPassphrase" type="password" minlength="12" maxlength="256" autocomplete="new-password" placeholder="At least 12 characters">
+        <section id="walletVaultCreate" class="scanner-panel">
+          <p><strong>New user setup</strong></p>
+          <p class="muted">The wallet is generated only after you press the button. Keep the page open and save the phrase offline.</p>
+          <button id="walletVaultCreateButton" type="button">🔐 Create non-custodial wallet</button>
+        </section>
+        <section id="walletVaultUnlock" class="scanner-panel hidden">
+          <p><strong>Existing encrypted wallet</strong></p>
+          <p class="muted">Enter your original passphrase to decrypt locally. The server only returns the encrypted backup.</p>
+          <button id="walletVaultUnlockButton" type="button">🔓 Unlock / recover wallet</button>
+          <div class="grid">
+            <button id="walletVaultAddOne" type="button" class="secondary">➕ Create one Solana wallet</button>
+            <button id="walletVaultAddFive" type="button" class="secondary">➕➕ Generate 5 wallets</button>
+          </div>
+          <div class="grid">
+            <button id="walletVaultDownload" type="button" class="secondary" disabled>📄 Download encrypted backup</button>
+            <button id="walletVaultBalance" type="button" class="secondary">↻ Check SOL balances</button>
+          </div>
+        </section>
+        <div id="walletVaultReveal" class="notice hidden">
+          <strong>🔐 Recovery phrase · visible for up to 60 seconds</strong>
+          <p class="muted">Write these words down offline in the correct order. Telegram messages are never used to reveal keys.</p>
+          <pre id="walletVaultPhrase" style="white-space:pre-wrap;overflow-wrap:anywhere;font:600 16px/1.7 ui-monospace,monospace;user-select:text"></pre>
+          <label style="display:flex;gap:8px;align-items:center"><input id="walletVaultBackupSaved" type="checkbox" style="width:auto"> I have saved the recovery phrase offline.</label>
+          <div class="grid">
+            <button id="walletVaultConfirmSaved" type="button">✅ I saved my recovery phrase</button>
+            <button id="walletVaultDeleteReveal" class="secondary" type="button">🗑 Clear phrase now</button>
+          </div>
+        </div>
+        <div id="walletVaultAccounts" class="grid" aria-live="polite"></div>
+        <section id="walletVaultQrSection" class="scanner-panel hidden">
+          <h3 id="walletVaultQrLabel">Deposit QR</h3>
+          <canvas id="walletVaultQr" width="240" height="240" aria-label="Wallet deposit QR code"></canvas>
+          <p class="muted">Always confirm the network and address before sending. Do not send assets on the wrong chain.</p>
+        </section>
+        <div id="walletVaultStatus" class="status" role="status" aria-live="polite">Checking encrypted wallet setup…</div>
+        <p class="muted">Current scope: client-side wallet generation, encrypted backup, public address list, QR display and read-only Solana balance checks. EVM trade execution, automatic multi-wallet signing, EVM balance indexing and persistent deposit push alerts are not enabled yet.</p>
+      </section>
       <div class="scanner-panel" id="walletSessionPanel">
         <span class="pill">WALLET SESSION</span>
         <p class="muted">Connect MetaMask, Trust Wallet, Phantom or another WalletConnect-compatible wallet. 9N8 requests only a harmless ownership message before saving the wallet address; no transaction is requested.</p>
@@ -668,6 +713,7 @@ button:disabled{opacity:.55;cursor:wait}
   });
 })();
 </script>
+<script type="module" src="/wallet-vault.js"></script>
 <script type="module" src="/connections.js"></script>
 <script type="module" src="/wallet-connect.js"></script>
 <script type="module" src="/jupiter-terminal.js"></script>
