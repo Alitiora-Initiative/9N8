@@ -1,0 +1,19 @@
+# Isolated offline/research environment only; never install in the always-on executor.
+# This profile is intentionally separate from requirements.txt.
+ccxt==4.5.94
+pandas-ta-classic==0.9.0
+scikit-learn==1.9.1
+vectorbt==1.2.1
+yfinance==1.8.0
+Scrapy==2.20.0
+beautifulsoup4>=4.12,<5
+playwright>=1.50,<2
+pandas>=2.2,<4
+statsmodels>=0.14,<1
+scipy>=1.14,<2
+vaderSentiment>=3.3,<4
+
+# TA-Lib requires a native C library on the host.
+# Backtrader remains optional for event-driven simulation.
+# PyTorch / TensorFlow are GPU/model-serving dependencies, not worker imports.
+# Web3.py is reserved for a separately audited EVM adapter.
