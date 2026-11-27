@@ -5,7 +5,7 @@ import re
 from typing import Any, Protocol
 
 
-_KEY = re.compile(r"^[a-zA-Z0-9_.:-]{1,180}$")
+_KEY = re.compile(r"^[a-zA-Z0-9_./:-]{1,180}$")
 _ALLOWED = ("market:", "research:")
 
 

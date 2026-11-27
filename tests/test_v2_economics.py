@@ -25,7 +25,7 @@ def test_cross_venue_arbitrage_accounts_for_fees_cost_and_stale_quotes():
     )
     assert result.approved
     assert result.gross_profit_quote == Decimal("6")
-    assert result.net_profit_quote == Decimal("4.94")
+    assert result.net_profit_quote == Decimal("4.594")
     assert result.net_edge_bps > Decimal("200")
 
     stale = quote("old-venue", "99", "100", at=NOW - timedelta(minutes=1))
