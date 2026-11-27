@@ -39,8 +39,15 @@ function equalConstantTime(left: string, right: string): boolean {
   return diff === 0;
 }
 async function hmac(keyBytes: Uint8Array, message: string): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(message)));
+  // Copy into an ArrayBuffer-backed view to satisfy Deno's WebCrypto BufferSource types.
+  const keyMaterial = new Uint8Array(keyBytes.length);
+  keyMaterial.set(keyBytes);
+  const key = await crypto.subtle.importKey("raw", keyMaterial, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  try {
+    return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(message)));
+  } finally {
+    keyMaterial.fill(0);
+  }
 }
 function hex(value: Uint8Array): string {
   return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
