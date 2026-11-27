@@ -60,17 +60,22 @@ Deno.test("manual snipe opens secure wallet flow without automatic-buy callbacks
 Deno.test("engine diagnostics separates configured variables from runtime health", () => {
   const full = buildEngineStatusText({
     telegramTokenConfigured: true,
+    telegramApiHealth: "CONNECTED",
     webhookSecretConfigured: true,
     supabaseUrlConfigured: true,
     supabaseServiceCredentialConfigured: true,
     solanaRpcEndpointAvailable: true,
     jupiterApiKeyConfigured: true,
+    jupiterApiHealth: "CONNECTED",
     walletConnectProjectConfigured: true,
   });
   for (const expected of [
     "🧠 9N8 ENGINE & DIAGNOSTICS",
-    "CONFIGURATION PRESENCE (not a connectivity or credential-validity test)",
+    "CONFIGURATION PRESENCE (names and value presence only)",
     "Jupiter API key: CONFIGURED / AVAILABLE",
+    "Telegram Bot API getMe: CONNECTED",
+    "Jupiter Swap V2 quote-only request: CONNECTED",
+    "it has no taker wallet, signs no transaction and submits no swap.",
     "Jupiter Swap V2 quote/order/execute/status handlers",
     "Python worker's Neon wallet, positions, PnL, heartbeat and detailed strategy settings are NOT synchronized",
     "V2 REBUILD INVENTORY (REPOSITORY MODULES)",
@@ -89,11 +94,13 @@ Deno.test("engine diagnostics separates configured variables from runtime health
 
   const missing = buildEngineStatusText({
     telegramTokenConfigured: false,
+    telegramApiHealth: "NOT CONFIGURED",
     webhookSecretConfigured: false,
     supabaseUrlConfigured: false,
     supabaseServiceCredentialConfigured: false,
     solanaRpcEndpointAvailable: false,
     jupiterApiKeyConfigured: false,
+    jupiterApiHealth: "NOT CONFIGURED",
     walletConnectProjectConfigured: false,
   });
   for (const expected of [
