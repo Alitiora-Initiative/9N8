@@ -15,10 +15,10 @@ jobs:
     name: Build, audit and lock wallet dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -30,7 +30,7 @@ jobs:
         working-directory: web
         shell: bash
         run: |
-          npm audit fix --package-lock-only --no-fund || {
+          npm audit fix --no-fund || {
             echo "::warning::Some upstream advisories cannot be fixed automatically without a breaking upgrade. The next audit gate will distinguish fixable from unfixable findings."
           }
       - name: Verify clean lockfile install after safe updates
@@ -46,10 +46,9 @@ jobs:
           const report = JSON.parse(fs.readFileSync("npm-audit-report.json", "utf8"));
           const counts = report.metadata?.vulnerabilities ?? {};
           const entries = Object.entries(report.vulnerabilities ?? {});
-          const fixableHigh = entries.filter(([name, item]) =>
-            item.severity === "high" && item.fixAvailable && item.fixAvailable !== false
-          );
+          const high = Number(counts.high ?? 0);
           const critical = Number(counts.critical ?? 0);
+          const total = Number(counts.total ?? 0);
           console.log("Web dependency audit:", JSON.stringify(counts));
           for (const [name, item] of entries) {
             console.log(
@@ -63,7 +62,7 @@ jobs:
             "## Web dependency audit after compatible, non-breaking update",
             "",
             `Total: ${counts.total ?? 0} · Critical: ${critical} · High: ${counts.high ?? 0} · Moderate: ${counts.moderate ?? 0} · Low: ${counts.low ?? 0}`,
-            `High findings with an available npm fix still present: ${fixableHigh.length}`,
+            `Unresolved vulnerabilities: ${total}`,
             "",
             "Unfixed upstream findings are reported, not suppressed. Major-version overrides are not applied automatically.",
             "",
@@ -72,8 +71,8 @@ jobs:
             )
           ];
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\\n") + "\\n");
-          if (critical > 0 || fixableHigh.length > 0) {
-            console.error("Blocking dependency audit: critical findings or safely fixable high findings remain.");
+          if (total > 0 || high > 0 || critical > 0) {
+            console.error("Blocking dependency audit: npm reported unresolved vulnerabilities.");
             process.exit(1);
           }
           NODE
@@ -104,7 +103,7 @@ jobs:
             -d '{"state":"success","description":"Clean npm ci install, Vite build and RPC smoke test passed; audit report uploaded.","context":"9N8 wallet lockfile clean install"}'
       - name: Upload dependency lockfile and audit report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: 9n8-wallet-stack-lock-and-audit
           path: |
