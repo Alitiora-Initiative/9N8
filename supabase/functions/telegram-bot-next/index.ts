@@ -732,7 +732,7 @@ function connectHtml(): Response {
 "const autoDetect=document.getElementById('autoDetectMarkets');const marketFieldset=document.getElementById('marketFieldset');const binanceAutoRow=document.getElementById('binanceAutoRow');",
   "function showProvider(){const isBinance=provider.value==='binance';environment.innerHTML='';const o=document.createElement('option');o.value='live';o.textContent='Production / Live API (read settings only)';environment.appendChild(o);passphraseRow.classList.toggle('hidden',provider.value!=='okx');passphrase.required=provider.value==='okx';binanceAutoRow.classList.toggle('hidden',!isBinance);if(!isBinance)autoDetect.checked=false;marketFieldset.classList.toggle('hidden',isBinance&&autoDetect.checked)}provider.addEventListener('change',showProvider);autoDetect.addEventListener('change',showProvider);showProvider();",
 "async function post(data){if(!tg||!tg.initData)throw new Error('Open this page from the 9N8 Telegram private chat.');const r=await fetch(location.pathname,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign({initData:tg.initData},data))});const j=await r.json().catch(()=>({}));if(!r.ok||j.ok!==true)throw new Error(j.message||'Request failed.');return j}",
-"exchangeForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('exchangeButton');button.disabled=true;exchangeStatus.textContent='Reading API-key and account product permissions…';const credentials={apiKey:document.getElementById('apiKey').value.trim(),apiSecret:document.getElementById('apiSecret').value.trim()};if(provider.value==='okx')credentials.passphrase=passphrase.value;const selected=Array.from(document.querySelectorAll('input[name=markets]:checked')).map(x=>x.value);const auto=provider.value==='binance'&&autoDetect.checked;if(!auto&&selected.length===0){exchangeStatus.textContent='Select at least one product to inspect.';button.disabled=false;return}try{const payload={action:'connect_exchange',provider:provider.value,environment:environment.value,credentials:credentials,autoDetectMarkets:auto};if(!auto)payload.requestedMarkets=selected;const j=await post(payload);const p=j.permissions||{};const detected=p.detectedMarkets||j.selectedMarkets||[];const k=p.keyPermissions||{};const a=p.accountProducts||{};const flag=v=>v===true?'ON':v===false?'OFF':'unknown';const mk=p.marketPermissions||{};const productSettings='\\nAPI-key flags: Read '+flag(k.reading)+', IP restriction '+flag(k.ipRestricted)+', Spot/Margin '+flag(k.spotAndMarginTrading)+', Margin '+flag(k.margin)+', Futures '+flag(k.futures)+', Options '+flag(k.vanillaOptions)+', Portfolio Margin '+flag(k.portfolioMarginTrading)+', Withdrawals '+flag(k.withdrawals)+', Internal Transfer '+flag(k.internalTransfer)+', Universal Transfer '+flag(k.universalTransfer)+', FIX Trade '+flag(k.fixApiTrade)+', FIX Read-only '+flag(k.fixReadOnly)+'.'+'\\nAccount products: Margin '+flag(a.marginEnabled)+', Futures '+flag(a.futuresEnabled)+', Options '+flag(a.optionsEnabled)+', Portfolio Margin '+flag(a.portfolioMarginEnabled)+'.'+'\\nDetected product checks: Spot '+String(mk.spot||'not detected')+', Margin '+String(mk.margin||'not detected')+', USD-M Futures '+String(mk.futures_usdm||'not detected')+', COIN-M Futures '+String(mk.futures_coinm||'not detected')+', Options '+String(mk.options||'not detected')+', Portfolio Margin '+String(p.portfolioMarginStatus||'not detected')+'.'+'\\n'+String(p.futuresScopeNote||'');exchangeStatus.textContent='Connected: '+j.label+'\\nDetected products: '+(detected.length?detected.join(', '):'No trading product scopes; read-only settings saved.')+(provider.value==='binance'?productSettings:'')+'\\nWithdrawal and transfer scopes are rejected. No order was placed.';exchangeForm.reset();autoDetect.checked=true;showProvider()}catch(err){exchangeStatus.textContent=err.message||'Connection failed.'}finally{credentials.apiKey='';credentials.apiSecret='';credentials.passphrase='';document.getElementById('apiKey').value='';document.getElementById('apiSecret').value='';passphrase.value='';button.disabled=false}});",
+"exchangeForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('exchangeButton');button.disabled=true;exchangeStatus.textContent='Reading API-key and account product permissions…';const credentials={apiKey:document.getElementById('apiKey').value.trim(),apiSecret:document.getElementById('apiSecret').value.trim()};if(provider.value==='okx')credentials.passphrase=passphrase.value;const selected=Array.from(document.querySelectorAll('input[name=markets]:checked')).map(x=>x.value);const auto=provider.value==='binance'&&autoDetect.checked;if(!auto&&selected.length===0){exchangeStatus.textContent='Select at least one product to inspect.';button.disabled=false;return}try{const payload={action:'connect_exchange',provider:provider.value,environment:environment.value,credentials:credentials,autoDetectMarkets:auto};if(!auto)payload.requestedMarkets=selected;const j=await post(payload);const p=j.permissions||{};const detected=p.detectedMarkets||j.selectedMarkets||[];const k=p.keyPermissions||{};const a=p.accountProducts||{};const flag=v=>v===true?'ON':v===false?'OFF':'unknown';const mk=p.marketPermissions||{};const productSettings='\nAPI-key flags: Read '+flag(k.reading)+', IP restriction '+flag(k.ipRestricted)+', Spot/Margin '+flag(k.spotAndMarginTrading)+', Margin '+flag(k.margin)+', Futures '+flag(k.futures)+', Options '+flag(k.vanillaOptions)+', Portfolio Margin '+flag(k.portfolioMarginTrading)+', Withdrawals '+flag(k.withdrawals)+', Internal Transfer '+flag(k.internalTransfer)+', Universal Transfer '+flag(k.universalTransfer)+', FIX Trade '+flag(k.fixApiTrade)+', FIX Read-only '+flag(k.fixReadOnly)+'.'+'\nAccount products: Margin '+flag(a.marginEnabled)+', Futures '+flag(a.futuresEnabled)+', Options '+flag(a.optionsEnabled)+', Portfolio Margin '+flag(a.portfolioMarginEnabled)+'.'+'\nDetected product checks: Spot '+String(mk.spot||'not detected')+', Margin '+String(mk.margin||'not detected')+', USD-M Futures '+String(mk.futures_usdm||'not detected')+', COIN-M Futures '+String(mk.futures_coinm||'not detected')+', Options '+String(mk.options||'not detected')+', Portfolio Margin '+String(p.portfolioMarginStatus||'not detected')+'.'+'\n'+String(p.futuresScopeNote||'');exchangeStatus.textContent='Connected: '+j.label+'\nDetected products: '+(detected.length?detected.join(', '):'No trading product scopes; read-only settings saved.')+(provider.value==='binance'?productSettings:'')+'\nWithdrawal and transfer scopes are rejected. No order was placed.';exchangeForm.reset();autoDetect.checked=true;showProvider()}catch(err){exchangeStatus.textContent=err.message||'Connection failed.'}finally{credentials.apiKey='';credentials.apiSecret='';credentials.passphrase='';document.getElementById('apiKey').value='';document.getElementById('apiSecret').value='';passphrase.value='';button.disabled=false}});",
 "walletForm.addEventListener('submit',async function(e){e.preventDefault();const button=document.getElementById('walletButton');button.disabled=true;walletStatus.textContent='Saving public address…';const selected=document.getElementById('chain');const parts=selected.value.split(':');try{const j=await post({action:'watch_wallet',provider:document.getElementById('walletProvider').value,namespace:parts[0],chainId:parts.slice(1).join(':'),network:selected.selectedOptions[0].textContent,address:document.getElementById('address').value.trim()});walletStatus.textContent='Saved '+j.address+' as a watch-only address. No wallet access or signing was granted.';document.getElementById('address').value=''}catch(err){walletStatus.textContent=err.message||'Could not save address.'}finally{button.disabled=false}})})();</script></body></html>"
   ].join("\n");
   return new Response(html, {
@@ -2670,7 +2670,7 @@ async function walletWelcomeText(): Promise<string> {
     "🔵 Base · 🔷 Ethereum · 🟡 BNB · 🟣 Arbitrum: the public EVM address is derived locally; chain balance feeds and trade execution are not enabled in this release.",
     "⚠️ Write your recovery phrase offline. Never send it in Telegram, screenshots, or support chats. Keep your passphrase safe too.",
     "Paper and Live trading remain separate; live-money execution stays approval-gated.",
-  ].join("\\n");
+  ].join("\n");
 }
 
 async function dashboardText(userId: string): Promise<string> {
@@ -2697,15 +2697,15 @@ async function dashboardText(userId: string): Promise<string> {
       });
       const payload = await result.json().catch(() => ({}));
       if (result.ok && !payload?.error && Number.isSafeInteger(payload?.result?.value)) {
-        walletSummary += "\\nBalance: " + (Number(payload.result.value) / 1_000_000_000).toFixed(6) + " SOL";
+        walletSummary += "\nBalance: " + (Number(payload.result.value) / 1_000_000_000).toFixed(6) + " SOL";
       } else {
-        walletSummary += "\\nBalance: RPC temporarily unavailable";
+        walletSummary += "\nBalance: RPC temporarily unavailable";
       }
     } catch {
-      walletSummary += "\\nBalance: RPC temporarily unavailable";
+      walletSummary += "\nBalance: RPC temporarily unavailable";
     }
   }
-  if (evm?.public_address) walletSummary += "\\n🔵 EVM (Base / Ethereum / BNB / Arbitrum): " + String(evm.public_address);
+  if (evm?.public_address) walletSummary += "\n🔵 EVM (Base / Ethereum / BNB / Arbitrum): " + String(evm.public_address);
   const walletCount = solana.length + (evm ? 1 : 0);
   return [
     "⚡ 9N8 — SOLANA SNIPER DASHBOARD", "",
@@ -2722,7 +2722,7 @@ async function dashboardText(userId: string): Promise<string> {
     "The Telegram webhook never receives private keys or recovery phrases. Wallet balances above are read-only RPC values.",
     "🧠 Engine & Diagnostics: open /engine to inspect code capabilities and integration gaps.",
     "Menu navigation edits this dashboard message. Opening a screen does not enable autonomous execution or place a trade.",
-  ].join("\\n");
+  ].join("\n");
 }
 
 async function checkTelegramBotApi(): Promise<IntegrationHealth> {
@@ -3032,9 +3032,9 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/migrate") {
-    await sendPanel(row.id, chatId, "LIVE-TRADING READINESS\\n\\n" +
+    await sendPanel(row.id, chatId, "LIVE-TRADING READINESS\n\n" +
       await liveStatusText(row.id) +
-      "\\n\\nThis is a readiness report. Live execution stays locked until every server-side requirement and owner authorization is satisfied.",
+      "\n\nThis is a readiness report. Live execution stays locked until every server-side requirement and owner authorization is satisfied.",
       liveStatusKeyboard());
     return;
   }
@@ -3086,7 +3086,7 @@ async function handleMessage(update: any) {
     return;
   }
   if (command === "/simulator") {
-    await send(chatId, "LIVE-MARKET PAPER SIMULATOR\\n\\nReal Binance Spot candles, ticker and order-book data. Paper orders use virtual cash, visible depth VWAP and estimated fees; no real order is submitted.", {
+    await send(chatId, "LIVE-MARKET PAPER SIMULATOR\n\nReal Binance Spot candles, ticker and order-book data. Paper orders use virtual cash, visible depth VWAP and estimated fees; no real order is submitted.", {
       inline_keyboard: [[{ text: "📈 Open 9N8 simulator", web_app: { url: "https://9n8-secure-connect.vercel.app/?view=simulator" } }]]
     });
     return;
